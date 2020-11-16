@@ -155,8 +155,8 @@ namespace Step33 {
     static const double gas_gamma;
 
 
-    // In the following, we will need to compute the kinetic energy and the
-    // pressure from a vector of conserved variables. This we can do based on
+    // In the following, we will need to compute the kinetic energy, the velocity,
+    // the pressure and the spped of sound from a vector of conserved variables. This we can do based on
     // the energy density and the kinetic energy $\frac 12 \rho |\mathbf v|^2
     // = \frac{|\rho \mathbf v|^2}{2\rho}$ (note that the independent
     // variables contain the momentum components $\rho v_i$, not the
@@ -173,8 +173,27 @@ namespace Step33 {
 
 
     template<typename InputVector>
+    static typename InputVector::value_type compute_velocity(const InputVector& W) {
+      typename InputVector::value_type velocity = 0;
+      for(unsigned int d = 0; d < dim; ++d)
+        velocity += W[first_momentum_component + d]*W[first_momentum_component + d];
+      velocity *= 1.0/(W[density_component]*W[density_component]);
+
+      return std::sqrt(velocity);
+    }
+
+
+    template<typename InputVector>
     static typename InputVector::value_type compute_pressure(const InputVector& W) {
       return (gas_gamma - 1.0)*(W[energy_component] - compute_kinetic_energy(W));
+    }
+
+
+    template<typename InputVector>
+    static typename InputVector::value_type compute_speed_of_sound(const InputVector& W) {
+      const auto pressure = compute_pressure(W);
+
+      return gas_gamma*pressure/W[density_component];
     }
 
 
@@ -226,14 +245,13 @@ namespace Step33 {
 
     // On the boundaries of the domain and across hanging nodes we use a
     // numerical flux function to enforce boundary conditions.  This routine
-    // is the basic Lax-Friedrich's flux with a stabilization parameter
-    // $\alpha$. It's form has also been given already in the introduction:
+    // is the basic Lax-Friedrich's flux. It's form has also been given already in the introduction:
     template<typename InputVector>
     static void numerical_normal_flux(const Tensor<1, dim>& normal,
                                       const InputVector&    Wplus,
                                       const InputVector&    Wminus,
-                                      const double          alpha,
-                                      std::array<typename InputVector::value_type, n_components> &normal_flux) {
+                                      const double          gamma,
+                                      std::array<typename InputVector::value_type, n_components>& normal_flux) {
       std::array<std::array<typename InputVector::value_type, dim>,
                  EulerEquations<dim>::n_components>                 iflux, oflux;
 
@@ -245,7 +263,7 @@ namespace Step33 {
         for(unsigned int d = 0; d < dim; ++d)
           normal_flux[di] += 0.5*(iflux[di][d] + oflux[di][d])*normal[d];
 
-        normal_flux[di] += 0.5*alpha*(Wplus[di] - Wminus[di]);
+        normal_flux[di] += 0.5*gamma*(Wplus[di] - Wminus[di]);
       }
     }
 
@@ -261,7 +279,7 @@ namespace Step33 {
     // 2d. This naturally leads to the following function:
     template<typename InputVector>
     static void compute_forcing_vector(const InputVector& W,
-                                       std::array<typename InputVector::value_type, n_components> &forcing) {
+                                       std::array<typename InputVector::value_type, n_components>& forcing) {
       const double gravity = -1.0;
 
       for(unsigned int c = 0; c < n_components; ++c) {
@@ -814,66 +832,6 @@ namespace Step33 {
     }
 
 
-
-    // @sect4{Parameters::Flux}
-    //
-    // Next a section on flux modifications to make it more stable. In
-    // particular, two options are offered to stabilize the Lax-Friedrichs
-    // flux: either choose $\mathbf{H}(\mathbf{a},\mathbf{b},\mathbf{n}) =
-    // \frac{1}{2}(\mathbf{F}(\mathbf{a})\cdot \mathbf{n} +
-    // \mathbf{F}(\mathbf{b})\cdot \mathbf{n} + \alpha (\mathbf{a} -
-    // \mathbf{b}))$ where $\alpha$ is either a fixed number specified in the
-    // input file, or where $\alpha$ is a mesh dependent value. In the latter
-    // case, it is chosen as $\frac{h}{2\delta T}$ with $h$ the diameter of
-    // the face to which the flux is applied, and $\delta T$ the current time
-    // step.
-    struct Flux {
-      enum StabilizationKind {
-        constant,
-        mesh_dependent
-      };
-      StabilizationKind stabilization_kind;
-
-      double stabilization_value;
-
-      static void declare_parameters(ParameterHandler& prm);
-      void        parse_parameters(ParameterHandler& prm);
-    };
-
-
-    void Flux::declare_parameters(ParameterHandler& prm) {
-      prm.enter_subsection("flux");
-      {
-        prm.declare_entry("stab", "mesh",
-                          Patterns::Selection("constant|mesh"),
-                          "Whether to use a constant stabilization parameter or "
-                          "a mesh-dependent one");
-        prm.declare_entry("stab value", "1",
-                          Patterns::Double(),
-                          "alpha stabilization");
-      }
-      prm.leave_subsection();
-    }
-
-
-    void Flux::parse_parameters(ParameterHandler& prm) {
-      prm.enter_subsection("flux");
-      {
-        const std::string stab = prm.get("stab");
-        if(stab == "constant")
-          stabilization_kind = constant;
-        else if(stab == "mesh")
-          stabilization_kind = mesh_dependent;
-        else
-          AssertThrow(false, ExcNotImplemented());
-
-        stabilization_value = prm.get_double("stab value");
-      }
-      prm.leave_subsection();
-    }
-
-
-
     // @sect4{Parameters::Output}
     //
     // Then a section on output parameters. We offer to produce Schlieren
@@ -964,7 +922,6 @@ namespace Step33 {
     template<int dim>
     struct AllParameters : public Solver,
                            public Refinement,
-                           public Flux,
                            public Output {
       static const unsigned int max_n_boundaries = 10;
 
@@ -977,18 +934,20 @@ namespace Step33 {
         BoundaryConditions();
       };
 
+
       // Auxiliary class in case exact solution is available
       struct ExactSolution : public Function<dim> {
         ExactSolution(const double time): Function<dim>(dim + 2, time) {}
 
-        virtual double value(const Point<dim> & p,
+        virtual double value(const Point<dim>& p,
                              const unsigned int component = 0) const override;
+
+        virtual void   vector_value(const Point<dim>& p,
+                                    Vector<double>& values) const override;
       };
 
 
       AllParameters();
-
-      double diffusion_power;
 
       double time_step, final_time;
       double theta;
@@ -997,12 +956,14 @@ namespace Step33 {
       std::string time_integration_scheme; //---Extra variable to specify the time integration scheme
       std::string dir;
       std::string mesh_filename;
+      unsigned int testcase; //---Extra variable to specify the testcase
 
       FunctionParser<dim> initial_conditions;
       BoundaryConditions  boundary_conditions[max_n_boundaries];
+      ExactSolution       exact_solution;
 
-      static void declare_parameters(ParameterHandler &prm);
-      void        parse_parameters(ParameterHandler &prm);
+      static void declare_parameters(ParameterHandler& prm);
+      void        parse_parameters(ParameterHandler& prm);
     };
 
 
@@ -1015,13 +976,78 @@ namespace Step33 {
     }
 
 
+    // This function will never be called explicitly but it has to be override
+    // for the function integrate_difference we will use to compute errors
     template<int dim>
-    AllParameters<dim>::AllParameters(): diffusion_power(0.),
-                                         time_step(1.),
+    double AllParameters<dim>::ExactSolution::value(const Point<dim>& x,
+                                                    const unsigned int component) const {
+      const double t = this->get_time(); //--- This is a function of the class Function
+
+      Assert(dim == 2, ExcNotImplemented());
+      const double beta = 5.0;
+
+      Point<dim> x0;
+      x0[0] = 5.0;
+      const double gamma_m1    = EulerEquations<dim>::gas_gamma - 1.0;
+      const double radius_sqr  = (x - x0).norm_square() - 2.0*(x[0] - x0[0])*t + t*t;
+      const double factor      = beta/(2.0*numbers::PI)*std::exp(1.0 - radius_sqr);
+      const double density_log = std::log2(std::abs(1.0 - gamma_m1/EulerEquations<dim>::gas_gamma*0.25*factor*factor));
+      const double density     = std::exp2(density_log/gamma_m1);
+      const double u           = 1.0 - factor*(x[1] - x0[1]);
+      const double v           = factor*(x[0] - t - x0[0]);
+
+      if(component == EulerEquations<dim>::density_component)
+        return density;
+      else if(component == EulerEquations<dim>::first_momentum_component)
+        return density*u;
+      else if(component == EulerEquations<dim>::first_momentum_component + 1)
+        return density*v;
+      else {
+        const double pressure = std::exp2(density_log*(EulerEquations<dim>::gas_gamma/gamma_m1));
+        return pressure/gamma_m1 + 0.5*(density*u*u + density*v*v);
+      }
+    }
+
+
+    // This function will never be called explicitly but it has to be override
+    // for the function integrate_difference we will use to compute errors
+    template<int dim>
+    void AllParameters<dim>::ExactSolution::vector_value(const Point<dim>& x,
+                                                         Vector<double>& values) const {
+      const double t = this->get_time(); //--- This is a function of the class Function
+
+      Assert(dim == 2, ExcNotImplemented());
+      AssertThrow(values.size() == EulerEquations<dim>::n_components, ExcMessage("Wrong number of components"));
+
+      const double beta = 5.0;
+
+      Point<dim> x0;
+      x0[0] = 5.0;
+      const double gamma_m1    = EulerEquations<dim>::gas_gamma - 1.0;
+      const double radius_sqr  = (x - x0).norm_square() - 2.0*(x[0] - x0[0])*t + t*t;
+      const double factor      = beta/(2.0*numbers::PI)*std::exp(1.0 - radius_sqr);
+      const double density_log = std::log2(std::abs(1.0 - gamma_m1/EulerEquations<dim>::gas_gamma*0.25*factor*factor));
+      const double density     = std::exp2(density_log/gamma_m1);
+      const double u           = 1.0 - factor*(x[1] - x0[1]);
+      const double v           = factor*(x[0] - t - x0[0]);
+      const double pressure    = std::exp2(density_log*(EulerEquations<dim>::gas_gamma/gamma_m1));
+      const double E           = pressure/gamma_m1 + 0.5*(density*u*u + density*v*v);
+
+      values[EulerEquations<dim>::density_component] = density;
+      values[EulerEquations<dim>::first_momentum_component] = density*u;
+      values[EulerEquations<dim>::first_momentum_component + 1] = density*v;
+      values[EulerEquations<dim>::energy_component] = E;
+    }
+
+
+    template<int dim>
+    AllParameters<dim>::AllParameters(): time_step(1.),
                                          final_time(1.),
                                          theta(.5),
                                          is_stationary(true),
-                                         initial_conditions(EulerEquations<dim>::n_components) {}
+                                         testcase(0),
+                                         initial_conditions(EulerEquations<dim>::n_components),
+                                         exact_solution(ExactSolution(0.0)) {}
 
 
     template<int dim>
@@ -1030,9 +1056,10 @@ namespace Step33 {
                         Patterns::Anything(),
                         "intput file name");
 
-      prm.declare_entry("diffusion power", "2.0",
-                        Patterns::Double(),
-                        "power of mesh size for diffusion");
+      prm.declare_entry("testcase", "0",
+                        Patterns::Integer(0,1),
+                        "specification of testcase between "
+                        "step-33 (default) and step-67");
 
       prm.enter_subsection("time stepping");
       {
@@ -1091,7 +1118,6 @@ namespace Step33 {
 
       Parameters::Solver::declare_parameters(prm);
       Parameters::Refinement::declare_parameters(prm);
-      Parameters::Flux::declare_parameters(prm);
       Parameters::Output::declare_parameters(prm);
     }
 
@@ -1099,7 +1125,7 @@ namespace Step33 {
     template<int dim>
     void AllParameters<dim>::parse_parameters(ParameterHandler& prm) {
       mesh_filename   = prm.get("mesh");
-      diffusion_power = prm.get_double("diffusion power");
+      testcase        = prm.get_integer("testcase");
 
       prm.enter_subsection("time stepping");
       {
@@ -1162,7 +1188,6 @@ namespace Step33 {
 
       Parameters::Solver::parse_parameters(prm);
       Parameters::Refinement::parse_parameters(prm);
-      Parameters::Flux::parse_parameters(prm);
       Parameters::Output::parse_parameters(prm);
     }
   } // namespace Parameters
@@ -1198,8 +1223,7 @@ namespace Step33 {
                             const std::vector<types::global_dof_index>& dofs,
                             const std::vector<types::global_dof_index>& dofs_neighbor,
                             const bool                                  external_face,
-                            const unsigned int                          boundary_id,
-                            const double                                face_diameter);
+                            const unsigned int                          boundary_id);
 
     std::pair<unsigned int, double> solve(Vector<double>& solution);
 
@@ -1273,7 +1297,7 @@ namespace Step33 {
   template<int dim>
   ConservationLaw<dim>::ConservationLaw(const char *input_filename):
       mapping(),
-      fe(FE_DGQ<dim>(0), EulerEquations<dim>::n_components),
+      fe(FE_DGQ<dim>(1), EulerEquations<dim>::n_components),
       dof_handler(triangulation),
       quadrature(fe.degree + 1),
       face_quadrature(fe.degree + 1),
@@ -1377,8 +1401,7 @@ namespace Step33 {
           fe_v_face.reinit(cell, face_no);
           assemble_face_term(face_no, fe_v_face, fe_v_face, dof_indices,
                              std::vector<types::global_dof_index>(), true,
-                             cell->face(face_no)->boundary_id(),
-                             cell->face(face_no)->diameter());
+                             cell->face(face_no)->boundary_id());
         }
 
         // The alternative is that we are dealing with an internal face. There
@@ -1434,8 +1457,7 @@ namespace Step33 {
 
               assemble_face_term(face_no, fe_v_subface, fe_v_face_neighbor,
                                  dof_indices, dof_indices_neighbor,
-                                 false, numbers::invalid_unsigned_int,
-                                 neighbor_child->face(neighbor2)->diameter());
+                                 false, numbers::invalid_unsigned_int);
             }
           }
 
@@ -1464,10 +1486,9 @@ namespace Step33 {
 
             assemble_face_term(face_no, fe_v_face, fe_v_subface_neighbor,
                                dof_indices, dof_indices_neighbor,
-                               false, numbers::invalid_unsigned_int,
-                               cell->face(face_no)->diameter());
+                               false, numbers::invalid_unsigned_int);
           }
-          /*else {
+          else {
             fe_v_face.reinit(cell, face_no);
             const typename DoFHandler<dim>::cell_iterator neighbor = cell->neighbor(face_no);
             const unsigned int other_face_no = cell->neighbor_of_neighbor(face_no);
@@ -1476,9 +1497,9 @@ namespace Step33 {
 
             assemble_face_term(face_no, fe_v_face, fe_v_face_neighbor,
                                dof_indices, dof_indices_neighbor, false,
-                               numbers::invalid_unsigned_int,
-                               cell->face(face_no)->diameter());
-          }*/
+                               numbers::invalid_unsigned_int);
+
+          }
         }
       }
     }
@@ -1517,12 +1538,6 @@ namespace Step33 {
   // <code>W</code>) and the previous time step's solution $W_{n}$ (variable
   // <code>W_old</code>).
   //
-  // In addition to these, we need the gradients of the current variables.  It
-  // is a bit of a shame that we have to compute these; we almost don't.  The
-  // nice thing about a simple conservation law is that the flux doesn't
-  // generally involve any gradients.  We do need these, however, for the
-  // diffusion stabilization.
-  //
   // The actual format in which we store these variables requires some
   // explanation. First, we need values at each quadrature point for each of
   // the <code>EulerEquations::n_components</code> components of the solution
@@ -1530,8 +1545,7 @@ namespace Step33 {
   // Table class (this is more efficient than
   // <code>std::vector@<std::vector@<T@> @></code> because it only needs to
   // allocate memory once, rather than once for each element of the outer
-  // vector). Similarly, the gradient is a three-dimensional table, which the
-  // Table class also supports.
+  // vector).
   //
   // Secondly, we want to use automatic differentiation. To this end, we use
   // the Sacado::Fad::DFad template for everything that is computed from the
@@ -1555,10 +1569,6 @@ namespace Step33 {
 
     //--- Intermediate flux value
     Table<2, double> W_int(n_q_points, EulerEquations<dim>::n_components);
-
-    Table<3, Sacado::Fad::DFad<double>> grad_W(n_q_points, EulerEquations<dim>::n_components, dim);
-
-    Table<3, double> grad_W_old(n_q_points, EulerEquations<dim>::n_components, dim);
 
     std::vector<double> residual_derivatives(dofs_per_cell);
 
@@ -1584,14 +1594,12 @@ namespace Step33 {
       independent_local_dof_values[i].diff(i, dofs_per_cell);
 
     // After all these declarations, let us actually compute something. First,
-    // the values of <code>W</code>, <code>W_old</code>, <code>grad_W</code>
-    // and <code>grad_W_old</code>, which we can compute from the local DoF
+    // the values of <code>W</code>, <code>W_old</code>, which we can compute from the local DoF
     // values by using the formula $W(x_q)=\sum_i \mathbf W_i \Phi_i(x_q)$,
     // where
     // $\mathbf W_i$ is the $i$th entry of the (local part of the) solution
     // vector, and $\Phi_i(x_q)$ the value of the $i$th vector-valued shape
-    // function evaluated at quadrature point $x_q$. The gradient can be
-    // computed in a similar way.
+    // function evaluated at quadrature point $x_q$.
     //
     // Ideally, we could compute this information using a call into something
     // like FEValues::get_function_values and FEValues::get_function_gradients,
@@ -1607,10 +1615,6 @@ namespace Step33 {
         //--- Setting to zero flux second stage TR_BDF2
         if(parameters.time_integration_scheme == "TR_BDF2" && TR_BDF2_stage == 2)
           W_int[q][c] = 0;
-        for(unsigned int d = 0; d < dim; ++d) {
-          grad_W[q][c][d]     = 0;
-          grad_W_old[q][c][d] = 0;
-        }
       }
     }
 
@@ -1624,13 +1628,6 @@ namespace Step33 {
         //--- Setting W_int for second stage TR_BDF2
         if(parameters.time_integration_scheme == "TR_BDF2" && TR_BDF2_stage == 2)
           W_int[q][c] += intermediate_solution(dof_indices[i])*fe_v.shape_value_component(i, q, c);
-
-        for(unsigned int d = 0; d < dim; d++) {
-          grad_W[q][c][d] += independent_local_dof_values[i] *
-                             fe_v.shape_grad_component(i, q, c)[d];
-          grad_W_old[q][c][d] += old_solution(dof_indices[i]) *
-                                 fe_v.shape_grad_component(i, q, c)[d];
-        }
       }
     }
 
@@ -1722,13 +1719,6 @@ namespace Step33 {
                    fe_v.shape_grad_component(i, point, component_i)[d] *
                    fe_v.JxW(point);
 
-          for(unsigned int d = 0; d < dim; d++)
-            R_i += 1.0*std::pow(fe_v.get_cell()->diameter(), parameters.diffusion_power) *
-                   (parameters.theta*grad_W[point][component_i][d] +
-                    (1.0 - parameters.theta)*grad_W_old[point][component_i][d]) *
-                   fe_v.shape_grad_component(i, point, component_i)[d] *
-                   fe_v.JxW(point);
-
           R_i -= (parameters.theta*forcing[point][component_i] +
                   (1.0 - parameters.theta)*forcing_old[point][component_i]) *
                   fe_v.shape_value_component(i, point, component_i) *
@@ -1750,13 +1740,6 @@ namespace Step33 {
                      fe_v.shape_grad_component(i, point, component_i)[d] *
                      fe_v.JxW(point);
 
-            for(unsigned int d = 0; d < dim; d++)
-              R_i += 1.0*std::pow(fe_v.get_cell()->diameter(), parameters.diffusion_power) *
-                     (parameters.theta * grad_W[point][component_i][d] +
-                      parameters.theta * grad_W_old[point][component_i][d]) *
-                     fe_v.shape_grad_component(i, point, component_i)[d] *
-                     fe_v.JxW(point);
-
             R_i -= (parameters.theta * forcing[point][component_i] +
                     parameters.theta * forcing_old[point][component_i]) *
                    fe_v.shape_value_component(i, point, component_i) *
@@ -1772,12 +1755,6 @@ namespace Step33 {
 
             for(unsigned int d = 0; d < dim; d++)
               R_i -= gamma_2*flux[point][component_i][d] *
-                     fe_v.shape_grad_component(i, point, component_i)[d] *
-                     fe_v.JxW(point);
-
-            for(unsigned int d = 0; d < dim; d++)
-              R_i += 1.0*std::pow(fe_v.get_cell()->diameter(), parameters.diffusion_power) *
-                     gamma_2*grad_W[point][component_i][d] *
                      fe_v.shape_grad_component(i, point, component_i)[d] *
                      fe_v.JxW(point);
 
@@ -1818,16 +1795,18 @@ namespace Step33 {
                                                 const std::vector<types::global_dof_index>& dof_indices,
                                                 const std::vector<types::global_dof_index>& dof_indices_neighbor,
                                                 const bool                                  external_face,
-                                                const unsigned int                          boundary_id,
-                                                const double                                face_diameter) {
-    const unsigned int n_q_points    = fe_v.n_quadrature_points;
-    const unsigned int dofs_per_cell = fe_v.dofs_per_cell;
+                                                const unsigned int                          boundary_id) {
+    const unsigned int n_q_points             = fe_v.n_quadrature_points;
+    const unsigned int n_q_points_neighbor    = fe_v_neighbor.n_quadrature_points;
+    const unsigned int dofs_per_cell          = fe_v.dofs_per_cell;
+    const unsigned int dofs_per_cell_neighbor = fe_v_neighbor.dofs_per_cell;
 
     std::vector<Sacado::Fad::DFad<double>> independent_local_dof_values(dofs_per_cell),
-                                            independent_neighbor_dof_values(external_face == false ?
-                                                                            dofs_per_cell : 0);
+                                           independent_neighbor_dof_values(external_face == false ?
+                                                                           dofs_per_cell_neighbor : 0);
 
-    const unsigned int n_independent_variables = (external_face == false ? 2*dofs_per_cell : dofs_per_cell);
+    const unsigned int n_independent_variables = (external_face == false ?
+                                                  dofs_per_cell + dofs_per_cell_neighbor : dofs_per_cell);
 
     for(unsigned int i = 0; i < dofs_per_cell; i++) {
       independent_local_dof_values[i] = current_solution(dof_indices[i]);
@@ -1835,7 +1814,7 @@ namespace Step33 {
     }
 
     if(external_face == false) {
-      for(unsigned int i = 0; i < dofs_per_cell; i++) {
+      for(unsigned int i = 0; i < dofs_per_cell_neighbor; i++) {
         independent_neighbor_dof_values[i] = current_solution(dof_indices_neighbor[i]);
         independent_neighbor_dof_values[i].diff(i + dofs_per_cell, n_independent_variables);
       }
@@ -1869,8 +1848,8 @@ namespace Step33 {
     // an internal face, we can compute it as above by simply using the
     // independent variables from the neighbor:
     if(external_face == false) {
-      for(unsigned int q = 0; q < n_q_points; ++q) {
-        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+      for(unsigned int q = 0; q < n_q_points_neighbor; ++q) {
+        for(unsigned int i = 0; i < dofs_per_cell_neighbor; ++i) {
           const unsigned int component_i = fe_v_neighbor.get_fe().system_to_component_index(i).first;
           Wminus[q][component_i] += independent_neighbor_dof_values[i] *
                                     fe_v_neighbor.shape_value_component(i, q, component_i);
@@ -1900,15 +1879,30 @@ namespace Step33 {
              ExcIndexRange(boundary_id, 0, Parameters::AllParameters<dim>::max_n_boundaries));
 
       std::vector<Vector<double>> boundary_values(n_q_points, Vector<double>(EulerEquations<dim>::n_components));
-      parameters.boundary_conditions[boundary_id].values.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
+      if(parameters.testcase == 0)
+        parameters.boundary_conditions[boundary_id].values.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
+      else
+        parameters.exact_solution.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
 
       for(unsigned int q = 0; q < n_q_points; q++) {
-        EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
-                                            fe_v.normal_vector(q), Wplus[q], boundary_values[q], Wminus[q]);
-        // Here we assume that boundary type, boundary normal vector and
-        // boundary data values maintain the same during time advancing.
-        EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
-                                            fe_v.normal_vector(q), Wplus_old[q], boundary_values[q], Wminus_old[q]);
+        if(parameters.testcase == 0) {
+          EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
+                                              fe_v.normal_vector(q), Wplus[q], boundary_values[q], Wminus[q]);
+          // Here we assume that boundary type, boundary normal vector and
+          // boundary data values maintain the same during time advancing.
+          EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
+                                              fe_v.normal_vector(q), Wplus_old[q], boundary_values[q], Wminus_old[q]);
+        }
+        else {
+          std::array<typename EulerEquations<dim>::BoundaryKind, EulerEquations<dim>::n_components> kind;
+          std::fill(kind.begin(), kind.end(), EulerEquations<dim>::inflow_boundary);
+          EulerEquations<dim>::compute_Wminus(kind,
+                                              fe_v.normal_vector(q), Wplus[q], boundary_values[q], Wminus[q]);
+          // Here we assume that boundary type, boundary normal vector and
+          // boundary data values maintain the same during time advancing.
+          EulerEquations<dim>::compute_Wminus(kind,
+                                              fe_v.normal_vector(q), Wplus_old[q], boundary_values[q], Wminus_old[q]);
+        }
       }
     }
 
@@ -1922,23 +1916,18 @@ namespace Step33 {
     std::vector<std::array<Sacado::Fad::DFad<double>, EulerEquations<dim>::n_components>> normal_fluxes(n_q_points);
     std::vector<std::array<double, EulerEquations<dim>::n_components>>  normal_fluxes_old(n_q_points);
 
-    double alpha;
-
-    switch(parameters.stabilization_kind) {
-      case Parameters::Flux::constant:
-        alpha = parameters.stabilization_value;
-        break;
-      case Parameters::Flux::mesh_dependent:
-        alpha = face_diameter/(2.0*parameters.time_step);
-        break;
-      default:
-        Assert(false, ExcNotImplemented());
-        alpha = 1;
-    }
-
     for(unsigned int q = 0; q < n_q_points; ++q) {
-      EulerEquations<dim>::numerical_normal_flux(fe_v.normal_vector(q), Wplus[q], Wminus[q], alpha, normal_fluxes[q]);
-      EulerEquations<dim>::numerical_normal_flux(fe_v.normal_vector(q), Wplus_old[q], Wminus_old[q], alpha, normal_fluxes_old[q]);
+      /*auto lambda = std::max(EulerEquations<dim>::compute_velocity(Wplus[q])  +
+                             EulerEquations<dim>::compute_speed_of_sound(Wplus[q]),
+                             EulerEquations<dim>::compute_velocity(Wminus[q]) +
+                             EulerEquations<dim>::compute_speed_of_sound(Wminus[q]));*/
+      auto lambda_old = std::max(EulerEquations<dim>::compute_velocity(Wplus_old[q])  +
+                                 EulerEquations<dim>::compute_speed_of_sound(Wplus_old[q]),
+                                 EulerEquations<dim>::compute_velocity(Wminus_old[q]) +
+                                 EulerEquations<dim>::compute_speed_of_sound(Wminus_old[q]));
+
+      EulerEquations<dim>::numerical_normal_flux(fe_v.normal_vector(q), Wplus[q], Wminus[q], lambda_old, normal_fluxes[q]);
+      EulerEquations<dim>::numerical_normal_flux(fe_v.normal_vector(q), Wplus_old[q], Wminus_old[q], lambda_old, normal_fluxes_old[q]);
     }
 
     // Now assemble the face term in exactly the same way as for the cell
@@ -1958,8 +1947,8 @@ namespace Step33 {
           if(parameters.time_integration_scheme == "Theta_Method") {
             R_i += (parameters.theta*normal_fluxes[point][component_i] +
                     (1.0 - parameters.theta)*normal_fluxes_old[point][component_i]) *
-                    fe_v.shape_value_component(i, point, component_i) *
-                    fe_v.JxW(point);
+                   fe_v.shape_value_component(i, point, component_i) *
+                   fe_v.JxW(point);
           }
           //--- TR_BDF2 assembling
           else {
@@ -1984,9 +1973,13 @@ namespace Step33 {
         system_matrix.add(dof_indices[i], dof_indices, residual_derivatives);
 
         if(external_face == false) {
-          for(unsigned int k = 0; k < dofs_per_cell; ++k)
+          residual_derivatives.resize(dofs_per_cell_neighbor);
+          for(unsigned int k = 0; k < dofs_per_cell_neighbor; ++k) {
             residual_derivatives[k] = R_i.fastAccessDx(dofs_per_cell + k);
-          system_matrix.add(dof_indices[i], dof_indices_neighbor, residual_derivatives);
+            auto tmp = system_matrix.el(dof_indices[i], dof_indices_neighbor[k]);
+            tmp += residual_derivatives[k];
+            system_matrix.set(dof_indices[i], dof_indices_neighbor[k], residual_derivatives[k]);
+          }
         }
 
         right_hand_side(dof_indices[i]) -= R_i.val();
@@ -2222,7 +2215,7 @@ namespace Step33 {
   // process, we output the initial solution.
   template<int dim>
   void ConservationLaw<dim>::run() {
-    {
+    if(parameters.testcase == 0) {
       GridIn<dim> grid_in;
       grid_in.attach_triangulation(triangulation);
 
@@ -2230,6 +2223,19 @@ namespace Step33 {
       Assert(input_file, ExcFileNotOpen(parameters.mesh_filename.c_str()));
 
       grid_in.read_ucd(input_file);
+    }
+    else {
+      Point<dim> lower_left;
+      for(unsigned int d = 1; d < dim; ++d)
+        lower_left[d] = -5;
+
+      Point<dim> upper_right;
+      upper_right[0] = 10;
+      for(unsigned int d = 1; d < dim; ++d)
+        upper_right[d] = 5;
+
+      GridGenerator::hyper_rectangle(triangulation, lower_left, upper_right);
+      triangulation.refine_global(5);
     }
 
     dof_handler.clear();
@@ -2243,9 +2249,16 @@ namespace Step33 {
 
     setup_system();
 
-    VectorTools::interpolate(dof_handler,
-                             parameters.initial_conditions,
-                             old_solution);
+    if(parameters.testcase == 0)
+      VectorTools::interpolate(dof_handler,
+                               parameters.initial_conditions,
+                               old_solution);
+    else {
+      parameters.exact_solution.set_time(0.0);
+      VectorTools::interpolate(dof_handler,
+                               parameters.exact_solution,
+                               old_solution);
+    }
     current_solution = old_solution;
     predictor        = old_solution;
 
@@ -2321,6 +2334,8 @@ namespace Step33 {
           system_matrix = 0;
 
           right_hand_side = 0;
+          if(parameters.testcase == 1)
+            parameters.exact_solution.set_time(time + parameters.time_step);
           assemble_system();
 
           const double res_norm = right_hand_side.l2_norm();
@@ -2341,8 +2356,9 @@ namespace Step33 {
           }
 
           ++nonlin_iter;
-          AssertThrow(nonlin_iter <= 10,
-                      ExcMessage("No convergence in nonlinear solver"));
+          if(nonlin_iter > 4)
+            AssertThrow(res_norm < 1.0 && nonlin_iter <= 150,
+                        ExcMessage("No convergence in nonlinear solver"));
         }
       }
       //--- TR_BDF2 Newton loops
@@ -2352,6 +2368,8 @@ namespace Step33 {
           system_matrix = 0;
 
           right_hand_side = 0;
+          if(parameters.testcase == 1)
+            parameters.exact_solution.set_time(time + 2.0*parameters.theta*parameters.time_step);
           assemble_system();
 
           const double res_norm = right_hand_side.l2_norm();
@@ -2374,8 +2392,9 @@ namespace Step33 {
           }
 
           ++nonlin_iter;
-          AssertThrow(nonlin_iter <= 10,
-                      ExcMessage("No convergence in nonlinear solver"));
+          if(nonlin_iter > 4)
+            AssertThrow(res_norm < 1.0 && nonlin_iter <= 150,
+                        ExcMessage("No convergence in nonlinear solver"));
         }
         intermediate_solution = current_solution; //--- Save the solution of the first step
                                                     //---(fundamental for 1.0/Delta_t residual contribution)
@@ -2386,6 +2405,8 @@ namespace Step33 {
           system_matrix = 0;
 
           right_hand_side = 0;
+          if(parameters.testcase == 1)
+            parameters.exact_solution.set_time(time + parameters.time_step);
           assemble_system();
 
           const double res_norm = right_hand_side.l2_norm();
@@ -2408,8 +2429,9 @@ namespace Step33 {
           }
 
           ++nonlin_iter;
-          AssertThrow(nonlin_iter <= 10,
-                      ExcMessage("No convergence in nonlinear solver"));
+          if(nonlin_iter > 4)
+            AssertThrow(res_norm < 1.0 && nonlin_iter <= 150,
+                        ExcMessage("No convergence in nonlinear solver"));
         }
         TR_BDF2_stage = 1; //--- Flag to specify that we have to pass at first stage in the next step
       }
