@@ -279,21 +279,26 @@ namespace Step33 {
     // 2d. This naturally leads to the following function:
     template<typename InputVector>
     static void compute_forcing_vector(const InputVector& W,
-                                       std::array<typename InputVector::value_type, n_components>& forcing) {
-      const double gravity = -1.0;
+                                       std::array<typename InputVector::value_type, n_components>& forcing,
+                                       const unsigned int testcase) {
+      if(testcase == 0) {
+        const double gravity = -1.0;
 
-      for(unsigned int c = 0; c < n_components; ++c) {
-        switch(c) {
-          case first_momentum_component + dim - 1:
-            forcing[c] = gravity*W[density_component];
-            break;
-          case energy_component:
-            forcing[c] = gravity*W[first_momentum_component + dim - 1];
-            break;
-          default:
-            forcing[c] = 0;
+        for(unsigned int c = 0; c < n_components; ++c) {
+          switch(c) {
+            case first_momentum_component + dim - 1:
+              forcing[c] = gravity*W[density_component];
+              break;
+            case energy_component:
+              forcing[c] = gravity*W[first_momentum_component + dim - 1];
+              break;
+            default:
+              forcing[c] = 0;
+          }
         }
       }
+      else
+        std::fill(forcing.begin(), forcing.end(), 0.0);
     }
 
 
@@ -1232,6 +1237,7 @@ namespace Step33 {
 
     void output_results() const;
 
+    void compute_errors() const;
 
 
     // The first few member variables are also rather standard. Note that we
@@ -1332,7 +1338,7 @@ namespace Step33 {
   template<int dim>
   void ConservationLaw<dim>::setup_system() {
     DynamicSparsityPattern dsp(dof_handler.n_dofs(), dof_handler.n_dofs());
-    DoFTools::make_sparsity_pattern(dof_handler, dsp);
+    DoFTools::make_flux_sparsity_pattern(dof_handler, dsp);
 
     system_matrix.reinit(dsp);
   }
@@ -1651,9 +1657,9 @@ namespace Step33 {
 
     for(unsigned int q = 0; q < n_q_points; ++q) {
       EulerEquations<dim>::compute_flux_matrix(W_old[q], flux_old[q]);
-      EulerEquations<dim>::compute_forcing_vector(W_old[q], forcing_old[q]);
+      EulerEquations<dim>::compute_forcing_vector(W_old[q], forcing_old[q], parameters.testcase);
       EulerEquations<dim>::compute_flux_matrix(W[q], flux[q]);
-      EulerEquations<dim>::compute_forcing_vector(W[q], forcing[q]);
+      EulerEquations<dim>::compute_forcing_vector(W[q], forcing[q], parameters.testcase);
     }
 
 
@@ -1743,7 +1749,7 @@ namespace Step33 {
             R_i -= (parameters.theta * forcing[point][component_i] +
                     parameters.theta * forcing_old[point][component_i]) *
                    fe_v.shape_value_component(i, point, component_i) *
-                  fe_v.JxW(point);
+                   fe_v.JxW(point);
           }
           //--- Second stage of TR_BDF2
           else if(TR_BDF2_stage == 2) {
@@ -1974,12 +1980,9 @@ namespace Step33 {
 
         if(external_face == false) {
           residual_derivatives.resize(dofs_per_cell_neighbor);
-          for(unsigned int k = 0; k < dofs_per_cell_neighbor; ++k) {
+          for(unsigned int k = 0; k < dofs_per_cell_neighbor; ++k)
             residual_derivatives[k] = R_i.fastAccessDx(dofs_per_cell + k);
-            auto tmp = system_matrix.el(dof_indices[i], dof_indices_neighbor[k]);
-            tmp += residual_derivatives[k];
-            system_matrix.set(dof_indices[i], dof_indices_neighbor[k], residual_derivatives[k]);
-          }
+          system_matrix.add(dof_indices[i], dof_indices_neighbor, residual_derivatives);
         }
 
         right_hand_side(dof_indices[i]) -= R_i.val();
@@ -2201,6 +2204,66 @@ namespace Step33 {
   }
 
 
+  template<int dim>
+  void ConservationLaw<dim>::compute_errors() const {
+    Vector<double> cellwise_errors(triangulation.n_active_cells());
+    VectorTools::integrate_difference(mapping,
+                                      dof_handler,
+                                      current_solution,
+                                      parameters.exact_solution,
+                                      cellwise_errors,
+                                      quadrature,
+                                      VectorTools::L2_norm);
+    const double error = VectorTools::compute_global_error(triangulation,
+                                                           cellwise_errors,
+                                                           VectorTools::L2_norm);
+    std::cout<<"L2 error: "<<error<<std::endl;
+    const ComponentSelectFunction<dim> density_mask(EulerEquations<dim>::density_component,
+                                                    EulerEquations<dim>::density_component + 1);
+    VectorTools::integrate_difference(mapping,
+                                      dof_handler,
+                                      current_solution,
+                                      parameters.exact_solution,
+                                      cellwise_errors,
+                                      quadrature,
+                                      VectorTools::L2_norm,
+                                      &density_mask);
+    const double density_error = VectorTools::compute_global_error(triangulation,
+                                                                   cellwise_errors,
+                                                                   VectorTools::L2_norm);
+    std::cout<<"L2 density error: "<<density_error<<std::endl;
+    const ComponentSelectFunction<dim> velocity_mask(std::make_pair(EulerEquations<dim>::first_momentum_component,
+                                                                    EulerEquations<dim>::first_momentum_component + dim),
+                                                     EulerEquations<dim>::first_momentum_component + dim + 1);
+    VectorTools::integrate_difference(mapping,
+                                      dof_handler,
+                                      current_solution,
+                                      parameters.exact_solution,
+                                      cellwise_errors,
+                                      quadrature,
+                                      VectorTools::L2_norm,
+                                      &velocity_mask);
+    const double velocity_error = VectorTools::compute_global_error(triangulation,
+                                                                    cellwise_errors,
+                                                                    VectorTools::L2_norm);
+    std::cout<<"L2 velocity error: "<<velocity_error<<std::endl;
+    const ComponentSelectFunction<dim> energy_mask(EulerEquations<dim>::energy_component,
+                                                   EulerEquations<dim>::energy_component + 1);
+    VectorTools::integrate_difference(mapping,
+                                      dof_handler,
+                                      current_solution,
+                                      parameters.exact_solution,
+                                      cellwise_errors,
+                                      quadrature,
+                                      VectorTools::L2_norm,
+                                      &energy_mask);
+    const double energy_error = VectorTools::compute_global_error(triangulation,
+                                                                  cellwise_errors,
+                                                                  VectorTools::L2_norm);
+    std::cout<<"L2 energy error: "<<energy_error<<std::endl;
+  }
+
+
 
   // @sect4{ConservationLaw::run}
 
@@ -2262,7 +2325,7 @@ namespace Step33 {
     current_solution = old_solution;
     predictor        = old_solution;
 
-    if(parameters.do_refine == true) {
+    if(parameters.do_refine == true && parameters.testcase == 0) {
       for(unsigned int i = 0; i < parameters.shock_levels; ++i) {
         Vector<double> refinement_indicators(triangulation.n_active_cells());
 
@@ -2356,7 +2419,7 @@ namespace Step33 {
           }
 
           ++nonlin_iter;
-          if(nonlin_iter > 4)
+          if(nonlin_iter > 10)
             AssertThrow(res_norm < 1.0 && nonlin_iter <= 150,
                         ExcMessage("No convergence in nonlinear solver"));
         }
@@ -2392,7 +2455,7 @@ namespace Step33 {
           }
 
           ++nonlin_iter;
-          if(nonlin_iter > 4)
+          if(nonlin_iter > 10)
             AssertThrow(res_norm < 1.0 && nonlin_iter <= 150,
                         ExcMessage("No convergence in nonlinear solver"));
         }
@@ -2429,7 +2492,7 @@ namespace Step33 {
           }
 
           ++nonlin_iter;
-          if(nonlin_iter > 4)
+          if(nonlin_iter > 10)
             AssertThrow(res_norm < 1.0 && nonlin_iter <= 150,
                         ExcMessage("No convergence in nonlinear solver"));
         }
@@ -2452,6 +2515,9 @@ namespace Step33 {
       // old_solution.  This simple time extrapolator does the job. With
       // this, we then refine the mesh if so desired by the user, and
       // finally continue on with the next time step:
+      if(parameters.testcase == 1)
+        compute_errors();
+
       time += parameters.time_step;
 
       if(parameters.output_step < 0)
@@ -2466,7 +2532,7 @@ namespace Step33 {
 
       old_solution = current_solution;
 
-      if(parameters.do_refine == true) {
+      if(parameters.do_refine == true && parameters.testcase == 0) {
         Vector<double> refinement_indicators(triangulation.n_active_cells());
         compute_refinement_indicators(refinement_indicators);
 
@@ -2484,50 +2550,44 @@ namespace Step33 {
 // The following ``main'' function is similar to previous examples and need
 // not to be commented on. Note that the program aborts if no input file name
 // is given on the command line.
-int main(int argc, char *argv[])
-{
-  try
-    {
-      using namespace dealii;
-      using namespace Step33;
+int main(int argc, char *argv[]) {
+  try {
+    using namespace dealii;
+    using namespace Step33;
 
-      if (argc != 2)
-        {
-          std::cout << "Usage:" << argv[0] << " input_file" << std::endl;
-          std::exit(1);
-        }
-
-      Utilities::MPI::MPI_InitFinalize mpi_initialization(
-        argc, argv, dealii::numbers::invalid_unsigned_int);
-
-      ConservationLaw<2> cons(argv[1]);
-      cons.run();
+    if(argc != 2) {
+      std::cout << "Usage:" << argv[0] << " input_file" << std::endl;
+      std::exit(1);
     }
-  catch (std::exception &exc)
-    {
-      std::cerr << std::endl
-                << std::endl
-                << "----------------------------------------------------"
-                << std::endl;
-      std::cerr << "Exception on processing: " << std::endl
-                << exc.what() << std::endl
-                << "Aborting!" << std::endl
-                << "----------------------------------------------------"
-                << std::endl;
-      return 1;
-    }
-  catch (...)
-    {
-      std::cerr << std::endl
-                << std::endl
-                << "----------------------------------------------------"
-                << std::endl;
-      std::cerr << "Unknown exception!" << std::endl
-                << "Aborting!" << std::endl
-                << "----------------------------------------------------"
-                << std::endl;
-      return 1;
-    };
+
+    Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, dealii::numbers::invalid_unsigned_int);
+
+    ConservationLaw<2> cons(argv[1]);
+    cons.run();
+  }
+  catch (std::exception &exc) {
+    std::cerr << std::endl
+              << std::endl
+              << "----------------------------------------------------"
+              << std::endl;
+    std::cerr << "Exception on processing: " << std::endl
+              << exc.what() << std::endl
+              << "Aborting!" << std::endl
+              << "----------------------------------------------------"
+              << std::endl;
+    return 1;
+  }
+  catch (...)  {
+    std::cerr << std::endl
+              << std::endl
+              << "----------------------------------------------------"
+              << std::endl;
+    std::cerr << "Unknown exception!" << std::endl
+              << "Aborting!" << std::endl
+              << "----------------------------------------------------"
+              << std::endl;
+    return 1;
+  };
 
   return 0;
 }
