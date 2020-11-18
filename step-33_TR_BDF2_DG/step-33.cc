@@ -354,10 +354,10 @@ namespace Step33 {
     // go with the pragmatic, even if not pretty, solution shown here:
     template<typename DataVector>
     static void compute_Wminus(const std::array<BoundaryKind, n_components>& boundary_kind,
-                              const Tensor<1, dim>& normal_vector,
-                              const DataVector&     Wplus,
-                              const Vector<double>& boundary_values,
-                              const DataVector&     Wminus) {
+                               const Tensor<1, dim>& normal_vector,
+                               const DataVector&     Wplus,
+                               const Vector<double>& boundary_values,
+                               const DataVector&     Wminus) {
       for(unsigned int c = 0; c < n_components; c++) {
         switch(boundary_kind[c]) {
           case inflow_boundary:
@@ -451,7 +451,7 @@ namespace Step33 {
 
       std::vector<std::vector<Tensor<1, dim>>> dU(1, std::vector<Tensor<1, dim>>(n_components));
 
-      for(const auto& cell : dof_handler.active_cell_iterators()) {
+      for(const auto& cell: dof_handler.active_cell_iterators()) {
         const unsigned int cell_no = cell->active_cell_index();
         fe_v.reinit(cell);
         fe_v.get_function_gradients(solution, dU);
@@ -940,7 +940,7 @@ namespace Step33 {
       };
 
 
-      // Auxiliary class in case exact solution is available
+      //--- Auxiliary class in case exact solution is available
       struct ExactSolution : public Function<dim> {
         ExactSolution(const double time): Function<dim>(dim + 2, time) {}
 
@@ -1129,8 +1129,9 @@ namespace Step33 {
 
     template<int dim>
     void AllParameters<dim>::parse_parameters(ParameterHandler& prm) {
-      mesh_filename   = prm.get("mesh");
-      testcase        = prm.get_integer("testcase");
+      testcase = prm.get_integer("testcase");
+      if(testcase == 0)
+        mesh_filename = prm.get("mesh");
 
       prm.enter_subsection("time stepping");
       {
@@ -1151,48 +1152,54 @@ namespace Step33 {
       }
       prm.leave_subsection();
 
-      for(unsigned int boundary_id = 0; boundary_id < max_n_boundaries; ++boundary_id) {
-        prm.enter_subsection("boundary_" + Utilities::int_to_string(boundary_id));
+      if(testcase == 0) {
+        for(unsigned int boundary_id = 0; boundary_id < max_n_boundaries; ++boundary_id) {
+          prm.enter_subsection("boundary_" + Utilities::int_to_string(boundary_id));
+          {
+            std::vector<std::string> expressions(EulerEquations<dim>::n_components, "0.0");
+
+            const bool no_penetration = prm.get_bool("no penetration");
+
+            for(unsigned int di = 0; di < EulerEquations<dim>::n_components; ++di) {
+              const std::string boundary_type = prm.get("w_" + Utilities::int_to_string(di));
+
+              if((di < dim) && (no_penetration == true))
+                boundary_conditions[boundary_id].kind[di] = EulerEquations<dim>::no_penetration_boundary;
+              else if(boundary_type == "inflow")
+                boundary_conditions[boundary_id].kind[di] = EulerEquations<dim>::inflow_boundary;
+              else if(boundary_type == "pressure")
+                boundary_conditions[boundary_id].kind[di] = EulerEquations<dim>::pressure_boundary;
+              else if(boundary_type == "outflow")
+                boundary_conditions[boundary_id].kind[di] = EulerEquations<dim>::outflow_boundary;
+              else
+                AssertThrow(false, ExcNotImplemented());
+
+              expressions[di] = prm.get("w_" + Utilities::int_to_string(di) + " value");
+            }
+
+            boundary_conditions[boundary_id].values.initialize(FunctionParser<dim>::default_variable_names(),
+                                                              expressions, std::map<std::string, double>());
+          }
+          prm.leave_subsection();
+        }
+
+        prm.enter_subsection("initial condition");
         {
           std::vector<std::string> expressions(EulerEquations<dim>::n_components, "0.0");
-
-          const bool no_penetration = prm.get_bool("no penetration");
-
-          for(unsigned int di = 0; di < EulerEquations<dim>::n_components; ++di) {
-            const std::string boundary_type = prm.get("w_" + Utilities::int_to_string(di));
-
-            if((di < dim) && (no_penetration == true))
-              boundary_conditions[boundary_id].kind[di] = EulerEquations<dim>::no_penetration_boundary;
-            else if(boundary_type == "inflow")
-              boundary_conditions[boundary_id].kind[di] = EulerEquations<dim>::inflow_boundary;
-            else if(boundary_type == "pressure")
-              boundary_conditions[boundary_id].kind[di] = EulerEquations<dim>::pressure_boundary;
-            else if(boundary_type == "outflow")
-              boundary_conditions[boundary_id].kind[di] = EulerEquations<dim>::outflow_boundary;
-            else
-              AssertThrow(false, ExcNotImplemented());
-
+          for(unsigned int di = 0; di < EulerEquations<dim>::n_components; di++)
             expressions[di] = prm.get("w_" + Utilities::int_to_string(di) + " value");
-          }
-
-          boundary_conditions[boundary_id].values.initialize(FunctionParser<dim>::default_variable_names(),
-                                                             expressions, std::map<std::string, double>());
+          initial_conditions.initialize(FunctionParser<dim>::default_variable_names(),
+                                        expressions, std::map<std::string, double>());
         }
         prm.leave_subsection();
       }
-
-      prm.enter_subsection("initial condition");
-      {
-        std::vector<std::string> expressions(EulerEquations<dim>::n_components, "0.0");
-        for(unsigned int di = 0; di < EulerEquations<dim>::n_components; di++)
-          expressions[di] = prm.get("w_" + Utilities::int_to_string(di) + " value");
-        initial_conditions.initialize(FunctionParser<dim>::default_variable_names(),
-                                      expressions, std::map<std::string, double>());
-      }
-      prm.leave_subsection();
+      else
+        std::fill(boundary_conditions[0].kind.begin(), boundary_conditions[0].kind.end(),
+                  EulerEquations<dim>::inflow_boundary);
 
       Parameters::Solver::parse_parameters(prm);
-      Parameters::Refinement::parse_parameters(prm);
+      if(testcase == 0)
+        Parameters::Refinement::parse_parameters(prm);
       Parameters::Output::parse_parameters(prm);
     }
   } // namespace Parameters
@@ -1217,6 +1224,9 @@ namespace Step33 {
     void run();
 
   private:
+    //--- Function to build the grid and distribute dofs
+    void make_grid_and_dofs();
+
     void setup_system();
 
     void assemble_system();
@@ -1235,10 +1245,9 @@ namespace Step33 {
     void compute_refinement_indicators(Vector<double>& indicator) const;
     void refine_grid(const Vector<double>& indicator);
 
-    void output_results() const;
-
     void compute_errors() const;
 
+    void output_results() const;
 
     // The first few member variables are also rather standard. Note that we
     // define a mapping object to be used throughout the program when
@@ -1301,7 +1310,7 @@ namespace Step33 {
   // There is nothing much to say about the constructor. Essentially, it reads
   // the input file and fills the parameter object with the parsed values:
   template<int dim>
-  ConservationLaw<dim>::ConservationLaw(const char *input_filename):
+  ConservationLaw<dim>::ConservationLaw(const char* input_filename):
       mapping(),
       fe(FE_DGQ<dim>(1), EulerEquations<dim>::n_components),
       dof_handler(triangulation),
@@ -1327,6 +1336,45 @@ namespace Step33 {
     }
   }
 
+  // @sect4{ConservationLaw::make_grid_and_dofs}
+  //
+  // The following (easy) function is called at the beginnig and sets grid and
+  // dofs according to the testcase. Finally it initializes the various vectors for
+  // solution, predictor and rhs.
+  template<int dim>
+  void ConservationLaw<dim>::make_grid_and_dofs() {
+    if(parameters.testcase == 0) {
+      GridIn<dim> grid_in;
+      grid_in.attach_triangulation(triangulation);
+
+      std::ifstream input_file(parameters.mesh_filename);
+      Assert(input_file, ExcFileNotOpen(parameters.mesh_filename.c_str()));
+
+      grid_in.read_ucd(input_file);
+    }
+    else {
+      Point<dim> lower_left;
+      for(unsigned int d = 1; d < dim; ++d)
+        lower_left[d] = -5;
+
+      Point<dim> upper_right;
+      upper_right[0] = 10;
+      for(unsigned int d = 1; d < dim; ++d)
+        upper_right[d] = 5;
+
+      GridGenerator::hyper_rectangle(triangulation, lower_left, upper_right);
+      triangulation.refine_global(5);
+    }
+
+    dof_handler.clear();
+    dof_handler.distribute_dofs(fe);
+
+    // Size all of the fields.
+    old_solution.reinit(dof_handler.n_dofs());
+    current_solution.reinit(dof_handler.n_dofs());
+    predictor.reinit(dof_handler.n_dofs());
+    right_hand_side.reinit(dof_handler.n_dofs());
+  }
 
 
   // @sect4{ConservationLaw::setup_system}
@@ -1803,16 +1851,13 @@ namespace Step33 {
                                                 const bool                                  external_face,
                                                 const unsigned int                          boundary_id) {
     const unsigned int n_q_points             = fe_v.n_quadrature_points;
-    const unsigned int n_q_points_neighbor    = fe_v_neighbor.n_quadrature_points;
     const unsigned int dofs_per_cell          = fe_v.dofs_per_cell;
-    const unsigned int dofs_per_cell_neighbor = fe_v_neighbor.dofs_per_cell;
 
     std::vector<Sacado::Fad::DFad<double>> independent_local_dof_values(dofs_per_cell),
                                            independent_neighbor_dof_values(external_face == false ?
-                                                                           dofs_per_cell_neighbor : 0);
+                                                                           dofs_per_cell : 0);
 
-    const unsigned int n_independent_variables = (external_face == false ?
-                                                  dofs_per_cell + dofs_per_cell_neighbor : dofs_per_cell);
+    const unsigned int n_independent_variables = (external_face == false ? dofs_per_cell + dofs_per_cell : dofs_per_cell);
 
     for(unsigned int i = 0; i < dofs_per_cell; i++) {
       independent_local_dof_values[i] = current_solution(dof_indices[i]);
@@ -1820,7 +1865,7 @@ namespace Step33 {
     }
 
     if(external_face == false) {
-      for(unsigned int i = 0; i < dofs_per_cell_neighbor; i++) {
+      for(unsigned int i = 0; i < dofs_per_cell; i++) {
         independent_neighbor_dof_values[i] = current_solution(dof_indices_neighbor[i]);
         independent_neighbor_dof_values[i].diff(i + dofs_per_cell, n_independent_variables);
       }
@@ -1854,8 +1899,8 @@ namespace Step33 {
     // an internal face, we can compute it as above by simply using the
     // independent variables from the neighbor:
     if(external_face == false) {
-      for(unsigned int q = 0; q < n_q_points_neighbor; ++q) {
-        for(unsigned int i = 0; i < dofs_per_cell_neighbor; ++i) {
+      for(unsigned int q = 0; q < n_q_points; ++q) {
+        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
           const unsigned int component_i = fe_v_neighbor.get_fe().system_to_component_index(i).first;
           Wminus[q][component_i] += independent_neighbor_dof_values[i] *
                                     fe_v_neighbor.shape_value_component(i, q, component_i);
@@ -1891,24 +1936,12 @@ namespace Step33 {
         parameters.exact_solution.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
 
       for(unsigned int q = 0; q < n_q_points; q++) {
-        if(parameters.testcase == 0) {
-          EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
-                                              fe_v.normal_vector(q), Wplus[q], boundary_values[q], Wminus[q]);
-          // Here we assume that boundary type, boundary normal vector and
-          // boundary data values maintain the same during time advancing.
-          EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
-                                              fe_v.normal_vector(q), Wplus_old[q], boundary_values[q], Wminus_old[q]);
-        }
-        else {
-          std::array<typename EulerEquations<dim>::BoundaryKind, EulerEquations<dim>::n_components> kind;
-          std::fill(kind.begin(), kind.end(), EulerEquations<dim>::inflow_boundary);
-          EulerEquations<dim>::compute_Wminus(kind,
-                                              fe_v.normal_vector(q), Wplus[q], boundary_values[q], Wminus[q]);
-          // Here we assume that boundary type, boundary normal vector and
-          // boundary data values maintain the same during time advancing.
-          EulerEquations<dim>::compute_Wminus(kind,
-                                              fe_v.normal_vector(q), Wplus_old[q], boundary_values[q], Wminus_old[q]);
-        }
+        EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
+                                            fe_v.normal_vector(q), Wplus[q], boundary_values[q], Wminus[q]);
+        // Here we assume that boundary type, boundary normal vector and
+        // boundary data values maintain the same during time advancing.
+        EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
+                                            fe_v.normal_vector(q), Wplus_old[q], boundary_values[q], Wminus_old[q]);
       }
     }
 
@@ -1979,8 +2012,7 @@ namespace Step33 {
         system_matrix.add(dof_indices[i], dof_indices, residual_derivatives);
 
         if(external_face == false) {
-          residual_derivatives.resize(dofs_per_cell_neighbor);
-          for(unsigned int k = 0; k < dofs_per_cell_neighbor; ++k)
+          for(unsigned int k = 0; k < dofs_per_cell; ++k)
             residual_derivatives[k] = R_i.fastAccessDx(dofs_per_cell + k);
           system_matrix.add(dof_indices[i], dof_indices_neighbor, residual_derivatives);
         }
@@ -2109,7 +2141,7 @@ namespace Step33 {
   // think should be refined:
   template<int dim>
   void ConservationLaw<dim>::refine_grid(const Vector<double> &refinement_indicators) {
-    for(const auto &cell : dof_handler.active_cell_iterators()) {
+    for(const auto& cell: dof_handler.active_cell_iterators()) {
       const unsigned int cell_no = cell->active_cell_index();
       cell->clear_coarsen_flag();
       cell->clear_refine_flag();
@@ -2117,7 +2149,7 @@ namespace Step33 {
       if(cell->level() < parameters.shock_levels &&
          std::fabs(refinement_indicators(cell_no)) > parameters.shock_val)
         cell->set_refine_flag();
-      else if (cell->level() > 0 && std::fabs(refinement_indicators(cell_no)) < 0.75*parameters.shock_val)
+      else if(cell->level() > 0 && std::fabs(refinement_indicators(cell_no)) < 0.75*parameters.shock_val)
         cell->set_coarsen_flag();
     }
 
@@ -2167,43 +2199,10 @@ namespace Step33 {
   }
 
 
-  // @sect4{ConservationLaw::output_results}
+  // @sect4{ConservationLaw::compute_errors}
 
-  // This function now is rather straightforward. All the magic, including
-  // transforming data from conservative variables to physical ones has been
-  // abstracted and moved into the EulerEquations class so that it can be
-  // replaced in case we want to solve some other hyperbolic conservation law.
-  //
-  // Note that the number of the output file is determined by keeping a
-  // counter in the form of a static variable that is set to zero the first
-  // time we come to this function and is incremented by one at the end of
-  // each invocation.
-  template<int dim>
-  void ConservationLaw<dim>::output_results() const {
-    typename EulerEquations<dim>::Postprocessor postprocessor(parameters.schlieren_plot);
-
-    DataOut<dim> data_out;
-    data_out.attach_dof_handler(dof_handler);
-
-    data_out.add_data_vector(current_solution,
-                             EulerEquations<dim>::component_names(),
-                             DataOut<dim>::type_dof_data,
-                             EulerEquations<dim>::component_interpretation());
-
-    data_out.add_data_vector(current_solution, postprocessor);
-
-    data_out.build_patches();
-
-    static unsigned int output_file_number = 0;
-    std::string         filename =
-      "./" + parameters.dir + "/solution-" + Utilities::int_to_string(output_file_number, 3) + ".vtk";
-    std::ofstream output(filename);
-    data_out.write_vtk(output);
-
-    ++output_file_number;
-  }
-
-
+  // This function now is rather standard in computing errors. We use masks to extract
+  // errors for single components.
   template<int dim>
   void ConservationLaw<dim>::compute_errors() const {
     Vector<double> cellwise_errors(triangulation.n_active_cells());
@@ -2264,6 +2263,42 @@ namespace Step33 {
   }
 
 
+  // @sect4{ConservationLaw::output_results}
+
+  // This function now is rather straightforward. All the magic, including
+  // transforming data from conservative variables to physical ones has been
+  // abstracted and moved into the EulerEquations class so that it can be
+  // replaced in case we want to solve some other hyperbolic conservation law.
+  //
+  // Note that the number of the output file is determined by keeping a
+  // counter in the form of a static variable that is set to zero the first
+  // time we come to this function and is incremented by one at the end of
+  // each invocation.
+  template<int dim>
+  void ConservationLaw<dim>::output_results() const {
+    typename EulerEquations<dim>::Postprocessor postprocessor(parameters.schlieren_plot);
+
+    DataOut<dim> data_out;
+    data_out.attach_dof_handler(dof_handler);
+
+    data_out.add_data_vector(current_solution,
+                             EulerEquations<dim>::component_names(),
+                             DataOut<dim>::type_dof_data,
+                             EulerEquations<dim>::component_interpretation());
+
+    data_out.add_data_vector(current_solution, postprocessor);
+
+    data_out.build_patches();
+
+    static unsigned int output_file_number = 0;
+    std::string         filename =
+      "./" + parameters.dir + "/solution-" + Utilities::int_to_string(output_file_number, 3) + ".vtk";
+    std::ofstream output(filename);
+    data_out.write_vtk(output);
+
+    ++output_file_number;
+  }
+
 
   // @sect4{ConservationLaw::run}
 
@@ -2278,37 +2313,7 @@ namespace Step33 {
   // process, we output the initial solution.
   template<int dim>
   void ConservationLaw<dim>::run() {
-    if(parameters.testcase == 0) {
-      GridIn<dim> grid_in;
-      grid_in.attach_triangulation(triangulation);
-
-      std::ifstream input_file(parameters.mesh_filename);
-      Assert(input_file, ExcFileNotOpen(parameters.mesh_filename.c_str()));
-
-      grid_in.read_ucd(input_file);
-    }
-    else {
-      Point<dim> lower_left;
-      for(unsigned int d = 1; d < dim; ++d)
-        lower_left[d] = -5;
-
-      Point<dim> upper_right;
-      upper_right[0] = 10;
-      for(unsigned int d = 1; d < dim; ++d)
-        upper_right[d] = 5;
-
-      GridGenerator::hyper_rectangle(triangulation, lower_left, upper_right);
-      triangulation.refine_global(5);
-    }
-
-    dof_handler.clear();
-    dof_handler.distribute_dofs(fe);
-
-    // Size all of the fields.
-    old_solution.reinit(dof_handler.n_dofs());
-    current_solution.reinit(dof_handler.n_dofs());
-    predictor.reinit(dof_handler.n_dofs());
-    right_hand_side.reinit(dof_handler.n_dofs());
+    make_grid_and_dofs();
 
     setup_system();
 
@@ -2390,7 +2395,7 @@ namespace Step33 {
       // to find out where an error occurred.
       unsigned int nonlin_iter = 0;
       unsigned int totlin_iter = 0;
-      current_solution         = predictor;
+      //current_solution         = predictor;
       //--- Restyling for TR_BDF2
       if(parameters.time_integration_scheme == "Theta_Method") {
         while(true) {
@@ -2419,8 +2424,7 @@ namespace Step33 {
           }
 
           ++nonlin_iter;
-          if(nonlin_iter > 10)
-            AssertThrow(res_norm < 1.0 && nonlin_iter <= 150,
+          AssertThrow((res_norm < 1.0 || nonlin_iter < 20) && nonlin_iter <= 100,
                         ExcMessage("No convergence in nonlinear solver"));
         }
       }
@@ -2455,12 +2459,11 @@ namespace Step33 {
           }
 
           ++nonlin_iter;
-          if(nonlin_iter > 10)
-            AssertThrow(res_norm < 1.0 && nonlin_iter <= 150,
+          AssertThrow((res_norm < 1.0 || nonlin_iter < 20) && nonlin_iter <= 100,
                         ExcMessage("No convergence in nonlinear solver"));
         }
         intermediate_solution = current_solution; //--- Save the solution of the first step
-                                                    //---(fundamental for 1.0/Delta_t residual contribution)
+                                                  //---(fundamental for 1.0/Delta_t residual contribution)
         nonlin_iter = 0; //--- Reset iterations of Newton
         TR_BDF2_stage = 2; //--- Flag to specify that we have to pass at second stage
         //--- TR_BDF2 second stage Newton loop
@@ -2492,9 +2495,8 @@ namespace Step33 {
           }
 
           ++nonlin_iter;
-          if(nonlin_iter > 10)
-            AssertThrow(res_norm < 1.0 && nonlin_iter <= 150,
-                        ExcMessage("No convergence in nonlinear solver"));
+          AssertThrow((res_norm < 1.0 || nonlin_iter < 20) && nonlin_iter <= 100,
+                       ExcMessage("No convergence in nonlinear solver"));
         }
         TR_BDF2_stage = 1; //--- Flag to specify that we have to pass at first stage in the next step
       }
