@@ -72,6 +72,7 @@
 
 // And this again is C++:
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <vector>
 #include <memory>
@@ -961,6 +962,7 @@ namespace Step33 {
       std::string time_integration_scheme; //---Extra variable to specify the time integration scheme
       std::string dir;
       std::string mesh_filename;
+      unsigned int fe_degree; //---Extra variable to specify the degree of finite element space
       unsigned int testcase; //---Extra variable to specify the testcase
 
       FunctionParser<dim> initial_conditions;
@@ -1057,14 +1059,18 @@ namespace Step33 {
 
     template<int dim>
     void AllParameters<dim>::declare_parameters(ParameterHandler& prm) {
-      prm.declare_entry("mesh", "grid.inp",
-                        Patterns::Anything(),
-                        "intput file name");
-
       prm.declare_entry("testcase", "0",
                         Patterns::Integer(0,1),
                         "specification of testcase between "
                         "step-33 (default) and step-67");
+
+      prm.declare_entry("mesh", "grid.inp",
+                         Patterns::Anything(),
+                        "intput file name");
+
+      prm.declare_entry("degree", "1",
+                         Patterns::Integer(0,5),
+                         "Finite element degree");
 
       prm.enter_subsection("time stepping");
       {
@@ -1129,7 +1135,7 @@ namespace Step33 {
 
     template<int dim>
     void AllParameters<dim>::parse_parameters(ParameterHandler& prm) {
-      testcase = prm.get_integer("testcase");
+      testcase  = prm.get_integer("testcase");
       if(testcase == 0)
         mesh_filename = prm.get("mesh");
 
@@ -1198,8 +1204,9 @@ namespace Step33 {
                   EulerEquations<dim>::inflow_boundary);
 
       Parameters::Solver::parse_parameters(prm);
-      if(testcase == 0)
-        Parameters::Refinement::parse_parameters(prm);
+      Parameters::Refinement::parse_parameters(prm);
+      if(testcase == 1 && do_refine == true)
+        AssertThrow(false, ExcNotImplemented());
       Parameters::Output::parse_parameters(prm);
     }
   } // namespace Parameters
@@ -1220,7 +1227,7 @@ namespace Step33 {
   template<int dim>
   class ConservationLaw {
   public:
-    ConservationLaw(const char* input_filename);
+    ConservationLaw(ParameterHandler& prm, const unsigned int fe_degree = 1);
     void run();
 
   private:
@@ -1245,9 +1252,12 @@ namespace Step33 {
     void compute_refinement_indicators(Vector<double>& indicator) const;
     void refine_grid(const Vector<double>& indicator);
 
-    void compute_errors() const;
+    void compute_errors(std::ofstream& output_errors) const;
 
     void output_results() const;
+
+    //--- Auxiliary function to compute spped for time step
+    double compute_maximum_cell_transport_speed() const;
 
     // The first few member variables are also rather standard. Note that we
     // define a mapping object to be used throughout the program when
@@ -1262,11 +1272,11 @@ namespace Step33 {
     Triangulation<dim>   triangulation;
     const MappingQ1<dim> mapping;
 
-    const FESystem<dim> fe;
+    FESystem<dim> fe;
     DoFHandler<dim>     dof_handler;
 
-    const QGauss<dim>     quadrature;
-    const QGauss<dim - 1> face_quadrature;
+    QGauss<dim>     quadrature;
+    QGauss<dim - 1> face_quadrature;
 
     // Next come a number of data vectors that correspond to the solution of
     // the previous time step (<code>old_solution</code>), the best guess of
@@ -1310,20 +1320,16 @@ namespace Step33 {
   // There is nothing much to say about the constructor. Essentially, it reads
   // the input file and fills the parameter object with the parsed values:
   template<int dim>
-  ConservationLaw<dim>::ConservationLaw(const char* input_filename):
+  ConservationLaw<dim>::ConservationLaw(ParameterHandler& prm, const unsigned int fe_degree):
       mapping(),
-      fe(FE_DGQ<dim>(1), EulerEquations<dim>::n_components),
+      fe(FE_DGQ<dim>(fe_degree), EulerEquations<dim>::n_components),
       dof_handler(triangulation),
       quadrature(fe.degree + 1),
       face_quadrature(fe.degree + 1),
       verbose_cout(std::cout, false) {
-    ParameterHandler prm;
-    Parameters::AllParameters<dim>::declare_parameters(prm);
-
-    prm.parse_input(input_filename);
     parameters.parse_parameters(prm);
 
-    output_niter = std::ofstream("./" + parameters.dir + "/linear_number_iterations.dat", std::ofstream::out);
+    output_niter  = std::ofstream("./" + parameters.dir + "/linear_number_iterations.dat", std::ofstream::out);
 
     verbose_cout.set_condition(parameters.output == Parameters::Solver::verbose);
 
@@ -2204,7 +2210,7 @@ namespace Step33 {
   // This function now is rather standard in computing errors. We use masks to extract
   // errors for single components.
   template<int dim>
-  void ConservationLaw<dim>::compute_errors() const {
+  void ConservationLaw<dim>::compute_errors(std::ofstream& output_errors) const {
     Vector<double> cellwise_errors(triangulation.n_active_cells());
     VectorTools::integrate_difference(mapping,
                                       dof_handler,
@@ -2216,7 +2222,7 @@ namespace Step33 {
     const double error = VectorTools::compute_global_error(triangulation,
                                                            cellwise_errors,
                                                            VectorTools::L2_norm);
-    std::cout<<"L2 error: "<<error<<std::endl;
+    output_errors<<error<<std::endl;
     const ComponentSelectFunction<dim> density_mask(EulerEquations<dim>::density_component,
                                                     EulerEquations<dim>::density_component + 1);
     VectorTools::integrate_difference(mapping,
@@ -2230,7 +2236,7 @@ namespace Step33 {
     const double density_error = VectorTools::compute_global_error(triangulation,
                                                                    cellwise_errors,
                                                                    VectorTools::L2_norm);
-    std::cout<<"L2 density error: "<<density_error<<std::endl;
+    output_errors<<density_error<<std::endl;
     const ComponentSelectFunction<dim> velocity_mask(std::make_pair(EulerEquations<dim>::first_momentum_component,
                                                                     EulerEquations<dim>::first_momentum_component + dim),
                                                      EulerEquations<dim>::first_momentum_component + dim + 1);
@@ -2245,7 +2251,7 @@ namespace Step33 {
     const double velocity_error = VectorTools::compute_global_error(triangulation,
                                                                     cellwise_errors,
                                                                     VectorTools::L2_norm);
-    std::cout<<"L2 velocity error: "<<velocity_error<<std::endl;
+    output_errors<<velocity_error<<std::endl;
     const ComponentSelectFunction<dim> energy_mask(EulerEquations<dim>::energy_component,
                                                    EulerEquations<dim>::energy_component + 1);
     VectorTools::integrate_difference(mapping,
@@ -2259,7 +2265,7 @@ namespace Step33 {
     const double energy_error = VectorTools::compute_global_error(triangulation,
                                                                   cellwise_errors,
                                                                   VectorTools::L2_norm);
-    std::cout<<"L2 energy error: "<<energy_error<<std::endl;
+    output_errors<<energy_error<<std::endl;
   }
 
 
@@ -2300,6 +2306,40 @@ namespace Step33 {
   }
 
 
+  // @sect4{ConservationLaw::compute_maximum_cell_transport_speed}
+
+  // This function computes the maximum speed for time step computation
+
+  template<int dim>
+  double ConservationLaw<dim>::compute_maximum_cell_transport_speed() const {
+    const QIterated<dim> quadrature_formula(QTrapez<1>(), fe.degree + 1);
+    const unsigned int   n_q_points = quadrature_formula.size();
+
+    FEValues<dim>        fe_v(mapping, dof_handler.get_fe(),
+                              quadrature_formula, update_values);
+    const unsigned int dofs_per_cell = fe_v.dofs_per_cell;
+    std::vector<types::global_dof_index> dof_indices(dofs_per_cell);
+    Table<2, double> W(n_q_points, EulerEquations<dim>::n_components);
+    double res = 0.0;
+
+    for(const auto& cell: dof_handler.active_cell_iterators()) {
+      fe_v.reinit(cell);
+      cell->get_dof_indices(dof_indices);
+      for(unsigned int q = 0; q < n_q_points; ++q) {
+        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+          const unsigned int c = fe_v.get_fe().system_to_component_index(i).first;
+          W[q][c] += current_solution(dof_indices[i])*fe_v.shape_value_component(i, q, c);
+        }
+        const double tmp = EulerEquations<dim>::compute_velocity(W[q]) +
+                           EulerEquations<dim>::compute_speed_of_sound(W[q]);
+        res = std::max(res, tmp/cell->diameter());
+      }
+    }
+    return res;
+  }
+
+
+
   // @sect4{ConservationLaw::run}
 
   // This function contains the top-level logic of this program:
@@ -2330,7 +2370,7 @@ namespace Step33 {
     current_solution = old_solution;
     predictor        = old_solution;
 
-    if(parameters.do_refine == true && parameters.testcase == 0) {
+    if(parameters.do_refine == true) {
       for(unsigned int i = 0; i < parameters.shock_levels; ++i) {
         Vector<double> refinement_indicators(triangulation.n_active_cells());
 
@@ -2348,6 +2388,7 @@ namespace Step33 {
     }
 
     output_results();
+    std::ofstream output_errors("./" + parameters.dir + "/error_analysis.dat");
 
     // We then enter into the main time stepping loop. At the top we simply
     // output some status information so one can keep track of where a
@@ -2358,7 +2399,6 @@ namespace Step33 {
     double time        = 0;
     double next_output = time + parameters.output_step;
 
-    predictor = old_solution;
     while(time < parameters.final_time) {
       std::cout << "T=" << time << std::endl
                 << "   Number of active cells:       "
@@ -2518,7 +2558,7 @@ namespace Step33 {
       // this, we then refine the mesh if so desired by the user, and
       // finally continue on with the next time step:
       if(parameters.testcase == 1)
-        compute_errors();
+        compute_errors(output_errors);
 
       time += parameters.time_step;
 
@@ -2534,7 +2574,7 @@ namespace Step33 {
 
       old_solution = current_solution;
 
-      if(parameters.do_refine == true && parameters.testcase == 0) {
+      if(parameters.do_refine == true) {
         Vector<double> refinement_indicators(triangulation.n_active_cells());
         compute_refinement_indicators(refinement_indicators);
 
@@ -2562,9 +2602,14 @@ int main(int argc, char *argv[]) {
       std::exit(1);
     }
 
+    ParameterHandler prm;
+    Parameters::AllParameters<2>::declare_parameters(prm);
+    prm.parse_input(argv[1]);
+    const unsigned int fe_degree = prm.get_integer("degree");
+
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, dealii::numbers::invalid_unsigned_int);
 
-    ConservationLaw<2> cons(argv[1]);
+    ConservationLaw<2> cons(prm, fe_degree);
     cons.run();
   }
   catch (std::exception &exc) {
