@@ -54,6 +54,10 @@
 #include <deal.II/numerics/vector_tools.h>
 #include <deal.II/numerics/solution_transfer.h>
 
+#include <deal.II/base/mpi.h>
+#include <deal.II/distributed/shared_tria.h>
+#include <deal.II/distributed/solution_transfer.h>
+
 // Then, as mentioned in the introduction, we use various Trilinos packages as
 // linear solvers as well as for automatic differentiation. These are in the
 // following include files.
@@ -72,17 +76,23 @@
 
 // And this again is C++:
 #include <iostream>
-#include <iomanip>
 #include <fstream>
 #include <vector>
 #include <memory>
 #include <array>
 
+#include <deal.II/base/timer.h>
+#include <deal.II/lac/generic_linear_algebra.h>
+#include <deal.II/base/parsed_convergence_table.h>
+
 // To end this section, introduce everything in the dealii library into the
 // namespace into which the contents of this program will go:
 namespace Step33 {
   using namespace dealii;
-
+  namespace LA {
+     //using namespace dealii::LinearAlgebraPETSc;
+     using namespace dealii::LinearAlgebraTrilinos;
+  }
 
   // @sect3{Euler equation specifics}
 
@@ -440,7 +450,7 @@ namespace Step33 {
     static void
     compute_refinement_indicators(const DoFHandler<dim>& dof_handler,
                                   const Mapping<dim>&    mapping,
-                                  const Vector<double>&  solution,
+                                  const LA::MPI::Vector& solution,
                                   Vector<double>&        refinement_indicators) {
       const unsigned int dofs_per_cell = dof_handler.get_fe().dofs_per_cell;
       std::vector<unsigned int> dofs(dofs_per_cell);
@@ -453,11 +463,13 @@ namespace Step33 {
       std::vector<std::vector<Tensor<1, dim>>> dU(1, std::vector<Tensor<1, dim>>(n_components));
 
       for(const auto& cell: dof_handler.active_cell_iterators()) {
-        const unsigned int cell_no = cell->active_cell_index();
-        fe_v.reinit(cell);
-        fe_v.get_function_gradients(solution, dU);
+        if(cell->is_locally_owned()) {
+          const unsigned int cell_no = cell->active_cell_index();
+          fe_v.reinit(cell);
+          fe_v.get_function_gradients(solution, dU);
 
-        refinement_indicators(cell_no) = std::log(1 + std::sqrt(dU[0][density_component]*dU[0][density_component]));
+          refinement_indicators(cell_no) = std::log(1 + std::sqrt(dU[0][density_component]*dU[0][density_component]));
+        }
       }
     }
 
@@ -794,6 +806,7 @@ namespace Step33 {
       bool   do_refine;
       double shock_val;
       double shock_levels;
+      int    global_refinements;
 
       static void declare_parameters(ParameterHandler& prm);
       void        parse_parameters(ParameterHandler& prm);
@@ -807,6 +820,9 @@ namespace Step33 {
         prm.declare_entry("refinement", "true",
                           Patterns::Bool(),
                           "Whether to perform mesh refinement or not");
+        prm.declare_entry("global refinements", "5",
+                          Patterns::Integer(),
+                          "How many global refinements");
         prm.declare_entry("refinement fraction", "0.1",
                           Patterns::Double(),
                           "Fraction of high refinement");
@@ -830,9 +846,10 @@ namespace Step33 {
     void Refinement::parse_parameters(ParameterHandler& prm) {
       prm.enter_subsection("refinement");
       {
-        do_refine    = prm.get_bool("refinement");
-        shock_val    = prm.get_double("shock value");
-        shock_levels = prm.get_double("shock levels");
+        do_refine          = prm.get_bool("refinement");
+        global_refinements = prm.get_integer("global refinements");
+        shock_val          = prm.get_double("shock value");
+        shock_levels       = prm.get_double("shock levels");
       }
       prm.leave_subsection();
     }
@@ -940,7 +957,6 @@ namespace Step33 {
         BoundaryConditions();
       };
 
-
       //--- Auxiliary class in case exact solution is available
       struct ExactSolution : public Function<dim> {
         ExactSolution(const double time): Function<dim>(dim + 2, time) {}
@@ -952,8 +968,9 @@ namespace Step33 {
                                     Vector<double>& values) const override;
       };
 
+      AllParameters(); //--- Default constructor
 
-      AllParameters();
+      AllParameters(ParameterHandler& prm); //--- Constructor
 
       double time_step, final_time;
       double theta;
@@ -962,8 +979,8 @@ namespace Step33 {
       std::string time_integration_scheme; //---Extra variable to specify the time integration scheme
       std::string dir;
       std::string mesh_filename;
-      unsigned int fe_degree; //---Extra variable to specify the degree of finite element space
       unsigned int testcase; //---Extra variable to specify the testcase
+      unsigned int fe_degree; //---Extra variable to specify degree of finte element
 
       FunctionParser<dim> initial_conditions;
       BoundaryConditions  boundary_conditions[max_n_boundaries];
@@ -974,7 +991,7 @@ namespace Step33 {
     };
 
 
-
+    // Constructor of auxiliary struct BoundaryConditions
     template<int dim>
     AllParameters<dim>::BoundaryConditions::BoundaryConditions():
                         values(EulerEquations<dim>::n_components) {
@@ -988,7 +1005,7 @@ namespace Step33 {
     template<int dim>
     double AllParameters<dim>::ExactSolution::value(const Point<dim>& x,
                                                     const unsigned int component) const {
-      const double t = this->get_time(); //--- This is a function of the class Function
+      const double t = this->get_time(); //--- This is a member function of the class Function
 
       Assert(dim == 2, ExcNotImplemented());
       const double beta = 5.0;
@@ -1047,16 +1064,32 @@ namespace Step33 {
     }
 
 
+    // Default constructor of struct AllParameters
     template<int dim>
     AllParameters<dim>::AllParameters(): time_step(1.),
                                          final_time(1.),
                                          theta(.5),
                                          is_stationary(true),
                                          testcase(0),
+                                         fe_degree(1),
                                          initial_conditions(EulerEquations<dim>::n_components),
                                          exact_solution(ExactSolution(0.0)) {}
 
+    // Struct AllParameters constructor
+    template<int dim>
+    AllParameters<dim>::AllParameters(ParameterHandler& prm): time_step(1.),
+                                                              final_time(1.),
+                                                              theta(.5),
+                                                              is_stationary(true),
+                                                              testcase(0),
+                                                              fe_degree(1),
+                                                              initial_conditions(EulerEquations<dim>::n_components),
+                                                              exact_solution(ExactSolution(0.0)) {
+      parse_parameters(prm);
+    }
 
+
+    // Function to declare parameters to be read
     template<int dim>
     void AllParameters<dim>::declare_parameters(ParameterHandler& prm) {
       prm.declare_entry("testcase", "0",
@@ -1133,9 +1166,11 @@ namespace Step33 {
     }
 
 
+    // Auxiliary function to parse declared parameters
     template<int dim>
     void AllParameters<dim>::parse_parameters(ParameterHandler& prm) {
-      testcase  = prm.get_integer("testcase");
+      testcase = prm.get_integer("testcase");
+      fe_degree = prm.get_integer("degree");
       if(testcase == 0)
         mesh_filename = prm.get("mesh");
 
@@ -1227,7 +1262,7 @@ namespace Step33 {
   template<int dim>
   class ConservationLaw {
   public:
-    ConservationLaw(ParameterHandler& prm, const unsigned int fe_degree = 1);
+    ConservationLaw(ParameterHandler& prm);
     void run();
 
   private:
@@ -1236,28 +1271,36 @@ namespace Step33 {
 
     void setup_system();
 
+    void assemble_cell_term(const FEValues<dim>& fe_v);
+    void assemble_explicit_cell_term(const FEValues<dim>& fe_v);
+    void assemble_face_term(const unsigned int           face_no,
+                            const FEFaceValuesBase<dim>& fe_v,
+                            const FEFaceValuesBase<dim>& fe_v_neighbor,
+                            const bool                   external_face,
+                            const unsigned int           boundary_id);
+    void assemble_explicit_face_term(const unsigned int           face_no,
+                                     const FEFaceValuesBase<dim>& fe_v,
+                                     const FEFaceValuesBase<dim>& fe_v_neighbor,
+                                     const bool                   external_face,
+                                     const unsigned int           boundary_id);
+    void copy_local_to_global_explicit(const std::vector<types::global_dof_index>& dof_indices);
+    void copy_local_to_global(const std::vector<types::global_dof_index>& dof_indices);
+    void copy_local_to_global_auxiliary(const std::vector<types::global_dof_index>& dof_indices,
+                                        const std::vector<types::global_dof_index>& dof_indices_neighbor);
     void assemble_system();
-    void assemble_cell_term(const FEValues<dim>&                        fe_v,
-                            const std::vector<types::global_dof_index>& dofs);
-    void assemble_face_term(const unsigned int                          face_no,
-                            const FEFaceValuesBase<dim>&                fe_v,
-                            const FEFaceValuesBase<dim>&                fe_v_neighbor,
-                            const std::vector<types::global_dof_index>& dofs,
-                            const std::vector<types::global_dof_index>& dofs_neighbor,
-                            const bool                                  external_face,
-                            const unsigned int                          boundary_id);
+    void assemble_explicit_system();
 
-    std::pair<unsigned int, double> solve(Vector<double>& solution);
+    std::pair<unsigned int, double> solve(LA::MPI::Vector& solution);
 
     void compute_refinement_indicators(Vector<double>& indicator) const;
     void refine_grid(const Vector<double>& indicator);
 
-    void compute_errors(std::ofstream& output_errors) const;
+    void compute_errors();
 
     void output_results() const;
 
-    //--- Auxiliary function to compute spped for time step
-    double compute_maximum_cell_transport_speed() const;
+
+    Parameters::AllParameters<dim> parameters;  //--- Auxiliary variable to read parameters
 
     // The first few member variables are also rather standard. Note that we
     // define a mapping object to be used throughout the program when
@@ -1269,11 +1312,19 @@ namespace Step33 {
     // known that for transsonic simulations with the Euler equations,
     // computations do not converge even as $h\rightarrow 0$ if the boundary
     // approximation is not of sufficiently high order.
-    Triangulation<dim>   triangulation;
+    MPI_Comm communicator; //--- Communicator for parallel computations
+
+    parallel::distributed::Triangulation<dim> triangulation;
     const MappingQ1<dim> mapping;
 
-    FESystem<dim> fe;
-    DoFHandler<dim>     dof_handler;
+    FESystem<dim>   fe;
+    DoFHandler<dim> dof_handler;
+
+    //--- Figure out who are my dofs and my locally relevant dofs
+    IndexSet locally_relevant_dofs;
+    IndexSet locally_owned_dofs;
+
+    AffineConstraints<double> constraints; //--- Empty variable for distribute local_to_global
 
     QGauss<dim>     quadrature;
     QGauss<dim - 1> face_quadrature;
@@ -1286,12 +1337,16 @@ namespace Step33 {
     // converged final result of the previous time step), and a predictor for
     // the solution at the next time step, computed by extrapolating the
     // current and previous solution one time step into the future:
-    Vector<double> old_solution;
-    Vector<double> current_solution;
-    Vector<double> intermediate_solution; //--- Extra variable for TR_BDF2
-    Vector<double> predictor;
+    LA::MPI::Vector old_solution;
+    LA::MPI::Vector current_solution;
+    LA::MPI::Vector intermediate_solution; //--- Extra variable for TR_BDF2
+    LA::MPI::Vector predictor;
 
-    Vector<double> right_hand_side;
+    LA::MPI::Vector right_hand_side;
+    LA::MPI::Vector right_hand_side_explicit;
+
+    LA::MPI::Vector locally_relevant_solution,
+                                  locally_relevant_old_solution;  //--- Extra variables for parallel purposes (read-only)
 
     // This final set of member variables (except for the object holding all
     // run-time parameters at the very bottom and a screen output stream that
@@ -1304,14 +1359,28 @@ namespace Step33 {
     // not intend to run this program in parallel (which wouldn't be too hard
     // with Trilinos data structures, though), we don't have to think about
     // anything else like distributing the degrees of freedom.
-    TrilinosWrappers::SparseMatrix system_matrix;
+    LA::MPI::SparseMatrix system_matrix;
 
-    Parameters::AllParameters<dim> parameters;
-    double                         gamma_2; //--- Extra parameter of TR_BDF2
-    double                         gamma_3; //--- Extra parameter of TR_BDF2
-    unsigned int                   TR_BDF2_stage; //--- Extra parameter for counting stage TR_BDF2
-    ConditionalOStream             verbose_cout;
-    std::ofstream                  output_niter;
+    FullMatrix<double> cell_matrix,
+                       aux_cell_matrix; //--- Local matrices
+    Vector<double>     cell_rhs;    //--- Local rhs
+    Vector<double>     local_current_solution,
+                       local_intermediate_solution,
+                       local_old_solution,
+                       local_current_solution_neighbor,
+                       local_old_solution_neighbor;
+
+    double             lambda_old; //--- Extra parameter to save old Lax-Friedrichs stability (for explicit caching)
+    double             gamma_2; //--- Extra parameter of TR_BDF2
+    double             gamma_3; //--- Extra parameter of TR_BDF2
+    unsigned int       TR_BDF2_stage; //--- Extra parameter for counting stage TR_BDF2
+    ConditionalOStream pcout; //--- Extra parameter for parallel cout
+    ConditionalOStream verbose_cout;
+    std::ofstream      output_niter;
+    std::ofstream      output_error;
+    std::ofstream      time_out;     //--- Auxiliary ofstream for time output
+    ConditionalOStream ptime_out;    //--- Auxiliary conditional stream for time output
+    TimerOutput        time_table;   //--- Auxiliary Table for time
   };
 
 
@@ -1320,19 +1389,32 @@ namespace Step33 {
   // There is nothing much to say about the constructor. Essentially, it reads
   // the input file and fills the parameter object with the parsed values:
   template<int dim>
-  ConservationLaw<dim>::ConservationLaw(ParameterHandler& prm, const unsigned int fe_degree):
+  ConservationLaw<dim>::ConservationLaw(ParameterHandler& prm):
+      parameters(prm),
+      communicator(MPI_COMM_WORLD),
+      triangulation(communicator),
       mapping(),
-      fe(FE_DGQ<dim>(fe_degree), EulerEquations<dim>::n_components),
+      fe(FE_DGQ<dim>(parameters.fe_degree), EulerEquations<dim>::n_components),
       dof_handler(triangulation),
       quadrature(fe.degree + 1),
       face_quadrature(fe.degree + 1),
-      verbose_cout(std::cout, false) {
-    parameters.parse_parameters(prm);
-
-    output_niter  = std::ofstream("./" + parameters.dir + "/linear_number_iterations.dat", std::ofstream::out);
-
-    verbose_cout.set_condition(parameters.output == Parameters::Solver::verbose);
-
+      cell_matrix(fe.dofs_per_cell, fe.dofs_per_cell),
+      aux_cell_matrix(fe.dofs_per_cell, fe.dofs_per_cell),
+      cell_rhs(fe.dofs_per_cell),
+      local_current_solution(fe.dofs_per_cell),
+      local_intermediate_solution(fe.dofs_per_cell),
+      local_old_solution(fe.dofs_per_cell),
+      local_current_solution_neighbor(fe.dofs_per_cell),
+      local_old_solution_neighbor(fe.dofs_per_cell),
+      pcout(std::cout, Utilities::MPI::this_mpi_process(communicator) == 0),
+      verbose_cout(std::cout, Utilities::MPI::this_mpi_process(communicator) == 0 &&
+                              parameters.output == Parameters::Solver::verbose),
+      output_niter("./" + parameters.dir + "/linear_number_iterations.dat", std::ofstream::out),
+      output_error("./" + parameters.dir + "/error_analysis.dat", std::ofstream::out),
+      time_out("./" + parameters.dir + "/time_analysis_" +
+               Utilities::int_to_string(Utilities::MPI::n_mpi_processes(communicator)) + "proc.dat"),
+      ptime_out(time_out, Utilities::MPI::this_mpi_process(communicator) == 0),
+      time_table(ptime_out, TimerOutput::never, TimerOutput::wall_times) {
     //--- Compute the other two parameters of TR_BDF2 scheme
     if(parameters.time_integration_scheme == "TR_BDF2") {
       parameters.theta = 1.0 - std::sqrt(2)/2.0;
@@ -1349,6 +1431,8 @@ namespace Step33 {
   // solution, predictor and rhs.
   template<int dim>
   void ConservationLaw<dim>::make_grid_and_dofs() {
+    TimerOutput::Scope t(time_table, "Make grid");
+
     if(parameters.testcase == 0) {
       GridIn<dim> grid_in;
       grid_in.attach_triangulation(triangulation);
@@ -1369,17 +1453,21 @@ namespace Step33 {
         upper_right[d] = 5;
 
       GridGenerator::hyper_rectangle(triangulation, lower_left, upper_right);
-      triangulation.refine_global(5);
+      triangulation.refine_global(parameters.global_refinements);
     }
-
     dof_handler.clear();
     dof_handler.distribute_dofs(fe);
 
-    // Size all of the fields.
-    old_solution.reinit(dof_handler.n_dofs());
-    current_solution.reinit(dof_handler.n_dofs());
-    predictor.reinit(dof_handler.n_dofs());
-    right_hand_side.reinit(dof_handler.n_dofs());
+    //Extract locally dofs
+    locally_owned_dofs = dof_handler.locally_owned_dofs();
+    DoFTools::extract_locally_relevant_dofs(dof_handler, locally_relevant_dofs);
+
+    //Size of all fields
+    old_solution.reinit(locally_owned_dofs, communicator);
+    current_solution.reinit(locally_owned_dofs, communicator);
+    predictor.reinit(locally_owned_dofs, communicator);
+    right_hand_side.reinit(locally_owned_dofs, communicator);
+    right_hand_side_explicit.reinit(locally_owned_dofs, communicator);
   }
 
 
@@ -1391,38 +1479,614 @@ namespace Step33 {
   // programs.
   template<int dim>
   void ConservationLaw<dim>::setup_system() {
+    TimerOutput::Scope t(time_table, "Setup system");
+
     DynamicSparsityPattern dsp(dof_handler.n_dofs(), dof_handler.n_dofs());
     DoFTools::make_flux_sparsity_pattern(dof_handler, dsp);
 
-    system_matrix.reinit(dsp);
+    // Size of the system matrix.
+    system_matrix.reinit(locally_owned_dofs, dsp, communicator);
+
+    //--- Read-only variant of the solution that must be set after the solution
+    locally_relevant_solution.reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
+    locally_relevant_old_solution.reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
+  }
+
+
+  // @sect4{ConservationLaw::assemble_explicit_cell_term}
+  //
+  template<int dim>
+  void ConservationLaw<dim>::assemble_explicit_cell_term(const FEValues<dim>& fe_v) {
+    TimerOutput::Scope t(time_table, "Assemble explicit cell term");
+
+    const unsigned int dofs_per_cell = fe_v.dofs_per_cell;
+    const unsigned int n_q_points    = fe_v.n_quadrature_points;
+
+    cell_rhs = 0;
+
+    Table<2, double> W_old(n_q_points, EulerEquations<dim>::n_components);
+
+    //--- Intermediate flux value
+    Table<2, double> W_int(n_q_points, EulerEquations<dim>::n_components);
+
+    for(unsigned int q = 0; q < n_q_points; ++q) {
+      for(unsigned int c = 0; c < EulerEquations<dim>::n_components; ++c) {
+        W_old[q][c] = 0;
+        //--- Setting to zero flux second stage TR_BDF2
+        if(parameters.time_integration_scheme == "TR_BDF2" && TR_BDF2_stage == 2)
+          W_int[q][c] = 0;
+      }
+    }
+
+    for(unsigned int q = 0; q < n_q_points; ++q) {
+      for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+        const unsigned int c = fe_v.get_fe().system_to_component_index(i).first;
+
+        W_old[q][c] += local_old_solution[i]*fe_v.shape_value_component(i, q, c);
+
+        //--- Setting W_int for second stage TR_BDF2
+        if(parameters.time_integration_scheme == "TR_BDF2" && TR_BDF2_stage == 2)
+          W_int[q][c] += local_intermediate_solution[i]*fe_v.shape_value_component(i, q, c);
+      }
+    }
+
+    std::vector<std::array<std::array<double, dim>, EulerEquations<dim>::n_components>> flux_old(n_q_points);
+    std::vector<std::array<double, EulerEquations<dim>::n_components>> forcing_old(n_q_points);
+
+    for(unsigned int q = 0; q < n_q_points; ++q) {
+      EulerEquations<dim>::compute_flux_matrix(W_old[q], flux_old[q]);
+      EulerEquations<dim>::compute_forcing_vector(W_old[q], forcing_old[q], parameters.testcase);
+    }
+
+    for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+      double R_i = 0;
+
+      const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
+
+      for(unsigned int point = 0; point < fe_v.n_quadrature_points; ++point) {
+        //--- Reorganize residual computation
+        if(parameters.time_integration_scheme == "Theta_Method") {
+          if(parameters.is_stationary == false)
+            R_i -= 1.0/parameters.time_step *
+                   W_old[point][component_i] *
+                   fe_v.shape_value_component(i, point, component_i) *
+                   fe_v.JxW(point);
+
+          for(unsigned int d = 0; d < dim; d++)
+            R_i -= (1.0 - parameters.theta)*flux_old[point][component_i][d]*
+                   fe_v.shape_grad_component(i, point, component_i)[d] *
+                   fe_v.JxW(point);
+
+          R_i -= (1.0 - parameters.theta)*forcing_old[point][component_i]*
+                 fe_v.shape_value_component(i, point, component_i) *
+                 fe_v.JxW(point);
+        }
+        //--- Stages of TR-BDF2
+        else {
+          //--- First stage of TR_BDF2
+          if(TR_BDF2_stage == 1) {
+            if(parameters.is_stationary == false)
+              R_i -= 1.0/parameters.time_step *
+                     W_old[point][component_i] *
+                     fe_v.shape_value_component(i, point, component_i) *
+                     fe_v.JxW(point);
+
+            for(unsigned int d = 0; d < dim; d++)
+              R_i -= parameters.theta*flux_old[point][component_i][d] *
+                     fe_v.shape_grad_component(i, point, component_i)[d] *
+                     fe_v.JxW(point);
+
+            R_i -= parameters.theta*forcing_old[point][component_i] *
+                   fe_v.shape_value_component(i, point, component_i) *
+                   fe_v.JxW(point);
+          }
+          //--- Second stage of TR_BDF2
+          else if(TR_BDF2_stage == 2) {
+            if(parameters.is_stationary == false)
+              R_i -= 1.0/parameters.time_step *
+                     (gamma_3*W_int[point][component_i] + (1.0 - gamma_3)*W_old[point][component_i])*
+                     fe_v.shape_value_component(i, point, component_i) *
+                     fe_v.JxW(point);
+          }
+        }
+
+      }
+
+      cell_rhs(i) -= R_i;
+    }
+  }
+
+
+  // @sect4{ConservationLaw::assemble_cell_term}
+  //
+  template<int dim>
+  void ConservationLaw<dim>::assemble_cell_term(const FEValues<dim>& fe_v) {
+    TimerOutput::Scope t(time_table, "Assemble cell term");
+
+    const unsigned int dofs_per_cell = fe_v.dofs_per_cell;
+    const unsigned int n_q_points    = fe_v.n_quadrature_points;
+
+    cell_matrix = 0;
+    cell_rhs = 0;
+
+    Table<2, Sacado::Fad::DFad<double>> W(n_q_points, EulerEquations<dim>::n_components);
+
+    std::vector<Sacado::Fad::DFad<double>> independent_local_dof_values(dofs_per_cell);
+    for(unsigned int i = 0; i < dofs_per_cell; ++i)
+      independent_local_dof_values[i] = local_current_solution[i];
+
+    for(unsigned int i = 0; i < dofs_per_cell; ++i)
+      independent_local_dof_values[i].diff(i, dofs_per_cell);
+
+    for(unsigned int q = 0; q < n_q_points; ++q)
+      for(unsigned int c = 0; c < EulerEquations<dim>::n_components; ++c)
+        W[q][c] = 0;
+
+
+    for(unsigned int q = 0; q < n_q_points; ++q) {
+      for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+        const unsigned int c = fe_v.get_fe().system_to_component_index(i).first;
+        W[q][c] += independent_local_dof_values[i]*fe_v.shape_value_component(i, q, c);
+      }
+    }
+
+
+    std::vector<std::array<std::array<Sacado::Fad::DFad<double>, dim>,
+                           EulerEquations<dim>::n_components>>          flux(n_q_points);
+
+    std::vector<std::array<Sacado::Fad::DFad<double>, EulerEquations<dim>::n_components>> forcing(n_q_points);
+
+    for(unsigned int q = 0; q < n_q_points; ++q) {
+      EulerEquations<dim>::compute_flux_matrix(W[q], flux[q]);
+      EulerEquations<dim>::compute_forcing_vector(W[q], forcing[q], parameters.testcase);
+    }
+
+
+    for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+      Sacado::Fad::DFad<double> R_i = 0;
+
+      const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
+
+      for(unsigned int point = 0; point < fe_v.n_quadrature_points; ++point) {
+        //--- Reorganize residual computation
+        if(parameters.time_integration_scheme == "Theta_Method") {
+          if(parameters.is_stationary == false)
+            R_i += 1.0/parameters.time_step *
+                   W[point][component_i] *
+                   fe_v.shape_value_component(i, point, component_i) *
+                   fe_v.JxW(point);
+
+          for(unsigned int d = 0; d < dim; d++)
+            R_i -= parameters.theta*flux[point][component_i][d]*
+                   fe_v.shape_grad_component(i, point, component_i)[d] *
+                   fe_v.JxW(point);
+
+          R_i -= parameters.theta*forcing[point][component_i]*
+                 fe_v.shape_value_component(i, point, component_i) *
+                 fe_v.JxW(point);
+        }
+        //--- Stages of TR-BDF2
+        else {
+          //--- First stage of TR_BDF2
+          if(TR_BDF2_stage == 1) {
+            if(parameters.is_stationary == false)
+              R_i += 1.0/parameters.time_step *
+                     W[point][component_i] *
+                     fe_v.shape_value_component(i, point, component_i) *
+                     fe_v.JxW(point);
+
+            for(unsigned int d = 0; d < dim; d++)
+              R_i -= parameters.theta*flux[point][component_i][d] *
+                     fe_v.shape_grad_component(i, point, component_i)[d] *
+                     fe_v.JxW(point);
+
+            R_i -= parameters.theta*forcing[point][component_i] *
+                   fe_v.shape_value_component(i, point, component_i) *
+                   fe_v.JxW(point);
+          }
+          //--- Second stage of TR_BDF2
+          else if(TR_BDF2_stage == 2) {
+            if(parameters.is_stationary == false)
+              R_i += 1.0/parameters.time_step *
+                     W[point][component_i] *
+                     fe_v.shape_value_component(i, point, component_i) *
+                     fe_v.JxW(point);
+
+            for(unsigned int d = 0; d < dim; d++)
+              R_i -= gamma_2*flux[point][component_i][d] *
+                     fe_v.shape_grad_component(i, point, component_i)[d] *
+                     fe_v.JxW(point);
+
+            R_i -=  gamma_2*forcing[point][component_i] *
+                    fe_v.shape_value_component(i, point, component_i) *
+                    fe_v.JxW(point);
+          }
+        }
+
+      }
+
+      for(unsigned int j = 0; j < dofs_per_cell; ++j)
+        cell_matrix(i, j) += R_i.fastAccessDx(j);
+
+      cell_rhs(i) -= R_i.val();
+    }
+  }
+
+
+  // @sect4{ConservationLaw::assemble_explicit_face_term}
+  //
+  template<int dim>
+  void ConservationLaw<dim>::assemble_explicit_face_term(const unsigned int           face_no,
+                                                         const FEFaceValuesBase<dim>& fe_v,
+                                                         const FEFaceValuesBase<dim>& fe_v_neighbor,
+                                                         const bool                   external_face,
+                                                         const unsigned int           boundary_id) {
+    TimerOutput::Scope t(time_table, "Assemble explicit face term");
+
+    cell_rhs = 0;
+
+    const unsigned int n_q_points    = fe_v.n_quadrature_points;
+    const unsigned int dofs_per_cell = fe_v.dofs_per_cell;
+
+    Table<2, double> Wplus_old(n_q_points,  EulerEquations<dim>::n_components),
+                     Wminus_old(n_q_points, EulerEquations<dim>::n_components);
+
+    for(unsigned int q = 0; q < n_q_points; ++q) {
+      for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+        const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
+        Wplus_old[q][component_i] += local_old_solution[i] *
+                                     fe_v.shape_value_component(i, q, component_i);
+      }
+    }
+
+    // Computing "opposite side" is a bit more complicated. If this is
+    // an internal face, we can compute it as above by simply using the
+    // independent variables from the neighbor:
+    if(external_face == false) {
+      for(unsigned int q = 0; q < n_q_points; ++q) {
+        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+          const unsigned int component_i = fe_v_neighbor.get_fe().system_to_component_index(i).first;
+          Wminus_old[q][component_i] += local_old_solution_neighbor[i] *
+                                        fe_v_neighbor.shape_value_component(i, q, component_i);
+        }
+      }
+    }
+    else {
+      Assert(boundary_id < Parameters::AllParameters<dim>::max_n_boundaries,
+             ExcIndexRange(boundary_id, 0, Parameters::AllParameters<dim>::max_n_boundaries));
+
+      std::vector<Vector<double>> boundary_values(n_q_points, Vector<double>(EulerEquations<dim>::n_components));
+      if(parameters.testcase == 0)
+        parameters.boundary_conditions[boundary_id].values.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
+      else
+        parameters.exact_solution.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
+
+      for(unsigned int q = 0; q < n_q_points; q++)
+        EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
+                                            fe_v.normal_vector(q), Wplus_old[q], boundary_values[q], Wminus_old[q]);
+    }
+
+    std::vector<std::array<double, EulerEquations<dim>::n_components>> normal_fluxes_old(n_q_points);
+
+    for(unsigned int q = 0; q < n_q_points; ++q) {
+      lambda_old = std::max(EulerEquations<dim>::compute_velocity(Wplus_old[q])  +
+                            EulerEquations<dim>::compute_speed_of_sound(Wplus_old[q]),
+                            EulerEquations<dim>::compute_velocity(Wminus_old[q]) +
+                            EulerEquations<dim>::compute_speed_of_sound(Wminus_old[q]));
+      EulerEquations<dim>::numerical_normal_flux(fe_v.normal_vector(q), Wplus_old[q], Wminus_old[q], lambda_old, normal_fluxes_old[q]);
+    }
+
+    for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+      if(fe_v.get_fe().has_support_on_face(i, face_no) == true) {
+        double R_i = 0.0;
+
+        for(unsigned int point = 0; point < n_q_points; ++point) {
+          const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
+
+          //--- Reorganizing contributions
+          if(parameters.time_integration_scheme == "Theta_Method") {
+            R_i += (1.0 - parameters.theta)*normal_fluxes_old[point][component_i]*
+                   fe_v.shape_value_component(i, point, component_i) *
+                   fe_v.JxW(point);
+          }
+          //--- TR_BDF2 assembling
+          else {
+            //--- First stage of TR_BDF2
+            if(TR_BDF2_stage == 1) {
+              R_i += parameters.theta*normal_fluxes_old[point][component_i] *
+                     fe_v.shape_value_component(i, point, component_i) *
+                     fe_v.JxW(point);
+            }
+          }
+        }
+
+        cell_rhs(i) -= R_i;
+      }
+    }
+  }
+
+
+  // @sect4{ConservationLaw::assemble_face_term}
+  //
+  template<int dim>
+  void ConservationLaw<dim>::assemble_face_term(const unsigned int           face_no,
+                                                const FEFaceValuesBase<dim>& fe_v,
+                                                const FEFaceValuesBase<dim>& fe_v_neighbor,
+                                                const bool                   external_face,
+                                                const unsigned int           boundary_id) {
+    TimerOutput::Scope t(time_table, "Assemble face term");
+
+    cell_matrix     = 0;
+    cell_rhs        = 0;
+    aux_cell_matrix = 0;
+
+    const unsigned int n_q_points    = fe_v.n_quadrature_points;
+    const unsigned int dofs_per_cell = fe_v.dofs_per_cell;
+
+    std::vector<Sacado::Fad::DFad<double>> independent_local_dof_values(dofs_per_cell),
+                                           independent_neighbor_dof_values(external_face == false ?
+                                                                           dofs_per_cell : 0);
+
+    const unsigned int n_independent_variables = (external_face == false ? dofs_per_cell + dofs_per_cell : dofs_per_cell);
+
+    for(unsigned int i = 0; i < dofs_per_cell; i++) {
+      independent_local_dof_values[i] = local_current_solution[i];
+      independent_local_dof_values[i].diff(i, n_independent_variables);
+    }
+
+    if(external_face == false) {
+      for(unsigned int i = 0; i < dofs_per_cell; i++) {
+        independent_neighbor_dof_values[i] = local_current_solution_neighbor[i];
+        independent_neighbor_dof_values[i].diff(i + dofs_per_cell, n_independent_variables);
+      }
+    }
+
+
+    Table<2, Sacado::Fad::DFad<double>> Wplus(n_q_points, EulerEquations<dim>::n_components),
+                                        Wminus(n_q_points, EulerEquations<dim>::n_components);
+
+    for(unsigned int q = 0; q < n_q_points; ++q) {
+      for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+        const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
+        Wplus[q][component_i] += independent_local_dof_values[i] *
+                                 fe_v.shape_value_component(i, q, component_i);
+      }
+    }
+
+    // Computing "opposite side" is a bit more complicated. If this is
+    // an internal face, we can compute it as above by simply using the
+    // independent variables from the neighbor:
+    if(external_face == false) {
+      for(unsigned int q = 0; q < n_q_points; ++q) {
+        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+          const unsigned int component_i = fe_v_neighbor.get_fe().system_to_component_index(i).first;
+          Wminus[q][component_i] += independent_neighbor_dof_values[i] *
+                                    fe_v_neighbor.shape_value_component(i, q, component_i);
+        }
+      }
+    }
+    else {
+      Assert(boundary_id < Parameters::AllParameters<dim>::max_n_boundaries,
+             ExcIndexRange(boundary_id, 0, Parameters::AllParameters<dim>::max_n_boundaries));
+
+      std::vector<Vector<double>> boundary_values(n_q_points, Vector<double>(EulerEquations<dim>::n_components));
+      if(parameters.testcase == 0)
+        parameters.boundary_conditions[boundary_id].values.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
+      else
+        parameters.exact_solution.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
+
+      for(unsigned int q = 0; q < n_q_points; q++) {
+        // Here we assume that boundary type, boundary normal vector and
+        // boundary data values maintain the same during time advancing.
+        EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
+                                            fe_v.normal_vector(q), Wplus[q], boundary_values[q], Wminus[q]);
+      }
+    }
+
+    std::vector<std::array<Sacado::Fad::DFad<double>, EulerEquations<dim>::n_components>> normal_fluxes(n_q_points);
+
+    for(unsigned int q = 0; q < n_q_points; ++q)
+      EulerEquations<dim>::numerical_normal_flux(fe_v.normal_vector(q), Wplus[q], Wminus[q], lambda_old, normal_fluxes[q]);
+
+    for(unsigned int i = 0; i < dofs_per_cell; ++i) {
+      if(fe_v.get_fe().has_support_on_face(i, face_no) == true) {
+        Sacado::Fad::DFad<double> R_i = 0;
+
+        for(unsigned int point = 0; point < n_q_points; ++point) {
+          const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
+
+          //--- Reorganizing contributions
+          if(parameters.time_integration_scheme == "Theta_Method") {
+            R_i += parameters.theta*normal_fluxes[point][component_i]*
+                   fe_v.shape_value_component(i, point, component_i) *
+                   fe_v.JxW(point);
+          }
+          //--- TR_BDF2 assembling
+          else {
+            //--- First stage of TR_BDF2
+            if(TR_BDF2_stage == 1) {
+              R_i += parameters.theta*normal_fluxes[point][component_i] *
+                     fe_v.shape_value_component(i, point, component_i) *
+                     fe_v.JxW(point);
+            }
+            //--- Second stage of TR_BDF2
+            else if(TR_BDF2_stage == 2) {
+              R_i += gamma_2*normal_fluxes[point][component_i]*
+                     fe_v.shape_value_component(i, point, component_i) *
+                     fe_v.JxW(point);
+            }
+          }
+        }
+
+        for(unsigned int j = 0; j < dofs_per_cell; ++j)
+          cell_matrix(i,j) += R_i.fastAccessDx(j);
+
+        if(external_face == false) {
+          for(unsigned int j = 0; j < dofs_per_cell; ++j)
+            aux_cell_matrix(i, j) += R_i.fastAccessDx(dofs_per_cell + j);
+        }
+
+        cell_rhs(i) -= R_i.val();
+      }
+    }
+  }
+
+
+  // @sect4{ConservationLaw::copy_local_to_global_explicit}
+  //
+  template<int dim>
+  void ConservationLaw<dim>::copy_local_to_global_explicit(const std::vector<types::global_dof_index>& dof_indices) {
+    TimerOutput::Scope t(time_table, "Copy local to global explicit");
+
+    constraints.distribute_local_to_global(cell_rhs, dof_indices, right_hand_side_explicit);
+    right_hand_side_explicit.compress(VectorOperation::add);
+  }
+
+
+  // @sect4{ConservationLaw::assemble_explicit_system}
+  //
+  template<int dim>
+  void ConservationLaw<dim>::assemble_explicit_system() {
+    TimerOutput::Scope t(time_table, "Assemble explicit term");
+
+    right_hand_side_explicit = 0;
+
+    const unsigned int dofs_per_cell = dof_handler.get_fe().dofs_per_cell;
+
+    std::vector<types::global_dof_index> dof_indices(dofs_per_cell);
+
+    const UpdateFlags update_flags = update_values | update_gradients |
+                                     update_quadrature_points | update_JxW_values,
+                      face_update_flags = update_values | update_quadrature_points |
+                                          update_JxW_values | update_normal_vectors,
+                      neighbor_face_update_flags = update_values;
+
+    FEValues<dim> fe_v(mapping, fe, quadrature, update_flags);
+    FEFaceValues<dim>    fe_v_face(mapping, fe, face_quadrature, face_update_flags);
+    FESubfaceValues<dim> fe_v_subface(mapping, fe, face_quadrature, face_update_flags);
+    FEFaceValues<dim>    fe_v_face_neighbor(mapping, fe, face_quadrature, neighbor_face_update_flags);
+    FESubfaceValues<dim> fe_v_subface_neighbor(mapping, fe, face_quadrature, neighbor_face_update_flags);
+
+    // Then loop over all cells, initialize the FEValues object for the
+    // current cell and call the function that assembles the problem on this
+    // cell.
+    for(const auto& cell: dof_handler.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        fe_v.reinit(cell);
+        cell->get_dof_values(old_solution, local_old_solution);
+        if(parameters.time_integration_scheme == "TR_BDF2" && TR_BDF2_stage == 2)
+          cell->get_dof_values(intermediate_solution, local_intermediate_solution);
+        cell->get_dof_indices(dof_indices);
+
+        //const auto cell_id = std::stoi(cell->id().to_string().substr(4,8));
+        assemble_explicit_cell_term(fe_v);
+        copy_local_to_global_explicit(dof_indices);
+
+        // Then loop over all the faces of this cell.  If a face is part of
+        // the external boundary, then assemble boundary conditions there:
+        for(unsigned int face_no = 0; face_no < GeometryInfo<dim>::faces_per_cell; ++face_no) {
+          if(cell->at_boundary(face_no)) {
+            fe_v_face.reinit(cell, face_no);
+            assemble_explicit_face_term(face_no, fe_v_face, fe_v_face,
+                                        true, cell->face(face_no)->boundary_id());
+            copy_local_to_global_explicit(dof_indices);
+          }
+
+          // The alternative is that we are dealing with an internal face.
+          else {
+            if(cell->neighbor(face_no)->has_children()) {
+              const unsigned int neighbor2 = cell->neighbor_of_neighbor(face_no);
+
+              for(unsigned int subface_no = 0; subface_no < cell->face(face_no)->n_children(); ++subface_no) {
+                const typename DoFHandler<dim>::active_cell_iterator
+                neighbor_child = cell->neighbor_child_on_subface(face_no, subface_no);
+
+                Assert(neighbor_child->face(neighbor2) == cell->face(face_no)->child(subface_no), ExcInternalError());
+                Assert(neighbor_child->has_children() == false, ExcInternalError());
+
+                fe_v_subface.reinit(cell, face_no, subface_no);
+                fe_v_face_neighbor.reinit(neighbor_child, neighbor2);
+                neighbor_child->get_dof_values(locally_relevant_old_solution, local_old_solution_neighbor);
+
+                assemble_explicit_face_term(face_no, fe_v_subface, fe_v_face_neighbor,
+                                            false, numbers::invalid_unsigned_int);
+                copy_local_to_global_explicit(dof_indices);
+              }
+            }
+
+            // The other possibility we have to care for is if the neighbor
+            // is coarser than the current cell:
+            else if(cell->neighbor(face_no)->level() != cell->level()) {
+              const typename DoFHandler<dim>::cell_iterator neighbor = cell->neighbor(face_no);
+              Assert(neighbor->level() == cell->level() - 1, ExcInternalError());
+
+              const std::pair<unsigned int, unsigned int> faceno_subfaceno = cell->neighbor_of_coarser_neighbor(face_no);
+              const unsigned int neighbor_face_no = faceno_subfaceno.first,
+                                 neighbor_subface_no = faceno_subfaceno.second;
+
+              Assert(neighbor->neighbor_child_on_subface(neighbor_face_no, neighbor_subface_no) == cell,
+                     ExcInternalError());
+
+              fe_v_face.reinit(cell, face_no);
+              fe_v_subface_neighbor.reinit(neighbor, neighbor_face_no,
+                                           neighbor_subface_no);
+              neighbor->get_dof_values(locally_relevant_old_solution, local_old_solution_neighbor);
+
+              assemble_explicit_face_term(face_no, fe_v_face, fe_v_subface_neighbor,
+                                          false, numbers::invalid_unsigned_int);
+              copy_local_to_global_explicit(dof_indices);
+            }
+            // Same refinement level
+            else {
+              fe_v_face.reinit(cell, face_no);
+              const typename DoFHandler<dim>::cell_iterator neighbor = cell->neighbor(face_no);
+              const unsigned int other_face_no = cell->neighbor_of_neighbor(face_no);
+              fe_v_face_neighbor.reinit(neighbor, other_face_no);
+              neighbor->get_dof_values(locally_relevant_old_solution, local_old_solution_neighbor);
+
+              assemble_explicit_face_term(face_no, fe_v_face, fe_v_face_neighbor,
+                                          false, numbers::invalid_unsigned_int);
+              copy_local_to_global_explicit(dof_indices);
+            }
+          }
+        }
+      }
+    }
+  }
+
+
+  // @sect4{ConservationLaw::copy_local_to_global}
+  //
+  template<int dim>
+  void ConservationLaw<dim>::copy_local_to_global(const std::vector<types::global_dof_index>& dof_indices) {
+    TimerOutput::Scope t(time_table, "Copy local to global");
+
+    constraints.distribute_local_to_global(cell_matrix, cell_rhs, dof_indices, system_matrix, right_hand_side);
+    system_matrix.compress(VectorOperation::add);
+    right_hand_side.compress(VectorOperation::add);
+  }
+
+
+  // @sect4{ConservationLaw::copy_local_to_global}
+  //
+  template<int dim>
+  void ConservationLaw<dim>::copy_local_to_global_auxiliary(const std::vector<types::global_dof_index>& dof_indices,
+                                                            const std::vector<types::global_dof_index>& dof_indices_neighbor) {
+    TimerOutput::Scope t(time_table, "Copy local to global auxiliary");
+
+    constraints.distribute_local_to_global(cell_matrix, cell_rhs, dof_indices, system_matrix, right_hand_side);
+    constraints.distribute_local_to_global(aux_cell_matrix, dof_indices, dof_indices_neighbor, system_matrix);
+    system_matrix.compress(VectorOperation::add);
+    right_hand_side.compress(VectorOperation::add);
   }
 
 
   // @sect4{ConservationLaw::assemble_system}
   //
-  // This and the following two functions are the meat of this program: They
-  // assemble the linear system that results from applying Newton's method to
-  // the nonlinear system of conservation equations.
-  //
-  // This first function puts all of the assembly pieces together in a routine
-  // that dispatches the correct piece for each cell/face.  The actual
-  // implementation of the assembly on these objects is done in the following
-  // functions.
-  //
-  // At the top of the function we do the usual housekeeping: allocate
-  // FEValues, FEFaceValues, and FESubfaceValues objects necessary to do the
-  // integrations on cells, faces, and subfaces (in case of adjoining cells on
-  // different refinement levels). Note that we don't need all information
-  // (like values, gradients, or real locations of quadrature points) for all
-  // of these objects, so we only let the FEValues classes whatever is
-  // actually necessary by specifying the minimal set of UpdateFlags. For
-  // example, when using a FEFaceValues object for the neighboring cell we
-  // only need the shape values: Given a specific face, the quadrature points
-  // and <code>JxW</code> values are the same as for the current cells, and
-  // the normal vectors are known to be the negative of the normal vectors of
-  // the current cell.
   template<int dim>
   void ConservationLaw<dim>::assemble_system() {
+    TimerOutput::Scope t(time_table, "Assemble system");
+
     const unsigned int dofs_per_cell = dof_handler.get_fe().dofs_per_cell;
 
     std::vector<types::global_dof_index> dof_indices(dofs_per_cell);
@@ -1444,586 +2108,86 @@ namespace Step33 {
     // Then loop over all cells, initialize the FEValues object for the
     // current cell and call the function that assembles the problem on this
     // cell.
-    for(const auto &cell : dof_handler.active_cell_iterators()) {
-      fe_v.reinit(cell);
-      cell->get_dof_indices(dof_indices);
+    for(const auto& cell: dof_handler.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        fe_v.reinit(cell);
+        cell->get_dof_values(current_solution, local_current_solution);
+        cell->get_dof_indices(dof_indices);
 
-      assemble_cell_term(fe_v, dof_indices);
+        assemble_cell_term(fe_v);
+        copy_local_to_global(dof_indices);
 
-      // Then loop over all the faces of this cell.  If a face is part of
-      // the external boundary, then assemble boundary conditions there (the
-      // fifth argument to <code>assemble_face_terms</code> indicates
-      // whether we are working on an external or internal face; if it is an
-      // external face, the fourth argument denoting the degrees of freedom
-      // indices of the neighbor is ignored, so we pass an empty vector):
-      for(unsigned int face_no = 0; face_no < GeometryInfo<dim>::faces_per_cell; ++face_no) {
-        if(cell->at_boundary(face_no)) {
-          fe_v_face.reinit(cell, face_no);
-          assemble_face_term(face_no, fe_v_face, fe_v_face, dof_indices,
-                             std::vector<types::global_dof_index>(), true,
-                             cell->face(face_no)->boundary_id());
-        }
-
-        // The alternative is that we are dealing with an internal face. There
-        // are two cases that we need to distinguish: that this is a normal
-        // face between two cells at the same refinement level, and that it is
-        // a face between two cells of the different refinement levels.
-        //
-        // In the first case, there is nothing we need to do: we are using a
-        // continuous finite element, and face terms do not appear in the
-        // bilinear form in this case. The second case usually does not lead
-        // to face terms either if we enforce hanging node constraints
-        // strongly (as in all previous tutorial programs so far whenever we
-        // used continuous finite elements -- this enforcement is done by the
-        // AffineConstraints class together with
-        // DoFTools::make_hanging_node_constraints). In the current program,
-        // however, we opt to enforce continuity weakly at faces between cells
-        // of different refinement level, for two reasons: (i) because we can,
-        // and more importantly (ii) because we would have to thread the
-        // automatic differentiation we use to compute the elements of the
-        // Newton matrix from the residual through the operations of the
-        // AffineConstraints class. This would be possible, but is not
-        // trivial, and so we choose this alternative approach.
-        //
-        // What needs to be decided is which side of an interface between two
-        // cells of different refinement level we are sitting on.
-        //
-        // Let's take the case where the neighbor is more refined first. We
-        // then have to loop over the children of the face of the current cell
-        // and integrate on each of them. We sprinkle a couple of assertions
-        // into the code to ensure that our reasoning trying to figure out
-        // which of the neighbor's children's faces coincides with a given
-        // subface of the current cell's faces is correct -- a bit of
-        // defensive programming never hurts.
-        //
-        // We then call the function that integrates over faces; since this is
-        // an internal face, the fifth argument is false, and the sixth one is
-        // ignored so we pass an invalid value again:
-        else {
-          if(cell->neighbor(face_no)->has_children()) {
-            const unsigned int neighbor2 = cell->neighbor_of_neighbor(face_no);
-
-            for(unsigned int subface_no = 0; subface_no < cell->face(face_no)->n_children(); ++subface_no) {
-              const typename DoFHandler<dim>::active_cell_iterator
-              neighbor_child = cell->neighbor_child_on_subface(face_no, subface_no);
-
-              Assert(neighbor_child->face(neighbor2) == cell->face(face_no)->child(subface_no), ExcInternalError());
-              Assert(neighbor_child->has_children() == false, ExcInternalError());
-
-              fe_v_subface.reinit(cell, face_no, subface_no);
-              fe_v_face_neighbor.reinit(neighbor_child, neighbor2);
-
-              neighbor_child->get_dof_indices(dof_indices_neighbor);
-
-              assemble_face_term(face_no, fe_v_subface, fe_v_face_neighbor,
-                                 dof_indices, dof_indices_neighbor,
-                                 false, numbers::invalid_unsigned_int);
-            }
+        // Then loop over all the faces of this cell.  If a face is part of
+        // the external boundary, then assemble boundary conditions there:
+        for(unsigned int face_no = 0; face_no < GeometryInfo<dim>::faces_per_cell; ++face_no) {
+          if(cell->at_boundary(face_no)) {
+            fe_v_face.reinit(cell, face_no);
+            assemble_face_term(face_no, fe_v_face, fe_v_face,
+                               true, cell->face(face_no)->boundary_id());
+            copy_local_to_global(dof_indices);
           }
 
-          // The other possibility we have to care for is if the neighbor
-          // is coarser than the current cell (in particular, because of
-          // the usual restriction of only one hanging node per face, the
-          // neighbor must be exactly one level coarser than the current
-          // cell, something that we check with an assertion). Again, we
-          // then integrate over this interface:
-          else if(cell->neighbor(face_no)->level() != cell->level()) {
-            const typename DoFHandler<dim>::cell_iterator neighbor = cell->neighbor(face_no);
-            Assert(neighbor->level() == cell->level() - 1, ExcInternalError());
+          // The alternative is that we are dealing with an internal face.
+          else {
+            if(cell->neighbor(face_no)->has_children()) {
+              const unsigned int neighbor2 = cell->neighbor_of_neighbor(face_no);
 
-            neighbor->get_dof_indices(dof_indices_neighbor);
+              for(unsigned int subface_no = 0; subface_no < cell->face(face_no)->n_children(); ++subface_no) {
+                const typename DoFHandler<dim>::active_cell_iterator
+                neighbor_child = cell->neighbor_child_on_subface(face_no, subface_no);
 
-            const std::pair<unsigned int, unsigned int> faceno_subfaceno = cell->neighbor_of_coarser_neighbor(face_no);
-            const unsigned int neighbor_face_no = faceno_subfaceno.first,
-                               neighbor_subface_no = faceno_subfaceno.second;
+                Assert(neighbor_child->face(neighbor2) == cell->face(face_no)->child(subface_no), ExcInternalError());
+                Assert(neighbor_child->has_children() == false, ExcInternalError());
 
-            Assert(neighbor->neighbor_child_on_subface(neighbor_face_no, neighbor_subface_no) == cell,
-                   ExcInternalError());
+                fe_v_subface.reinit(cell, face_no, subface_no);
+                fe_v_face_neighbor.reinit(neighbor_child, neighbor2);
+                neighbor_child->get_dof_values(locally_relevant_solution, local_current_solution_neighbor);
+                neighbor_child->get_dof_indices(dof_indices_neighbor);
 
-            fe_v_face.reinit(cell, face_no);
-            fe_v_subface_neighbor.reinit(neighbor, neighbor_face_no,
+                assemble_face_term(face_no, fe_v_subface, fe_v_face_neighbor,
+                                   false, numbers::invalid_unsigned_int);
+                copy_local_to_global_auxiliary(dof_indices, dof_indices_neighbor);
+              }
+            }
+
+            // The other possibility we have to care for is if the neighbor
+            // is coarser than the current cell:
+            else if(cell->neighbor(face_no)->level() != cell->level()) {
+              const typename DoFHandler<dim>::cell_iterator neighbor = cell->neighbor(face_no);
+              Assert(neighbor->level() == cell->level() - 1, ExcInternalError());
+
+              const std::pair<unsigned int, unsigned int> faceno_subfaceno = cell->neighbor_of_coarser_neighbor(face_no);
+              const unsigned int neighbor_face_no = faceno_subfaceno.first,
+                                 neighbor_subface_no = faceno_subfaceno.second;
+
+              Assert(neighbor->neighbor_child_on_subface(neighbor_face_no, neighbor_subface_no) == cell,
+                     ExcInternalError());
+
+              fe_v_face.reinit(cell, face_no);
+              fe_v_subface_neighbor.reinit(neighbor, neighbor_face_no,
                                            neighbor_subface_no);
+              neighbor->get_dof_values(locally_relevant_solution, local_current_solution_neighbor);
+              neighbor->get_dof_indices(dof_indices_neighbor);
 
-            assemble_face_term(face_no, fe_v_face, fe_v_subface_neighbor,
-                               dof_indices, dof_indices_neighbor,
-                               false, numbers::invalid_unsigned_int);
-          }
-          else {
-            fe_v_face.reinit(cell, face_no);
-            const typename DoFHandler<dim>::cell_iterator neighbor = cell->neighbor(face_no);
-            const unsigned int other_face_no = cell->neighbor_of_neighbor(face_no);
-            fe_v_face_neighbor.reinit(neighbor, other_face_no);
-            neighbor->get_dof_indices(dof_indices_neighbor);
-
-            assemble_face_term(face_no, fe_v_face, fe_v_face_neighbor,
-                               dof_indices, dof_indices_neighbor, false,
-                               numbers::invalid_unsigned_int);
-
-          }
-        }
-      }
-    }
-  }
-
-
-  // @sect4{ConservationLaw::assemble_cell_term}
-  //
-  // This function assembles the cell term by computing the cell part of the
-  // residual, adding its negative to the right hand side vector, and adding
-  // its derivative with respect to the local variables to the Jacobian
-  // (i.e. the Newton matrix). Recall that the cell contributions to the
-  // residual read
-  // $R_i = \left(\frac{\mathbf{w}^{k}_{n+1} - \mathbf{w}_n}{\delta t} ,
-  // \mathbf{z}_i \right)_K $ $ +
-  // \theta \mathbf{B}(\mathbf{w}^{k}_{n+1})(\mathbf{z}_i)_K $ $ +
-  // (1-\theta) \mathbf{B}(\mathbf{w}_{n}) (\mathbf{z}_i)_K $ where
-  // $\mathbf{B}(\mathbf{w})(\mathbf{z}_i)_K =
-  // - \left(\mathbf{F}(\mathbf{w}),\nabla\mathbf{z}_i\right)_K $ $
-  // + h^{\eta}(\nabla \mathbf{w} , \nabla \mathbf{z}_i)_K $ $
-  // - (\mathbf{G}(\mathbf {w}), \mathbf{z}_i)_K $ for both
-  // $\mathbf{w} = \mathbf{w}^k_{n+1}$ and $\mathbf{w} = \mathbf{w}_{n}$ ,
-  // $\mathbf{z}_i$ is the $i$th vector valued test function.
-  //   Furthermore, the scalar product
-  // $\left(\mathbf{F}(\mathbf{w}), \nabla\mathbf{z}_i\right)_K$ is
-  // understood as $\int_K \sum_{c=1}^{\text{n\_components}}
-  // \sum_{d=1}^{\text{dim}} \mathbf{F}(\mathbf{w})_{cd}
-  // \frac{\partial z^c_i}{x_d}$ where $z^c_i$ is the $c$th component of
-  // the $i$th test function.
-  //
-  //
-  // At the top of this function, we do the usual housekeeping in terms of
-  // allocating some local variables that we will need later. In particular,
-  // we will allocate variables that will hold the values of the current
-  // solution $W_{n+1}^k$ after the $k$th Newton iteration (variable
-  // <code>W</code>) and the previous time step's solution $W_{n}$ (variable
-  // <code>W_old</code>).
-  //
-  // The actual format in which we store these variables requires some
-  // explanation. First, we need values at each quadrature point for each of
-  // the <code>EulerEquations::n_components</code> components of the solution
-  // vector. This makes for a two-dimensional table for which we use deal.II's
-  // Table class (this is more efficient than
-  // <code>std::vector@<std::vector@<T@> @></code> because it only needs to
-  // allocate memory once, rather than once for each element of the outer
-  // vector).
-  //
-  // Secondly, we want to use automatic differentiation. To this end, we use
-  // the Sacado::Fad::DFad template for everything that is computed from the
-  // variables with respect to which we would like to compute
-  // derivatives. This includes the current solution and gradient at the
-  // quadrature points (which are linear combinations of the degrees of
-  // freedom) as well as everything that is computed from them such as the
-  // residual, but not the previous time step's solution. These variables are
-  // all found in the first part of the function, along with a variable that
-  // we will use to store the derivatives of a single component of the
-  // residual:
-  template<int dim>
-  void ConservationLaw<dim>::assemble_cell_term(const FEValues<dim>&                        fe_v,
-                                                const std::vector<types::global_dof_index>& dof_indices) {
-    const unsigned int dofs_per_cell = fe_v.dofs_per_cell;
-    const unsigned int n_q_points    = fe_v.n_quadrature_points;
-
-    Table<2, Sacado::Fad::DFad<double>> W(n_q_points, EulerEquations<dim>::n_components);
-
-    Table<2, double> W_old(n_q_points, EulerEquations<dim>::n_components);
-
-    //--- Intermediate flux value
-    Table<2, double> W_int(n_q_points, EulerEquations<dim>::n_components);
-
-    std::vector<double> residual_derivatives(dofs_per_cell);
-
-    // Next, we have to define the independent variables that we will try to
-    // determine by solving a Newton step. These independent variables are the
-    // values of the local degrees of freedom which we extract here:
-    std::vector<Sacado::Fad::DFad<double>> independent_local_dof_values(dofs_per_cell);
-    for(unsigned int i = 0; i < dofs_per_cell; ++i)
-      independent_local_dof_values[i] = current_solution(dof_indices[i]);
-
-    // The next step incorporates all the magic: we declare a subset of the
-    // autodifferentiation variables as independent degrees of freedom,
-    // whereas all the other ones remain dependent functions. These are
-    // precisely the local degrees of freedom just extracted. All calculations
-    // that reference them (either directly or indirectly) will accumulate
-    // sensitivities with respect to these variables.
-    //
-    // In order to mark the variables as independent, the following does the
-    // trick, marking <code>independent_local_dof_values[i]</code> as the
-    // $i$th independent variable out of a total of
-    // <code>dofs_per_cell</code>:
-    for(unsigned int i = 0; i < dofs_per_cell; ++i)
-      independent_local_dof_values[i].diff(i, dofs_per_cell);
-
-    // After all these declarations, let us actually compute something. First,
-    // the values of <code>W</code>, <code>W_old</code>, which we can compute from the local DoF
-    // values by using the formula $W(x_q)=\sum_i \mathbf W_i \Phi_i(x_q)$,
-    // where
-    // $\mathbf W_i$ is the $i$th entry of the (local part of the) solution
-    // vector, and $\Phi_i(x_q)$ the value of the $i$th vector-valued shape
-    // function evaluated at quadrature point $x_q$.
-    //
-    // Ideally, we could compute this information using a call into something
-    // like FEValues::get_function_values and FEValues::get_function_gradients,
-    // but since (i) we would have to extend the FEValues class for this, and
-    // (ii) we don't want to make the entire <code>old_solution</code> vector
-    // fad types, only the local cell variables, we explicitly code the loop
-    // above. Before this, we add another loop that initializes all the fad
-    // variables to zero:
-    for(unsigned int q = 0; q < n_q_points; ++q) {
-      for(unsigned int c = 0; c < EulerEquations<dim>::n_components; ++c) {
-        W[q][c]     = 0;
-        W_old[q][c] = 0;
-        //--- Setting to zero flux second stage TR_BDF2
-        if(parameters.time_integration_scheme == "TR_BDF2" && TR_BDF2_stage == 2)
-          W_int[q][c] = 0;
-      }
-    }
-
-    for(unsigned int q = 0; q < n_q_points; ++q) {
-      for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-        const unsigned int c = fe_v.get_fe().system_to_component_index(i).first;
-
-        W[q][c] += independent_local_dof_values[i]*fe_v.shape_value_component(i, q, c);
-        W_old[q][c] += old_solution(dof_indices[i])*fe_v.shape_value_component(i, q, c);
-
-        //--- Setting W_int for second stage TR_BDF2
-        if(parameters.time_integration_scheme == "TR_BDF2" && TR_BDF2_stage == 2)
-          W_int[q][c] += intermediate_solution(dof_indices[i])*fe_v.shape_value_component(i, q, c);
-      }
-    }
-
-
-    // Next, in order to compute the cell contributions, we need to evaluate
-    // $\mathbf{F}({\mathbf w}^k_{n+1})$, $\mathbf{G}({\mathbf w}^k_{n+1})$ and
-    // $\mathbf{F}({\mathbf w}_n)$, $\mathbf{G}({\mathbf w}_n)$ at all
-    // quadrature points. To store these, we also need to allocate a bit of
-    // memory. Note that we compute the flux matrices and right hand sides in
-    // terms of autodifferentiation variables, so that the Jacobian
-    // contributions can later easily be computed from it:
-
-    std::vector<std::array<std::array<Sacado::Fad::DFad<double>, dim>,
-                           EulerEquations<dim>::n_components>>          flux(n_q_points);
-
-    std::vector<std::array<std::array<double, dim>, EulerEquations<dim>::n_components>> flux_old(n_q_points);
-
-    std::vector<std::array<Sacado::Fad::DFad<double>, EulerEquations<dim>::n_components>> forcing(n_q_points);
-
-    std::vector<std::array<double, EulerEquations<dim>::n_components>> forcing_old(n_q_points);
-
-    for(unsigned int q = 0; q < n_q_points; ++q) {
-      EulerEquations<dim>::compute_flux_matrix(W_old[q], flux_old[q]);
-      EulerEquations<dim>::compute_forcing_vector(W_old[q], forcing_old[q], parameters.testcase);
-      EulerEquations<dim>::compute_flux_matrix(W[q], flux[q]);
-      EulerEquations<dim>::compute_forcing_vector(W[q], forcing[q], parameters.testcase);
-    }
-
-
-    // We now have all of the pieces in place, so perform the assembly.  We
-    // have an outer loop through the components of the system, and an inner
-    // loop over the quadrature points, where we accumulate contributions to
-    // the $i$th residual $R_i$. The general formula for this residual is
-    // given in the introduction and at the top of this function. We can,
-    // however, simplify it a bit taking into account that the $i$th
-    // (vector-valued) test function $\mathbf{z}_i$ has in reality only a
-    // single nonzero component (more on this topic can be found in the @ref
-    // vector_valued module). It will be represented by the variable
-    // <code>component_i</code> below. With this, the residual term can be
-    // re-written as
-    // @f{eqnarray*}
-    // R_i &=&
-    // \left(\frac{(\mathbf{w}_{n+1} -
-    // \mathbf{w}_n)_{\text{component\_i}}}{\delta
-    // t},(\mathbf{z}_i)_{\text{component\_i}}\right)_K
-    // \\ &-& \sum_{d=1}^{\text{dim}} \left(  \theta \mathbf{F}
-    // ({\mathbf{w}^k_{n+1}})_{\text{component\_i},d} + (1-\theta)
-    // \mathbf{F} ({\mathbf{w}_{n}})_{\text{component\_i},d}  ,
-    // \frac{\partial(\mathbf{z}_i)_{\text{component\_i}}} {\partial
-    // x_d}\right)_K
-    // \\ &+& \sum_{d=1}^{\text{dim}} h^{\eta} \left( \theta \frac{\partial
-    // (\mathbf{w}^k_{n+1})_{\text{component\_i}}}{\partial x_d} + (1-\theta)
-    // \frac{\partial (\mathbf{w}_n)_{\text{component\_i}}}{\partial x_d} ,
-    // \frac{\partial (\mathbf{z}_i)_{\text{component\_i}}}{\partial x_d}
-    // \right)_K
-    // \\ &-& \left( \theta\mathbf{G}({\mathbf{w}^k_n+1} )_{\text{component\_i}}
-    // + (1-\theta)\mathbf{G}({\mathbf{w}_n})_{\text{component\_i}} ,
-    // (\mathbf{z}_i)_{\text{component\_i}} \right)_K ,
-    // @f}
-    // where integrals are
-    // understood to be evaluated through summation over quadrature points.
-    //
-    // We initially sum all contributions of the residual in the positive
-    // sense, so that we don't need to negative the Jacobian entries.  Then,
-    // when we sum into the <code>right_hand_side</code> vector, we negate
-    // this residual.
-    for(unsigned int i = 0; i < fe_v.dofs_per_cell; ++i) {
-      Sacado::Fad::DFad<double> R_i = 0;
-
-      const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
-
-      // The residual for each row (i) will be accumulating into this fad
-      // variable.  At the end of the assembly for this row, we will query
-      // for the sensitivities to this variable and add them into the
-      // Jacobian.
-
-      for(unsigned int point = 0; point < fe_v.n_quadrature_points; ++point) {
-        //--- Reorganize residual computation
-        if(parameters.time_integration_scheme == "Theta_Method") {
-          if(parameters.is_stationary == false)
-            R_i += 1.0/parameters.time_step *
-                   (W[point][component_i] - W_old[point][component_i]) *
-                    fe_v.shape_value_component(i, point, component_i) *
-                    fe_v.JxW(point);
-
-          for(unsigned int d = 0; d < dim; d++)
-            R_i -= (parameters.theta*flux[point][component_i][d] +
-                   (1.0 - parameters.theta)*flux_old[point][component_i][d]) *
-                   fe_v.shape_grad_component(i, point, component_i)[d] *
-                   fe_v.JxW(point);
-
-          R_i -= (parameters.theta*forcing[point][component_i] +
-                  (1.0 - parameters.theta)*forcing_old[point][component_i]) *
-                  fe_v.shape_value_component(i, point, component_i) *
-                  fe_v.JxW(point);
-        }
-        //--- Stages of TR-BDF2
-        else {
-          //--- First stage of TR_BDF2
-          if(TR_BDF2_stage == 1) {
-            if(parameters.is_stationary == false)
-              R_i += 1.0/parameters.time_step *
-                     (W[point][component_i] - W_old[point][component_i]) *
-                     fe_v.shape_value_component(i, point, component_i) *
-                     fe_v.JxW(point);
-
-            for(unsigned int d = 0; d < dim; d++)
-              R_i -= (parameters.theta*flux[point][component_i][d] +
-                      parameters.theta*flux_old[point][component_i][d]) *
-                     fe_v.shape_grad_component(i, point, component_i)[d] *
-                     fe_v.JxW(point);
-
-            R_i -= (parameters.theta * forcing[point][component_i] +
-                    parameters.theta * forcing_old[point][component_i]) *
-                   fe_v.shape_value_component(i, point, component_i) *
-                   fe_v.JxW(point);
-          }
-          //--- Second stage of TR_BDF2
-          else if(TR_BDF2_stage == 2) {
-            if(parameters.is_stationary == false)
-              R_i += 1.0/parameters.time_step *
-                     (W[point][component_i] - gamma_3*W_int[point][component_i] - (1.0 - gamma_3)*W_old[point][component_i]) *
-                     fe_v.shape_value_component(i, point, component_i) *
-                     fe_v.JxW(point);
-
-            for(unsigned int d = 0; d < dim; d++)
-              R_i -= gamma_2*flux[point][component_i][d] *
-                     fe_v.shape_grad_component(i, point, component_i)[d] *
-                     fe_v.JxW(point);
-
-            R_i -=  gamma_2*forcing[point][component_i] *
-                    fe_v.shape_value_component(i, point, component_i) *
-                    fe_v.JxW(point);
-          }
-        }
-
-      }
-
-      // At the end of the loop, we have to add the sensitivities to the
-      // matrix and subtract the residual from the right hand side. Trilinos
-      // FAD data type gives us access to the derivatives using
-      // <code>R_i.fastAccessDx(k)</code>, so we store the data in a
-      // temporary array. This information about the whole row of local dofs
-      // is then added to the Trilinos matrix at once (which supports the
-      // data types we have chosen).
-      for(unsigned int k = 0; k < dofs_per_cell; ++k)
-        residual_derivatives[k] = R_i.fastAccessDx(k);
-      system_matrix.add(dof_indices[i], dof_indices, residual_derivatives);
-      right_hand_side(dof_indices[i]) -= R_i.val();
-    }
-  }
-
-
-  // @sect4{ConservationLaw::assemble_face_term}
-  //
-  // Here, we do essentially the same as in the previous function. At the top,
-  // we introduce the independent variables. Because the current function is
-  // also used if we are working on an internal face between two cells, the
-  // independent variables are not only the degrees of freedom on the current
-  // cell but in the case of an interior face also the ones on the neighbor.
-  template<int dim>
-  void ConservationLaw<dim>::assemble_face_term(const unsigned int                          face_no,
-                                                const FEFaceValuesBase<dim>&                fe_v,
-                                                const FEFaceValuesBase<dim>&                fe_v_neighbor,
-                                                const std::vector<types::global_dof_index>& dof_indices,
-                                                const std::vector<types::global_dof_index>& dof_indices_neighbor,
-                                                const bool                                  external_face,
-                                                const unsigned int                          boundary_id) {
-    const unsigned int n_q_points             = fe_v.n_quadrature_points;
-    const unsigned int dofs_per_cell          = fe_v.dofs_per_cell;
-
-    std::vector<Sacado::Fad::DFad<double>> independent_local_dof_values(dofs_per_cell),
-                                           independent_neighbor_dof_values(external_face == false ?
-                                                                           dofs_per_cell : 0);
-
-    const unsigned int n_independent_variables = (external_face == false ? dofs_per_cell + dofs_per_cell : dofs_per_cell);
-
-    for(unsigned int i = 0; i < dofs_per_cell; i++) {
-      independent_local_dof_values[i] = current_solution(dof_indices[i]);
-      independent_local_dof_values[i].diff(i, n_independent_variables);
-    }
-
-    if(external_face == false) {
-      for(unsigned int i = 0; i < dofs_per_cell; i++) {
-        independent_neighbor_dof_values[i] = current_solution(dof_indices_neighbor[i]);
-        independent_neighbor_dof_values[i].diff(i + dofs_per_cell, n_independent_variables);
-      }
-    }
-
-
-    // Next, we need to define the values of the conservative variables
-    // ${\mathbf W}$ on this side of the face ($ {\mathbf W}^+$)
-    // and on the opposite side (${\mathbf W}^-$), for both ${\mathbf W} =
-    // {\mathbf W}^k_{n+1}$ and  ${\mathbf W} = {\mathbf W}_n$.
-    // The "this side" values can be
-    // computed in exactly the same way as in the previous function, but note
-    // that the <code>fe_v</code> variable now is of type FEFaceValues or
-    // FESubfaceValues:
-    Table<2, Sacado::Fad::DFad<double>> Wplus(n_q_points, EulerEquations<dim>::n_components),
-                                        Wminus(n_q_points, EulerEquations<dim>::n_components);
-    Table<2, double> Wplus_old(n_q_points, EulerEquations<dim>::n_components),
-                     Wminus_old(n_q_points, EulerEquations<dim>::n_components);
-
-    for(unsigned int q = 0; q < n_q_points; ++q) {
-      for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-        const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
-        Wplus[q][component_i] += independent_local_dof_values[i] *
-                                 fe_v.shape_value_component(i, q, component_i);
-        Wplus_old[q][component_i] += old_solution(dof_indices[i]) *
-                                     fe_v.shape_value_component(i, q, component_i);
-      }
-    }
-
-    // Computing "opposite side" is a bit more complicated. If this is
-    // an internal face, we can compute it as above by simply using the
-    // independent variables from the neighbor:
-    if(external_face == false) {
-      for(unsigned int q = 0; q < n_q_points; ++q) {
-        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-          const unsigned int component_i = fe_v_neighbor.get_fe().system_to_component_index(i).first;
-          Wminus[q][component_i] += independent_neighbor_dof_values[i] *
-                                    fe_v_neighbor.shape_value_component(i, q, component_i);
-          Wminus_old[q][component_i] += old_solution(dof_indices_neighbor[i]) *
-                                        fe_v_neighbor.shape_value_component(i, q, component_i);
-        }
-      }
-    }
-    // On the other hand, if this is an external boundary face, then the
-    // values of $\mathbf{W}^-$ will be either functions of $\mathbf{W}^+$, or
-    // they will be prescribed, depending on the kind of boundary condition
-    // imposed here.
-    //
-    // To start the evaluation, let us ensure that the boundary id specified
-    // for this boundary is one for which we actually have data in the
-    // parameters object. Next, we evaluate the function object for the
-    // inhomogeneity.  This is a bit tricky: a given boundary might have both
-    // prescribed and implicit values.  If a particular component is not
-    // prescribed, the values evaluate to zero and are ignored below.
-    //
-    // The rest is done by a function that actually knows the specifics of
-    // Euler equation boundary conditions. Note that since we are using fad
-    // variables here, sensitivities will be updated appropriately, a process
-    // that would otherwise be tremendously complicated.
-    else {
-      Assert(boundary_id < Parameters::AllParameters<dim>::max_n_boundaries,
-             ExcIndexRange(boundary_id, 0, Parameters::AllParameters<dim>::max_n_boundaries));
-
-      std::vector<Vector<double>> boundary_values(n_q_points, Vector<double>(EulerEquations<dim>::n_components));
-      if(parameters.testcase == 0)
-        parameters.boundary_conditions[boundary_id].values.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
-      else
-        parameters.exact_solution.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
-
-      for(unsigned int q = 0; q < n_q_points; q++) {
-        EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
-                                            fe_v.normal_vector(q), Wplus[q], boundary_values[q], Wminus[q]);
-        // Here we assume that boundary type, boundary normal vector and
-        // boundary data values maintain the same during time advancing.
-        EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
-                                            fe_v.normal_vector(q), Wplus_old[q], boundary_values[q], Wminus_old[q]);
-      }
-    }
-
-
-    // Now that we have $\mathbf w^+$ and $\mathbf w^-$, we can go about
-    // computing the numerical flux function $\mathbf H(\mathbf w^+,\mathbf
-    // w^-, \mathbf n)$ for each quadrature point. Before calling the function
-    // that does so, we also need to determine the Lax-Friedrich's stability
-    // parameter:
-
-    std::vector<std::array<Sacado::Fad::DFad<double>, EulerEquations<dim>::n_components>> normal_fluxes(n_q_points);
-    std::vector<std::array<double, EulerEquations<dim>::n_components>>  normal_fluxes_old(n_q_points);
-
-    for(unsigned int q = 0; q < n_q_points; ++q) {
-      /*auto lambda = std::max(EulerEquations<dim>::compute_velocity(Wplus[q])  +
-                             EulerEquations<dim>::compute_speed_of_sound(Wplus[q]),
-                             EulerEquations<dim>::compute_velocity(Wminus[q]) +
-                             EulerEquations<dim>::compute_speed_of_sound(Wminus[q]));*/
-      auto lambda_old = std::max(EulerEquations<dim>::compute_velocity(Wplus_old[q])  +
-                                 EulerEquations<dim>::compute_speed_of_sound(Wplus_old[q]),
-                                 EulerEquations<dim>::compute_velocity(Wminus_old[q]) +
-                                 EulerEquations<dim>::compute_speed_of_sound(Wminus_old[q]));
-
-      EulerEquations<dim>::numerical_normal_flux(fe_v.normal_vector(q), Wplus[q], Wminus[q], lambda_old, normal_fluxes[q]);
-      EulerEquations<dim>::numerical_normal_flux(fe_v.normal_vector(q), Wplus_old[q], Wminus_old[q], lambda_old, normal_fluxes_old[q]);
-    }
-
-    // Now assemble the face term in exactly the same way as for the cell
-    // contributions in the previous function. The only difference is that if
-    // this is an internal face, we also have to take into account the
-    // sensitivities of the residual contributions to the degrees of freedom on
-    // the neighboring cell:
-    std::vector<double> residual_derivatives(dofs_per_cell);
-    for(unsigned int i = 0; i < fe_v.dofs_per_cell; ++i) {
-      if(fe_v.get_fe().has_support_on_face(i, face_no) == true) {
-        Sacado::Fad::DFad<double> R_i = 0;
-
-        for(unsigned int point = 0; point < n_q_points; ++point) {
-          const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
-
-          //--- Reorganizing contributions
-          if(parameters.time_integration_scheme == "Theta_Method") {
-            R_i += (parameters.theta*normal_fluxes[point][component_i] +
-                    (1.0 - parameters.theta)*normal_fluxes_old[point][component_i]) *
-                   fe_v.shape_value_component(i, point, component_i) *
-                   fe_v.JxW(point);
-          }
-          //--- TR_BDF2 assembling
-          else {
-            //--- First stage of TR_BDF2
-            if(TR_BDF2_stage == 1) {
-              R_i += (parameters.theta*normal_fluxes[point][component_i] +
-                      parameters.theta*normal_fluxes_old[point][component_i]) *
-                     fe_v.shape_value_component(i, point, component_i) *
-                     fe_v.JxW(point);
+              assemble_face_term(face_no, fe_v_face, fe_v_subface_neighbor,
+                                 false, numbers::invalid_unsigned_int);
+              copy_local_to_global_auxiliary(dof_indices, dof_indices_neighbor);
             }
-            //--- Second stage of TR_BDF2
-            else if(TR_BDF2_stage == 2) {
-              R_i += gamma_2*normal_fluxes[point][component_i]*
-                     fe_v.shape_value_component(i, point, component_i) *
-                     fe_v.JxW(point);
+            // Same refinement level
+            else {
+              fe_v_face.reinit(cell, face_no);
+              const typename DoFHandler<dim>::cell_iterator neighbor = cell->neighbor(face_no);
+              const unsigned int other_face_no = cell->neighbor_of_neighbor(face_no);
+              fe_v_face_neighbor.reinit(neighbor, other_face_no);
+              neighbor->get_dof_values(locally_relevant_solution, local_current_solution_neighbor);
+              neighbor->get_dof_indices(dof_indices_neighbor);
+
+              assemble_face_term(face_no, fe_v_face, fe_v_face_neighbor,
+                                 false, numbers::invalid_unsigned_int);
+              copy_local_to_global_auxiliary(dof_indices, dof_indices_neighbor);
             }
           }
         }
-
-        for(unsigned int k = 0; k < dofs_per_cell; ++k)
-          residual_derivatives[k] = R_i.fastAccessDx(k);
-        system_matrix.add(dof_indices[i], dof_indices, residual_derivatives);
-
-        if(external_face == false) {
-          for(unsigned int k = 0; k < dofs_per_cell; ++k)
-            residual_derivatives[k] = R_i.fastAccessDx(dofs_per_cell + k);
-          system_matrix.add(dof_indices[i], dof_indices_neighbor, residual_derivatives);
-        }
-
-        right_hand_side(dof_indices[i]) -= R_i.val();
       }
     }
   }
@@ -2038,20 +2202,10 @@ namespace Step33 {
 
   template<int dim>
   std::pair<unsigned int, double>
-  ConservationLaw<dim>::solve(Vector<double>& newton_update) {
+  ConservationLaw<dim>::solve(LA::MPI::Vector& newton_update) {
+    TimerOutput::Scope t(time_table, "Solve");
+
     switch(parameters.solver) {
-      // If the parameter file specified that a direct solver shall be used,
-      // then we'll get here. The process is straightforward, since deal.II
-      // provides a wrapper class to the Amesos direct solver within
-      // Trilinos. All we have to do is to create a solver control object
-      // (which is just a dummy object here, since we won't perform any
-      // iterations), and then create the direct solver object. When
-      // actually doing the solve, note that we don't pass a
-      // preconditioner. That wouldn't make much sense for a direct solver
-      // anyway.  At the end we return the solver control statistics &mdash;
-      // which will tell that no iterations have been performed and that the
-      // final linear residual is zero, absent any better information that
-      // may be provided here:
       case Parameters::Solver::direct:
       {
         SolverControl  solver_control(1, 0);
@@ -2063,31 +2217,6 @@ namespace Step33 {
         return {solver_control.last_step(), solver_control.last_value()};
       }
 
-      // Likewise, if we are to use an iterative solver, we use Aztec's GMRES
-      // solver. We could use the Trilinos wrapper classes for iterative
-      // solvers and preconditioners here as well, but we choose to use an
-      // Aztec solver directly. For the given problem, Aztec's internal
-      // preconditioner implementations are superior over the ones deal.II has
-      // wrapper classes to, so we use ILU-T preconditioning within the
-      // AztecOO solver and set a bunch of options that can be changed from
-      // the parameter file.
-      //
-      // There are two more practicalities: Since we have built our right hand
-      // side and solution vector as deal.II Vector objects (as opposed to the
-      // matrix, which is a Trilinos object), we must hand the solvers
-      // Trilinos Epetra vectors.  Luckily, they support the concept of a
-      // 'view', so we just send in a pointer to our deal.II vectors. We have
-      // to provide an Epetra_Map for the vector that sets the parallel
-      // distribution, which is just a dummy object in serial. The easiest way
-      // is to ask the matrix for its map, and we're going to be ready for
-      // matrix-vector products with it.
-      //
-      // Secondly, the Aztec solver wants us to pass a Trilinos
-      // Epetra_CrsMatrix in, not the deal.II wrapper class itself. So we
-      // access to the actual Trilinos matrix in the Trilinos wrapper class by
-      // the command trilinos_matrix(). Trilinos wants the matrix to be
-      // non-constant, so we have to manually remove the constantness using a
-      // const_cast.
       case Parameters::Solver::gmres:
       {
         Epetra_Vector x(View, system_matrix.trilinos_matrix().DomainMap(),
@@ -2113,7 +2242,7 @@ namespace Step33 {
         solver.SetAztecParam(AZ_athresh, parameters.ilut_atol);
         solver.SetAztecParam(AZ_rthresh, parameters.ilut_rtol);
 
-        solver.SetUserMatrix(const_cast<Epetra_CrsMatrix *>(&system_matrix.trilinos_matrix()));
+        solver.SetUserMatrix(const_cast<Epetra_CrsMatrix*>(&system_matrix.trilinos_matrix()));
 
         solver.Iterate(parameters.max_iterations, parameters.linear_residual);
 
@@ -2146,18 +2275,21 @@ namespace Step33 {
   // mesh. At the beginning, we loop over all cells and mark those that we
   // think should be refined:
   template<int dim>
-  void ConservationLaw<dim>::refine_grid(const Vector<double> &refinement_indicators) {
+  void ConservationLaw<dim>::refine_grid(const Vector<double>& refinement_indicators) {
     for(const auto& cell: dof_handler.active_cell_iterators()) {
-      const unsigned int cell_no = cell->active_cell_index();
-      cell->clear_coarsen_flag();
-      cell->clear_refine_flag();
+      if(cell->is_locally_owned()) {
+        const unsigned int cell_no = cell->active_cell_index();
+        cell->clear_coarsen_flag();
+        cell->clear_refine_flag();
 
-      if(cell->level() < parameters.shock_levels &&
-         std::fabs(refinement_indicators(cell_no)) > parameters.shock_val)
-        cell->set_refine_flag();
-      else if(cell->level() > 0 && std::fabs(refinement_indicators(cell_no)) < 0.75*parameters.shock_val)
-        cell->set_coarsen_flag();
+        if(cell->level() < parameters.shock_levels &&
+           std::fabs(refinement_indicators(cell_no)) > parameters.shock_val)
+          cell->set_refine_flag();
+        else if(cell->level() > 0 && std::fabs(refinement_indicators(cell_no)) < 0.75*parameters.shock_val)
+          cell->set_coarsen_flag();
+      }
     }
+    MPI_Barrier(communicator);
 
     // Then we need to transfer the various solution vectors from the old to
     // the new grid while we do the refinement. The SolutionTransfer class is
@@ -2165,43 +2297,52 @@ namespace Step33 {
     // examples, so we won't comment much on the following code. The last
     // three lines simply re-set the sizes of some other vectors to the now
     // correct size:
-    std::vector<Vector<double>> transfer_in;
-    std::vector<Vector<double>> transfer_out;
 
-    transfer_in.push_back(old_solution);
-    transfer_in.push_back(predictor);
+    // Transfer solution to vector that provides access to
+    // locally relevant DoFs
+    std::vector<LA::MPI::Vector> transfer_in(2);
+    transfer_in[0].reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
+    transfer_in[1].reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
+    transfer_in[0] = old_solution;
+    transfer_in[1] = predictor;
 
+    // Initialize SolutionTransfer object and refine grid
     triangulation.prepare_coarsening_and_refinement();
-
-    SolutionTransfer<dim> soltrans(dof_handler);
-    soltrans.prepare_for_coarsening_and_refinement(transfer_in);
-
+    parallel::distributed::SolutionTransfer<dim,LA::MPI::Vector> soltrans(dof_handler);
+    std::vector<const LA::MPI::Vector*> transfer_in_tmp(2);
+    for(unsigned int index = 0; index < 2; ++index) {
+      const LA::MPI::Vector* tmp = &transfer_in[index];
+      transfer_in_tmp[index] = tmp;
+    }
+    const std::vector<const LA::MPI::Vector*> transfer_in_const = transfer_in_tmp;
+    soltrans.prepare_for_coarsening_and_refinement(transfer_in_const);
     triangulation.execute_coarsening_and_refinement();
 
+    // Distribute dofs and recreate locally_owned_dofs and locally_relevant_dofs index sets
     dof_handler.clear();
     dof_handler.distribute_dofs(fe);
+    locally_owned_dofs = dof_handler.locally_owned_dofs();
+    DoFTools::extract_locally_relevant_dofs(dof_handler, locally_relevant_dofs);
 
-    {
-      Vector<double> new_old_solution(1);
-      Vector<double> new_predictor(1);
+    // Create auxiliary vector to save the interpolation
+    // (necessary because interpolate can be called only once
+    // otherwise directly used old_solution and predictor)
+    std::vector<LA::MPI::Vector*> transfer_out(2);
+    transfer_out[0]->reinit(locally_owned_dofs, communicator);
+    transfer_out[1]->reinit(locally_owned_dofs, communicator);
 
-      transfer_out.push_back(new_old_solution);
-      transfer_out.push_back(new_predictor);
-      transfer_out[0].reinit(dof_handler.n_dofs());
-      transfer_out[1].reinit(dof_handler.n_dofs());
-    }
+    // Interpolate
+    soltrans.interpolate(transfer_out);
 
-    soltrans.interpolate(transfer_in, transfer_out);
-
-    old_solution.reinit(transfer_out[0].size());
-    old_solution = transfer_out[0];
-
-    predictor.reinit(transfer_out[1].size());
-    predictor = transfer_out[1];
-
-    current_solution.reinit(dof_handler.n_dofs());
+    // Assign the functions to the new interpolated
+    old_solution.reinit(locally_owned_dofs, communicator);
+    old_solution = *transfer_out[0];
+    predictor.reinit(locally_owned_dofs, communicator);
+    predictor = *transfer_out[1];
+    current_solution.reinit(locally_owned_dofs, communicator);
     current_solution = old_solution;
-    right_hand_side.reinit(dof_handler.n_dofs());
+    right_hand_side.reinit(locally_owned_dofs, communicator);
+    right_hand_side_explicit.reinit(locally_owned_dofs, communicator);
   }
 
 
@@ -2210,11 +2351,13 @@ namespace Step33 {
   // This function now is rather standard in computing errors. We use masks to extract
   // errors for single components.
   template<int dim>
-  void ConservationLaw<dim>::compute_errors(std::ofstream& output_errors) const {
+  void ConservationLaw<dim>::compute_errors() {
+    TimerOutput::Scope t(time_table, "Compute Errors");
+
     Vector<double> cellwise_errors(triangulation.n_active_cells());
     VectorTools::integrate_difference(mapping,
                                       dof_handler,
-                                      current_solution,
+                                      locally_relevant_solution,
                                       parameters.exact_solution,
                                       cellwise_errors,
                                       quadrature,
@@ -2222,12 +2365,11 @@ namespace Step33 {
     const double error = VectorTools::compute_global_error(triangulation,
                                                            cellwise_errors,
                                                            VectorTools::L2_norm);
-    output_errors<<error<<std::endl;
     const ComponentSelectFunction<dim> density_mask(EulerEquations<dim>::density_component,
                                                     EulerEquations<dim>::density_component + 1);
     VectorTools::integrate_difference(mapping,
                                       dof_handler,
-                                      current_solution,
+                                      locally_relevant_solution,
                                       parameters.exact_solution,
                                       cellwise_errors,
                                       quadrature,
@@ -2236,13 +2378,12 @@ namespace Step33 {
     const double density_error = VectorTools::compute_global_error(triangulation,
                                                                    cellwise_errors,
                                                                    VectorTools::L2_norm);
-    output_errors<<density_error<<std::endl;
     const ComponentSelectFunction<dim> velocity_mask(std::make_pair(EulerEquations<dim>::first_momentum_component,
                                                                     EulerEquations<dim>::first_momentum_component + dim),
                                                      EulerEquations<dim>::first_momentum_component + dim + 1);
     VectorTools::integrate_difference(mapping,
                                       dof_handler,
-                                      current_solution,
+                                      locally_relevant_solution,
                                       parameters.exact_solution,
                                       cellwise_errors,
                                       quadrature,
@@ -2251,12 +2392,11 @@ namespace Step33 {
     const double velocity_error = VectorTools::compute_global_error(triangulation,
                                                                     cellwise_errors,
                                                                     VectorTools::L2_norm);
-    output_errors<<velocity_error<<std::endl;
     const ComponentSelectFunction<dim> energy_mask(EulerEquations<dim>::energy_component,
                                                    EulerEquations<dim>::energy_component + 1);
     VectorTools::integrate_difference(mapping,
                                       dof_handler,
-                                      current_solution,
+                                      locally_relevant_solution,
                                       parameters.exact_solution,
                                       cellwise_errors,
                                       quadrature,
@@ -2265,7 +2405,12 @@ namespace Step33 {
     const double energy_error = VectorTools::compute_global_error(triangulation,
                                                                   cellwise_errors,
                                                                   VectorTools::L2_norm);
-    output_errors<<energy_error<<std::endl;
+    if(Utilities::MPI::this_mpi_process(communicator) == 0) {
+      output_error << error << std::endl;
+      output_error << density_error << std::endl;
+      output_error << velocity_error << std::endl;
+      output_error << energy_error << std::endl;
+    }
   }
 
 
@@ -2287,57 +2432,22 @@ namespace Step33 {
     DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler);
 
-    data_out.add_data_vector(current_solution,
+    data_out.add_data_vector(locally_relevant_solution,
                              EulerEquations<dim>::component_names(),
                              DataOut<dim>::type_dof_data,
                              EulerEquations<dim>::component_interpretation());
 
-    data_out.add_data_vector(current_solution, postprocessor);
+    data_out.add_data_vector(locally_relevant_solution, postprocessor);
 
     data_out.build_patches();
 
     static unsigned int output_file_number = 0;
     std::string         filename =
-      "./" + parameters.dir + "/solution-" + Utilities::int_to_string(output_file_number, 3) + ".vtk";
-    std::ofstream output(filename);
-    data_out.write_vtk(output);
+      "./" + parameters.dir + "/solution-" + Utilities::int_to_string(output_file_number, 3) + ".vtu";
+    data_out.write_vtu_in_parallel(filename, communicator);
 
     ++output_file_number;
   }
-
-
-  // @sect4{ConservationLaw::compute_maximum_cell_transport_speed}
-
-  // This function computes the maximum speed for time step computation
-
-  template<int dim>
-  double ConservationLaw<dim>::compute_maximum_cell_transport_speed() const {
-    const QIterated<dim> quadrature_formula(QTrapez<1>(), fe.degree + 1);
-    const unsigned int   n_q_points = quadrature_formula.size();
-
-    FEValues<dim>        fe_v(mapping, dof_handler.get_fe(),
-                              quadrature_formula, update_values);
-    const unsigned int dofs_per_cell = fe_v.dofs_per_cell;
-    std::vector<types::global_dof_index> dof_indices(dofs_per_cell);
-    Table<2, double> W(n_q_points, EulerEquations<dim>::n_components);
-    double res = 0.0;
-
-    for(const auto& cell: dof_handler.active_cell_iterators()) {
-      fe_v.reinit(cell);
-      cell->get_dof_indices(dof_indices);
-      for(unsigned int q = 0; q < n_q_points; ++q) {
-        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-          const unsigned int c = fe_v.get_fe().system_to_component_index(i).first;
-          W[q][c] += current_solution(dof_indices[i])*fe_v.shape_value_component(i, q, c);
-        }
-        const double tmp = EulerEquations<dim>::compute_velocity(W[q]) +
-                           EulerEquations<dim>::compute_speed_of_sound(W[q]);
-        res = std::max(res, tmp/cell->diameter());
-      }
-    }
-    return res;
-  }
-
 
 
   // @sect4{ConservationLaw::run}
@@ -2372,7 +2482,7 @@ namespace Step33 {
 
     if(parameters.do_refine == true) {
       for(unsigned int i = 0; i < parameters.shock_levels; ++i) {
-        Vector<double> refinement_indicators(triangulation.n_active_cells());
+        Vector<double> refinement_indicators(triangulation.n_locally_owned_active_cells());
 
         compute_refinement_indicators(refinement_indicators);
         refine_grid(refinement_indicators);
@@ -2387,28 +2497,29 @@ namespace Step33 {
       }
     }
 
+    TimerOutput::Scope t(time_table, "Output results");
     output_results();
-    std::ofstream output_errors("./" + parameters.dir + "/error_analysis.dat");
 
     // We then enter into the main time stepping loop. At the top we simply
     // output some status information so one can keep track of where a
     // computation is, as well as the header for a table that indicates
     // progress of the nonlinear inner iteration:
-    Vector<double> newton_update(dof_handler.n_dofs());
+    LA::MPI::Vector newton_update;
+    newton_update.reinit(locally_owned_dofs, communicator);
 
-    double time        = 0;
+    double time = 0.0;
     double next_output = time + parameters.output_step;
 
     while(time < parameters.final_time) {
-      std::cout << "T=" << time << std::endl
-                << "   Number of active cells:       "
-                << triangulation.n_active_cells() << std::endl
-                << "   Number of degrees of freedom: " << dof_handler.n_dofs()
-                << std::endl
-                << std::endl;
+      pcout << "T=" << time << std::endl
+            << "   Number of active cells:       "
+            << triangulation.n_global_active_cells() << std::endl
+            << "   Number of degrees of freedom: " << dof_handler.n_dofs()
+            << std::endl
+            << std::endl;
 
-      std::cout << "   NonLin Res     Lin Iter       Lin Res" << std::endl
-                << "   _____________________________________" << std::endl;
+      pcout << "   NonLin Res     Lin Iter       Lin Res" << std::endl
+            << "   _____________________________________" << std::endl;
 
       // Then comes the inner Newton iteration to solve the nonlinear
       // problem in each time step. The way it works is to reset matrix and
@@ -2436,19 +2547,22 @@ namespace Step33 {
       unsigned int nonlin_iter = 0;
       unsigned int totlin_iter = 0;
       //current_solution         = predictor;
+      locally_relevant_old_solution = old_solution;
       //--- Restyling for TR_BDF2
       if(parameters.time_integration_scheme == "Theta_Method") {
+        assemble_explicit_system();
         while(true) {
-          system_matrix = 0;
-
-          right_hand_side = 0;
           if(parameters.testcase == 1)
             parameters.exact_solution.set_time(time + parameters.time_step);
+          locally_relevant_solution = current_solution;
+          system_matrix = 0;
+          right_hand_side = right_hand_side_explicit;
           assemble_system();
 
           const double res_norm = right_hand_side.l2_norm();
           if(std::fabs(res_norm) < 1e-10) {
-            std::printf("   %-16.3e (converged)\n\n", res_norm);
+            if(Utilities::MPI::this_mpi_process(communicator) == 0)
+              std::printf("   %-16.3e (converged)\n\n", res_norm);
             break;
           }
           else {
@@ -2458,8 +2572,9 @@ namespace Step33 {
 
             current_solution += newton_update;
 
-            std::printf("   %-16.3e %04d        %-5.2e\n",
-                        res_norm, convergence.first, convergence.second);
+            if(Utilities::MPI::this_mpi_process(communicator) == 0)
+              std::printf("   %-16.3e %04d        %-5.2e\n",
+                          res_norm, convergence.first, convergence.second);
             totlin_iter += convergence.first;
           }
 
@@ -2470,18 +2585,20 @@ namespace Step33 {
       }
       //--- TR_BDF2 Newton loops
       else {
+        assemble_explicit_system();
         //--- First stage Newton loop
         while(true) {
-          system_matrix = 0;
-
-          right_hand_side = 0;
           if(parameters.testcase == 1)
             parameters.exact_solution.set_time(time + 2.0*parameters.theta*parameters.time_step);
+          locally_relevant_solution = current_solution;
+          system_matrix = 0;
+          right_hand_side = right_hand_side_explicit;
           assemble_system();
 
           const double res_norm = right_hand_side.l2_norm();
           if(std::fabs(res_norm) < 1e-10) {
-            std::printf("   %-16.3e (converged)\n\n", res_norm);
+            if(Utilities::MPI::this_mpi_process(communicator) == 0)
+              std::printf("   %-16.3e (converged)\n\n", res_norm);
             break;
           }
           else {
@@ -2491,10 +2608,11 @@ namespace Step33 {
 
             current_solution += newton_update;
 
-            std::printf("   %-16.3e %04d        %-5.2e\n",
-                        res_norm,
-                        convergence.first,
-                        convergence.second);
+            if(Utilities::MPI::this_mpi_process(communicator) == 0)
+              std::printf("   %-16.3e %04d        %-5.2e\n",
+                          res_norm,
+                          convergence.first,
+                          convergence.second);
             totlin_iter += convergence.first;
           }
 
@@ -2506,18 +2624,20 @@ namespace Step33 {
                                                   //---(fundamental for 1.0/Delta_t residual contribution)
         nonlin_iter = 0; //--- Reset iterations of Newton
         TR_BDF2_stage = 2; //--- Flag to specify that we have to pass at second stage
+        assemble_explicit_system();
         //--- TR_BDF2 second stage Newton loop
         while(true) {
-          system_matrix = 0;
-
-          right_hand_side = 0;
           if(parameters.testcase == 1)
             parameters.exact_solution.set_time(time + parameters.time_step);
+          locally_relevant_solution = current_solution;
+          system_matrix = 0;
+          right_hand_side = right_hand_side_explicit;
           assemble_system();
 
           const double res_norm = right_hand_side.l2_norm();
           if(std::fabs(res_norm) < 1e-10) {
-            std::printf("   %-16.3e (converged)\n\n", res_norm);
+            if(Utilities::MPI::this_mpi_process(communicator) == 0)
+              std::printf("   %-16.3e (converged)\n\n", res_norm);
             break;
           }
           else {
@@ -2527,10 +2647,11 @@ namespace Step33 {
 
             current_solution += newton_update;
 
-            std::printf("   %-16.3e %04d        %-5.2e\n",
-                        res_norm,
-                        convergence.first,
-                        convergence.second);
+            if(Utilities::MPI::this_mpi_process(communicator) == 0)
+              std::printf("   %-16.3e %04d        %-5.2e\n",
+                          res_norm,
+                          convergence.first,
+                          convergence.second);
             totlin_iter += convergence.first;
           }
 
@@ -2540,8 +2661,8 @@ namespace Step33 {
         }
         TR_BDF2_stage = 1; //--- Flag to specify that we have to pass at first stage in the next step
       }
-      output_niter << totlin_iter <<std::endl;
-
+      if(Utilities::MPI::this_mpi_process(communicator) == 0)
+        output_niter << totlin_iter <<std::endl;
 
       // We only get to this point if the Newton iteration has converged, so
       // do various post convergence tasks here:
@@ -2558,13 +2679,14 @@ namespace Step33 {
       // this, we then refine the mesh if so desired by the user, and
       // finally continue on with the next time step:
       if(parameters.testcase == 1)
-        compute_errors(output_errors);
+        compute_errors();
 
       time += parameters.time_step;
 
       if(parameters.output_step < 0)
         output_results();
       else if(time >= next_output) {
+        TimerOutput::Scope t(time_table, "Output results");
         output_results();
         next_output += parameters.output_step;
       }
@@ -2581,8 +2703,9 @@ namespace Step33 {
         refine_grid(refinement_indicators);
         setup_system();
 
-        newton_update.reinit(dof_handler.n_dofs());
+        newton_update.reinit(locally_relevant_dofs, communicator);
       }
+      time_table.print_wall_time_statistics(communicator);
     }
   }
 } // namespace Step33
@@ -2605,11 +2728,10 @@ int main(int argc, char *argv[]) {
     ParameterHandler prm;
     Parameters::AllParameters<2>::declare_parameters(prm);
     prm.parse_input(argv[1]);
-    const unsigned int fe_degree = prm.get_integer("degree");
 
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, dealii::numbers::invalid_unsigned_int);
 
-    ConservationLaw<2> cons(prm, fe_degree);
+    ConservationLaw<2> cons(prm);
     cons.run();
   }
   catch (std::exception &exc) {
