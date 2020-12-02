@@ -175,7 +175,7 @@ namespace Step35
                           Patterns::Double(0.),
                           " The time step size. ");
         //--- Declare TR-BDF2 parameter scheme
-        prm.declare_entry("theta", "2.0/3.0", Patterns::Double(0.0, 1.0), "Theta-method parameter");
+        prm.declare_entry("theta", "0.29", Patterns::Double(0.0, 1.0), "TR_BDF2 parameter");
       }
       prm.leave_subsection();
 
@@ -471,7 +471,7 @@ namespace Step35
     SparsityPattern sparsity_pattern_pressure;
     SparsityPattern sparsity_pattern_pres_vel;
 
-    SparseMatrix<double> vel_Laplace_plus_Mass_stage_1; //--- I have two constant laplace plus mass amtrices
+    SparseMatrix<double> vel_Laplace_plus_Mass_stage_1; //--- I have two constant laplace plus mass matrices
     SparseMatrix<double> vel_Laplace_plus_Mass_stage_2; //--- so I adapt the situation
     SparseMatrix<double> vel_it_matrix[dim];
     SparseMatrix<double> vel_Mass;
@@ -490,6 +490,7 @@ namespace Step35
     Vector<double> u_star[dim];
     Vector<double> force[dim];
     Vector<double> pres_tmp;
+    Vector<double> v_tmp;
     Vector<double> rot_u;
 
     SparseILU<double>   prec_velocity[dim];
@@ -617,8 +618,8 @@ namespace Step35
       AdvectionPerTaskData(const unsigned int dpc): local_advection(dpc, dpc),
                                                     local_dof_indices(dpc) {
         //--- Initialize the vectors inside the array
-        for(unsigned int d = 0; d < dim; ++dim)
-          local_vel_rhs[d] = Vecotr<double>(dpc);
+        for(unsigned int d = 0; d < dim; ++d)
+          local_vel_rhs[d] = Vector<double>(dpc);
       }
     };
 
@@ -650,6 +651,7 @@ namespace Step35
                                                               grad_u_star(nqp),
                                                               grad_u_n(nqp),
                                                               u_star_tmp(nqp),
+                                                              u_n_tmp(nqp),
                                                               fe_val(data.fe_val.get_fe(),
                                                               data.fe_val.get_quadrature(),
                                                               data.fe_val.get_update_flags()) {}
@@ -759,6 +761,7 @@ namespace Step35
       u_star[d].reinit(dof_handler_velocity.n_dofs());
       force[d].reinit(dof_handler_velocity.n_dofs());
     }
+    v_tmp.reinit(dof_handler_velocity.n_dofs());
     rot_u.reinit(dof_handler_velocity.n_dofs());
 
     std::cout << "dim (X_h) = " << (dof_handler_velocity.n_dofs() * dim)
@@ -984,8 +987,10 @@ namespace Step35
       verbose_cout << "  Projection Step stage 1" << std::endl;
       projection_step((n == 2));
       verbose_cout << "  Updating the Velocity stage 1" << std::endl;
-      for(unsigned int d = 0; d < dim; ++d)
-        pres_Diff[d].vmult_add(u_n_minus_1[d], -gamma*dt*phi_n);
+      for(unsigned int d = 0; d < dim; ++d) {
+        pres_tmp.equ(-theta*dt, phi_n);
+        pres_Diff[d].vmult_add(u_n_minus_1[d], pres_tmp);
+      }
       verbose_cout << "  Updating the Pressure stage 1" << std::endl;
       update_pressure((n == 2));
       TR_BDF2_stage = 2; //--- Flag to pass at second stage
@@ -996,8 +1001,10 @@ namespace Step35
       verbose_cout << "  Projection Step stage 2" << std::endl;
       projection_step(false);
       verbose_cout << "  Updating the Velocity stage 1" << std::endl;
-      for(unsigned int d = 0; d < dim; ++d)
-        pres_Diff[d].vmult_add(u_n[d], (gamma - 1.0)*dt*phi_n);
+      for(unsigned int d = 0; d < dim; ++d) {
+        pres_tmp.equ((theta - 1.0)*dt, phi_n);
+        pres_Diff[d].vmult_add(u_n[d], pres_tmp);
+      }
       verbose_cout << "  Updating the Pressure stage 2" << std::endl;
       update_pressure(false);
       TR_BDF2_stage = 1; //--- Flag to pass at first stage at next step
@@ -1014,14 +1021,16 @@ namespace Step35
     if(TR_BDF2_stage == 1) {
       for(unsigned int d = 0; d < dim; ++d) {
         u_star[d].equ(1.0 + theta/(2.0*(1.0 - theta)), u_n[d]);
-        u_star[d] -= theta/(2.0*(1.0 - theta))*u_n_minus_1[d];
+        v_tmp.equ(theta/(2.0*(1.0 - theta)), u_n_minus_1[d]);
+        u_star[d] -= v_tmp;
       }
     }
     //--- TR-BDF2 second step
     else {
       for(unsigned int d = 0; d < dim; ++d) {
         u_star[d].equ(1.0 + (1.0 - theta)/theta, u_n_minus_1[d]);
-        u_star[d] -= (1.0 - theta)/theta*u_n[d];
+        v_tmp.equ((1.0 - theta)/theta, u_n[d]);
+        u_star[d] -= v_tmp;
       }
     }
   }
@@ -1053,9 +1062,11 @@ namespace Step35
     //--- Let's start from the first stage
     if(TR_BDF2_stage == 1) {
       for(unsigned int d = 0; d < dim; ++d) {
-        vel_Mass.vmult_add(force[d], 1.0/(theta*dt)*u_n[d]);
+        v_tmp.equ(1.0/(theta*dt), u_n[d]);
+        vel_Mass.vmult_add(force[d], v_tmp);
         //--- Add explicit contribution of viscous present in Della-Rocca formulation
-        vel_Laplace.vmult_add(force[d], 0.5/Re, u_n[d]);
+        v_tmp.equ(0.5/Re, u_n[d]);
+        vel_Laplace.vmult_add(force[d], v_tmp);
 
         pres_Diff[d].vmult_add(force[d], pres_tmp);
 
@@ -1104,10 +1115,13 @@ namespace Step35
     //--- Let us focus now on the second stage
     else {
       for(unsigned int d = 0; d < dim; ++d) {
-        vel_Mass.vmult_add(force[d], 1.0/((1.0 - theta)*dt)*u_n_minus_1[d]);
+        v_tmp.equ(1.0/((1.0 - theta)*dt), u_n_minus_1[d]);
+        vel_Mass.vmult_add(force[d], v_tmp);
         //--- Add explicit contribution of viscous present in Della-Rocca formulation
-        vel_Laplace.vmult_add(force[d], (1.0 - theta)/(2.0*(2.0 - theta)*Re)*u_n[d]);
-        vel_Laplace.vmult_add(force[d], (1.0 - theta)/(2.0*(2.0 - theta)*Re)*u_n_minus_1[d]);
+        v_tmp.equ((1.0 - theta)/(2.0*(2.0 - theta)*Re), u_n[d]);
+        vel_Laplace.vmult_add(force[d], v_tmp);
+        v_tmp.equ((1.0 - theta)/(2.0*(2.0 - theta)*Re), u_n_minus_1[d]);
+        vel_Laplace.vmult_add(force[d], v_tmp);
 
         pres_Diff[d].vmult_add(force[d], pres_tmp);
 
@@ -1319,7 +1333,7 @@ namespace Step35
                                            scratch.fe_val.shape_value(i, q)*
                                            scratch.fe_val.JxW(q);
       }
-
+    }
   }
 
 
@@ -1330,10 +1344,10 @@ namespace Step35
         vel_Advection.add(data.local_dof_indices[i],
                           data.local_dof_indices[j],
                           data.local_advection(i, j));
-
-      for(unsigned int d = 0; d < dim; )
-        force[d].add(data.local_dof_indices[i], data.local_vel_rhs[d](i));
     }
+
+    for(unsigned int d = 0; d < dim; ++d)
+      force[d].add(data.local_dof_indices, data.local_vel_rhs[d]);
   }
 
 
@@ -1350,7 +1364,7 @@ namespace Step35
       for(unsigned d = 0; d < dim; ++d)
         pres_Diff[d].Tvmult_add(pres_tmp, u_n_minus_1[d]);
     }
-    else(TR_BDF2_stage == 1) {
+    else {
       for(unsigned d = 0; d < dim; ++d)
         pres_Diff[d].Tvmult_add(pres_tmp, u_n[d]);
     }
@@ -1373,9 +1387,9 @@ namespace Step35
     cg.solve(pres_iterative, phi_n, pres_tmp, prec_pres_Laplace);
 
     if(TR_BDF2_stage == 1)
-      phi_n *= 1.0/(gamma*dt);
+      phi_n *= 1.0/(theta*dt);
     else
-      phi_n *= 1.0/((1.0 - gamma)*dt);
+      phi_n *= 1.0/((1.0 - theta)*dt);
   }
 
 
