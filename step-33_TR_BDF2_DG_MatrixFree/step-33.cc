@@ -1247,6 +1247,10 @@ namespace Step33 {
                         const std::vector<LinearAlgebra::distributed::Vector<Number>>& src,
                         LinearAlgebra::distributed::Vector<Number>&                    dst);
 
+    void vmult_rhs(const double                                      next_time,
+                   const LinearAlgebra::distributed::Vector<Number>& src,
+                   LinearAlgebra::distributed::Vector<Number>&       dst);
+
     virtual void compute_diagonal() override {}
 
   protected:
@@ -1273,6 +1277,18 @@ namespace Step33 {
                                          LinearAlgebra::distributed::Vector<Number>&                    dst,
                                          const std::vector<LinearAlgebra::distributed::Vector<Number>>& src,
                                          const std::pair<unsigned int, unsigned int>&                   face_range);
+    void assemble_rhs_cell_term(const MatrixFree<dim, Number>&                    data,
+                                LinearAlgebra::distributed::Vector<Number>&       dst,
+                                const LinearAlgebra::distributed::Vector<Number>& src,
+                                const std::pair<unsigned int, unsigned int>& cell_range);
+    void assemble_rhs_face_term(const MatrixFree<dim, Number>&                    data,
+                                LinearAlgebra::distributed::Vector<Number>&       dst,
+                                const LinearAlgebra::distributed::Vector<Number>& src,
+                                const std::pair<unsigned int, unsigned int>&      face_range);
+    void assemble_rhs_boundary_term(const MatrixFree<dim, Number>&                    data,
+                                    LinearAlgebra::distributed::Vector<Number>&       dst,
+                                    const LinearAlgebra::distributed::Vector<Number>& src,
+                                    const std::pair<unsigned int, unsigned int>&      face_range);
   };
 
   // Default constructor
@@ -1473,6 +1489,165 @@ namespace Step33 {
                      MatrixFree<dim, Number>::DataAccessOnFaces::values);
   }
 
+  // Assemble rhs contribution of cells
+  template<int dim, int fe_degree, int n_q_points_1d, typename Number>
+  void ConservationLawOperator<dim, fe_degree, n_q_points_1d, Number>::
+  assemble_rhs_cell_term(const MatrixFree<dim, Number>&                    data,
+                         LinearAlgebra::distributed::Vector<Number>&       dst,
+                         const LinearAlgebra::distributed::Vector<Number>& src,
+                         const std::pair<unsigned int, unsigned int>&      cell_range) {
+    Tensor<1, EulerEquations<dim>::n_components, Tensor<1, dim, VectorizedArray<Number>>> flux;
+    Tensor<1, EulerEquations<dim>::n_components, VectorizedArray<Number>>                 forcing;
+
+    FEEvaluation<dim, fe_degree, n_q_points_1d, EulerEquations<dim>::n_components, Number> phi(data);
+
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi.reinit(cell);
+      phi.gather_evaluate(src, true, false);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        const auto W = phi.get_value(q);
+        EulerEquations<dim>::compute_flux_matrix(W, flux);
+        EulerEquations<dim>::compute_forcing_vector(W, forcing, parameters.testcase);
+        if(parameters.time_integration_scheme == "Theta_Method") {
+          phi.submit_gradient(parameters.theta*flux, q);
+          if(parameters.is_stationary == false)
+            phi.submit_value(-1.0/parameters.time_step*W + parameters.theta*forcing, q);
+          else
+            phi.submit_value(parameters.theta*forcing, q);
+        }
+        //--- Stages of TR-BDF2
+        else {
+          //--- First stage of TR_BDF2
+          if(TR_BDF2_stage == 1) {
+            phi.submit_gradient(parameters.theta*flux, q);
+            if(parameters.is_stationary == false)
+              phi.submit_value(-1.0/parameters.time_step*W + parameters.theta*forcing, q);
+            else
+              phi.submit_value(parameters.theta*forcing, q);
+          }
+          //--- Second stage of TR_BDF2
+          else if(TR_BDF2_stage == 2) {
+            phi.submit_gradient(gamma_2*flux, q);
+            if(parameters.is_stationary == false)
+              phi.submit_value(-1.0/parameters.time_step*W + gamma_2*forcing, q);
+            else
+              phi.submit_value(gamma_2*forcing, q);
+          }
+        }
+      }
+      phi.integrate_scatter(true, true, dst);
+    }
+  }
+
+  // Assemble right_hand_side contribution for interior faces
+  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  void ConservationLawOperator<dim, fe_degree, n_q_points_1d, Number>::
+  assemble_rhs_face_term(const MatrixFree<dim, Number>&                    data,
+                         LinearAlgebra::distributed::Vector<Number>&       dst,
+                         const LinearAlgebra::distributed::Vector<Number>& src,
+                         const std::pair<unsigned int, unsigned int>&      face_range) {
+    Tensor<1, EulerEquations<dim>::n_components, VectorizedArray<Number>> normal_fluxes;
+
+    FEFaceEvaluation<dim, fe_degree, n_q_points_1d, EulerEquations<dim>::n_components, Number> phi_m(data, false);
+    FEFaceEvaluation<dim, fe_degree, n_q_points_1d, EulerEquations<dim>::n_components, Number> phi_p(data, true);
+
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      phi_p.reinit(face);
+      phi_p.gather_evaluate(src, true, false);
+
+      phi_m.reinit(face);
+      phi_m.gather_evaluate(src, true, false);
+
+      for(unsigned int q = 0; q < phi_m.n_q_points; ++q) {
+        const auto Wminus = phi_m.get_value(q);
+        const auto Wplus  = phi_p.get_value(q);
+        EulerEquations<dim>::numerical_normal_flux(phi_p.get_normal_vector(q), Wplus, Wminus, lambda_old, normal_fluxes);
+        if(parameters.time_integration_scheme == "Theta_Method") {
+          phi_m.submit_value(parameters.theta*normal_fluxes, q);
+          phi_p.submit_value(-parameters.theta*normal_fluxes, q);
+        }
+        else {
+          if(TR_BDF2_stage == 1) {
+            phi_m.submit_value(parameters.theta*normal_fluxes, q);
+            phi_p.submit_value(-parameters.theta*normal_fluxes, q);
+          }
+          else {
+            phi_m.submit_value(gamma_2*normal_fluxes, q);
+            phi_p.submit_value(-gamma_2*normal_fluxes, q);
+          }
+        }
+      }
+      phi_p.integrate_scatter(true, false, dst);
+      phi_m.integrate_scatter(true, false, dst);
+    }
+  }
+
+  // Assemble explicit contribution for boundary faces
+  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  void ConservationLawOperator<dim, fe_degree, n_q_points_1d, Number>::
+  assemble_rhs_boundary_term(const MatrixFree<dim, Number>&                    data,
+                             LinearAlgebra::distributed::Vector<Number>&       dst,
+                             const LinearAlgebra::distributed::Vector<Number>& src,
+                             const std::pair<unsigned int, unsigned int>&      face_range) {
+    Tensor<1, EulerEquations<dim>::n_components, VectorizedArray<Number>> normal_fluxes;
+    Tensor<1, EulerEquations<dim>::n_components, VectorizedArray<Number>> Wminus;
+
+    FEFaceEvaluation<dim, fe_degree, n_q_points_1d, EulerEquations<dim>::n_components, Number> phi(data, true);
+
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      phi.reinit(face);
+      phi.gather_evaluate(src, true, false);
+
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        const auto Wplus = phi.get_value(q);
+        const auto boundary_id = data.get_boundary_id(face);
+        Assert(boundary_id < Parameters::AllParameters<dim>::max_n_boundaries,
+               ExcIndexRange(boundary_id, 0, Parameters::AllParameters<dim>::max_n_boundaries));
+        Vector<double> boundary_values(EulerEquations<dim>::n_components);
+        const auto& p_vectorized = phi.quadrature_point(q);
+        Point<dim> p;
+        for(unsigned d = 0; d < dim; ++d)
+          p[d] = p_vectorized[d][0];
+        if(parameters.testcase == 0)
+          parameters.boundary_conditions[boundary_id].values.vector_value(p, boundary_values);
+        else
+          parameters.exact_solution.vector_value(p, boundary_values);
+        EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
+                                            phi.get_normal_vector(q), Wplus, boundary_values, Wminus);
+        EulerEquations<dim>::numerical_normal_flux(phi.get_normal_vector(q), Wplus, Wminus, lambda_old, normal_fluxes);
+        if(parameters.time_integration_scheme == "Theta_Method")
+          phi.submit_value(-parameters.theta*normal_fluxes, q);
+        else {
+          if(TR_BDF2_stage == 1)
+            phi.submit_value(-parameters.theta*normal_fluxes, q);
+          else
+            phi.submit_value(-gamma_2*normal_fluxes, q);
+        }
+      }
+      phi.integrate_scatter(true, false, dst);
+    }
+  }
+
+  // Collect all the contributions and execute loop
+  template <int dim, int fe_degree, int n_q_points_1d, typename Number>
+  void ConservationLawOperator<dim, fe_degree, n_q_points_1d, Number>::
+  vmult_rhs(const double                                      next_time,
+            const LinearAlgebra::distributed::Vector<Number>& src,
+            LinearAlgebra::distributed::Vector<Number>&       dst) {
+    if(parameters.testcase == 1)
+      parameters.exact_solution.set_time(next_time);
+
+    this->data->loop(&ConservationLawOperator::assemble_rhs_cell_term,
+                     &ConservationLawOperator::assemble_rhs_face_term,
+                     &ConservationLawOperator::assemble_rhs_boundary_term,
+                     this,
+                     dst,
+                     src,
+                     true,
+                     MatrixFree<dim, Number>::DataAccessOnFaces::values,
+                     MatrixFree<dim, Number>::DataAccessOnFaces::values);
+  }
+
 
   // @sect3{Conservation law class}
 
@@ -1493,6 +1668,7 @@ namespace Step33 {
 
     //--- MatrixFree part
     void assemble_explicit_system(const double current_time);
+    void assemble_rhs(const double next_time);
 
     //--- Standard approach
     void assemble_cell_term(const FEValues<dim>& fe_v);
@@ -1562,8 +1738,8 @@ namespace Step33 {
     LA::MPI::Vector predictor;
 
     LA::MPI::Vector right_hand_side;
-    LinearAlgebra::ReadWriteVector<double> right_hand_side_explicit_tmp;
-    LinearAlgebra::distributed::Vector<double> right_hand_side_explicit;
+    LinearAlgebra::ReadWriteVector<double> right_hand_side_exchanger;
+    LinearAlgebra::distributed::Vector<double> right_hand_side_explicit, right_hand_side_mf;
 
     LA::MPI::Vector locally_relevant_solution;  //--- Extra variables for parallel purposes (read-only)
 
@@ -1686,7 +1862,7 @@ namespace Step33 {
     current_solution.reinit(locally_owned_dofs, communicator);
     predictor.reinit(locally_owned_dofs, communicator);
     right_hand_side.reinit(locally_owned_dofs, communicator);
-    right_hand_side_explicit_tmp.reinit(locally_owned_dofs, communicator);
+    right_hand_side_exchanger.reinit(locally_owned_dofs, communicator);
   }
 
 
@@ -1714,6 +1890,7 @@ namespace Step33 {
     matrix_free_explicit_storage->reinit(mapping, dof_handler, dummy, face_quadrature, additional_data);
     matrix_free_explicit.initialize(matrix_free_explicit_storage);
     matrix_free_explicit.initialize_dof_vector(right_hand_side_explicit);
+    matrix_free_explicit.initialize_dof_vector(right_hand_side_mf);
 
     DynamicSparsityPattern dsp(dof_handler.n_dofs(), dof_handler.n_dofs());
     DoFTools::make_flux_sparsity_pattern(dof_handler, dsp);
@@ -1745,6 +1922,22 @@ namespace Step33 {
   }
 
 
+  // @sect4{ConservationLaw::assemble_rhs}
+  //
+  template<int dim>
+  void ConservationLaw<dim>::assemble_rhs(const double next_time) {
+    TimerOutput::Scope t(time_table, "Assemble rhs");
+
+    LinearAlgebra::ReadWriteVector<double> current_solution_tmp;
+    current_solution_tmp.reinit(current_solution);
+    LinearAlgebra::distributed::Vector<double> current_solution_tmp1;
+    matrix_free_explicit.initialize_dof_vector(current_solution_tmp1);
+    current_solution_tmp1.import(current_solution_tmp, VectorOperation::insert);
+
+    matrix_free_explicit.vmult_rhs(next_time, current_solution_tmp1, right_hand_side_mf);
+  }
+
+
   // @sect4{ConservationLaw::assemble_cell_term}
   //
   template<int dim>
@@ -1755,7 +1948,6 @@ namespace Step33 {
     const unsigned int n_q_points    = fe_v.n_quadrature_points;
 
     cell_matrix = 0;
-    cell_rhs = 0;
 
     Table<2, Sacado::Fad::DFad<double>> W(n_q_points, EulerEquations<dim>::n_components);
 
@@ -1853,7 +2045,6 @@ namespace Step33 {
       for(unsigned int j = 0; j < dofs_per_cell; ++j)
         cell_matrix(i, j) += R_i.fastAccessDx(j);
 
-      cell_rhs(i) -= R_i.val();
     }
   }
 
@@ -1869,7 +2060,6 @@ namespace Step33 {
     TimerOutput::Scope t(time_table, "Assemble face term");
 
     cell_matrix     = 0;
-    cell_rhs        = 0;
     aux_cell_matrix = 0;
 
     const unsigned int n_q_points    = fe_v.n_quadrature_points;
@@ -1979,7 +2169,6 @@ namespace Step33 {
             aux_cell_matrix(i, j) += R_i.fastAccessDx(dofs_per_cell + j);
         }
 
-        cell_rhs(i) -= R_i.val();
       }
     }
   }
@@ -2004,7 +2193,7 @@ namespace Step33 {
                                                             const std::vector<types::global_dof_index>& dof_indices_neighbor) {
     TimerOutput::Scope t(time_table, "Copy local to global auxiliary");
 
-    constraints.distribute_local_to_global(cell_matrix, cell_rhs, dof_indices, system_matrix, right_hand_side);
+    constraints.distribute_local_to_global(cell_matrix, dof_indices, system_matrix);
     constraints.distribute_local_to_global(aux_cell_matrix, dof_indices, dof_indices_neighbor, system_matrix);
     system_matrix.compress(VectorOperation::add);
     right_hand_side.compress(VectorOperation::add);
@@ -2271,7 +2460,7 @@ namespace Step33 {
     current_solution.reinit(locally_owned_dofs, communicator);
     current_solution = old_solution;
     right_hand_side.reinit(locally_owned_dofs, communicator);
-    right_hand_side_explicit_tmp.reinit(locally_owned_dofs, communicator);
+    right_hand_side_exchanger.reinit(locally_owned_dofs, communicator);
   }
 
 
@@ -2485,8 +2674,11 @@ namespace Step33 {
             parameters.exact_solution.set_time(time + parameters.time_step);
           locally_relevant_solution = current_solution;
           system_matrix = 0;
-          right_hand_side_explicit_tmp.import(right_hand_side_explicit, VectorOperation::insert);
-          right_hand_side.import(right_hand_side_explicit_tmp, VectorOperation::insert);
+          right_hand_side_exchanger.import(right_hand_side_explicit, VectorOperation::insert);
+          right_hand_side.import(right_hand_side_exchanger, VectorOperation::insert);
+          assemble_rhs(time + parameters.time_step);
+          right_hand_side_exchanger.import(right_hand_side_mf, VectorOperation::insert);
+          right_hand_side.import(right_hand_side_exchanger, VectorOperation::add);
           assemble_system();
 
           const double res_norm = right_hand_side.l2_norm();
@@ -2522,8 +2714,11 @@ namespace Step33 {
             parameters.exact_solution.set_time(time + 2.0*parameters.theta*parameters.time_step);
           locally_relevant_solution = current_solution;
           system_matrix = 0;
-          right_hand_side_explicit_tmp.import(right_hand_side_explicit, VectorOperation::insert);
-          right_hand_side.import(right_hand_side_explicit_tmp, VectorOperation::insert);
+          right_hand_side_exchanger.import(right_hand_side_explicit, VectorOperation::insert);
+          right_hand_side.import(right_hand_side_exchanger, VectorOperation::insert);
+          assemble_rhs(time + 2.0*parameters.theta*parameters.time_step);
+          right_hand_side_exchanger.import(right_hand_side_mf, VectorOperation::insert);
+          right_hand_side.import(right_hand_side_exchanger, VectorOperation::add);
           assemble_system();
 
           const double res_norm = right_hand_side.l2_norm();
@@ -2563,8 +2758,11 @@ namespace Step33 {
             parameters.exact_solution.set_time(time + parameters.time_step);
           locally_relevant_solution = current_solution;
           system_matrix = 0;
-          right_hand_side_explicit_tmp.import(right_hand_side_explicit, VectorOperation::insert);
-          right_hand_side.import(right_hand_side_explicit_tmp, VectorOperation::insert);
+          right_hand_side_exchanger.import(right_hand_side_explicit, VectorOperation::insert);
+          right_hand_side.import(right_hand_side_exchanger, VectorOperation::insert);
+          assemble_rhs(time + parameters.time_step);
+          right_hand_side_exchanger.import(right_hand_side_mf, VectorOperation::insert);
+          right_hand_side.import(right_hand_side_exchanger, VectorOperation::add);
           assemble_system();
 
           const double res_norm = right_hand_side.l2_norm();
