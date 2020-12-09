@@ -1,23 +1,3 @@
-/* ---------------------------------------------------------------------
- *
- * Copyright (C) 2007 - 2019 by the deal.II authors
- *
- * This file is part of the deal.II library.
- *
- * The deal.II library is free software; you can use it, redistribute
- * it, and/or modify it under the terms of the GNU Lesser General
- * Public License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- * The full text of the license can be found in the file LICENSE.md at
- * the top level directory of deal.II.
- *
- * ---------------------------------------------------------------------
-
- *
- * Author: David Neckels, Boulder, Colorado, 2007, 2008
- */
-
-
 // @sect3{Include files}
 
 // First a standard set of deal.II includes. Nothing special to comment on
@@ -85,14 +65,16 @@
 #include <deal.II/lac/generic_linear_algebra.h>
 #include <deal.II/base/parsed_convergence_table.h>
 #include <deal.II/lac/solver_gmres.h>
+#include <deal.II/lac/petsc_matrix_free.h>
+#include <deal.II/lac/petsc_solver.h>
 
 // To end this section, introduce everything in the dealii library into the
 // namespace into which the contents of this program will go:
 namespace Step33 {
   using namespace dealii;
   namespace LA {
-     //using namespace dealii::LinearAlgebraPETSc;
-     using namespace dealii::LinearAlgebraTrilinos;
+     using namespace dealii::LinearAlgebraPETSc;
+     //using namespace dealii::LinearAlgebraTrilinos;
   }
 
   // @sect3{Euler equation specifics}
@@ -1250,7 +1232,7 @@ namespace Step33 {
   // sofisticated like matrix-free but a good alternative, especially in approaches
   // that employ the automatic differentiation)
   template<int dim>
-  class ConservationLawOperator {
+  class ConservationLawOperator: public PETScWrappers::MatrixFree {
   public:
     ConservationLawOperator(const DoFHandler<dim>& dof_handler,
                             const MappingQ1<dim>&  mapping,
@@ -1258,7 +1240,9 @@ namespace Step33 {
                             const QGauss<dim - 1>& face_quadrature,
                             TimerOutput&           time_table,
                             ParameterHandler&      prm,
-                            LA::MPI::Vector&       locally_relevant_solution);
+                            LA::MPI::Vector&       locally_relevant_solution,
+                            const MPI_Comm&        communicator,
+                            const unsigned int     n);
 
     void set_TR_BDF2_stage(const unsigned int stage);
 
@@ -1276,8 +1260,13 @@ namespace Step33 {
                                                                          const Vector<double>&        local_current_solution,
                                                                          const Vector<double>&        local_current_solution_n) const;
 
-    void vmult(LinearAlgebra::distributed::Vector<double>&       dst,
-               const LinearAlgebra::distributed::Vector<double>& src) const;
+    void vmult(PETScWrappers::VectorBase&, const PETScWrappers::VectorBase&) const override;
+
+    void Tvmult(PETScWrappers::VectorBase&, const PETScWrappers::VectorBase&) const override {}
+
+    void vmult_add(PETScWrappers::VectorBase&, const PETScWrappers::VectorBase&) const override {}
+
+    void Tvmult_add(PETScWrappers::VectorBase&, const PETScWrappers::VectorBase&) const override {}
 
   private:
     const DoFHandler<dim>& dof_handler;
@@ -1303,9 +1292,11 @@ namespace Step33 {
                                                         const QGauss<dim - 1>& face_quadrature,
                                                         TimerOutput&           time_table,
                                                         ParameterHandler&      prm,
-                                                        LA::MPI::Vector&       locally_relevant_solution):
-    dof_handler(dof_handler), mapping(mapping), quadrature(quadrature), face_quadrature(face_quadrature), time_table(time_table),
-    parameters(prm), locally_relevant_solution(locally_relevant_solution) {
+                                                        LA::MPI::Vector&       locally_relevant_solution,
+                                                        const MPI_Comm&        communicator,
+                                                        const unsigned int     n):
+    PETScWrappers::MatrixFree(communicator, n, n, n, n), dof_handler(dof_handler), mapping(mapping), quadrature(quadrature),
+    face_quadrature(face_quadrature), time_table(time_table), parameters(prm), locally_relevant_solution(locally_relevant_solution) {
       //--- Compute the other two parameters of TR_BDF2 scheme
       if(parameters.time_integration_scheme == "TR_BDF2") {
         parameters.theta = 1.0 - std::sqrt(2)/2.0;
@@ -1575,8 +1566,8 @@ namespace Step33 {
 
   // Now we compute the action of the operator, namely the matrix-vector operator
   template<int dim>
-  void ConservationLawOperator<dim>::vmult(LinearAlgebra::distributed::Vector<double>& dst,
-                                           const LinearAlgebra::distributed::Vector<double>& src) const {
+  void ConservationLawOperator<dim>::vmult(PETScWrappers::VectorBase&       dst,
+                                           const PETScWrappers::VectorBase& src) const {
     TimerOutput::Scope t(time_table, "Action of linear operator");
 
     const unsigned int dofs_per_cell = dof_handler.get_fe().dofs_per_cell;
@@ -1771,7 +1762,7 @@ namespace Step33 {
     void copy_local_to_global(const std::vector<types::global_dof_index>& dof_indices);
     void assemble_rhs();
 
-    std::pair<unsigned int, double> solve(LinearAlgebra::distributed::Vector<double>& newton_update);
+    std::pair<unsigned int, double> solve(PETScWrappers::MPI::Vector& newton_update);
 
     void compute_refinement_indicators(Vector<double>& indicator) const;
     void refine_grid(const Vector<double>& indicator);
@@ -1829,8 +1820,7 @@ namespace Step33 {
     LA::MPI::Vector locally_relevant_solution,
                     locally_relevant_old_solution;  //--- Extra variables for parallel purposes (read-only)
 
-    LinearAlgebra::distributed::Vector<double> right_hand_side_mf;
-    LinearAlgebra::ReadWriteVector<double>     right_hand_side_exchanger;
+    PETScWrappers::MPI::Vector                 right_hand_side_mf;
 
     // This final set of member variables (except for the object holding all
     // run-time parameters at the very bottom and a screen output stream that
@@ -1896,7 +1886,8 @@ namespace Step33 {
                Utilities::int_to_string(Utilities::MPI::n_mpi_processes(communicator)) + "proc.dat"),
       ptime_out(time_out, Utilities::MPI::this_mpi_process(communicator) == 0),
       time_table(ptime_out, TimerOutput::never, TimerOutput::wall_times),
-      matrix_free(dof_handler, mapping, quadrature, face_quadrature, time_table, prm, locally_relevant_solution) {
+      matrix_free(dof_handler, mapping, quadrature, face_quadrature, time_table, prm, locally_relevant_solution,
+                  communicator, dof_handler.n_dofs()) {
     //--- Compute the other two parameters of TR_BDF2 scheme
     if(parameters.time_integration_scheme == "TR_BDF2") {
       parameters.theta = 1.0 - std::sqrt(2)/2.0;
@@ -1964,7 +1955,6 @@ namespace Step33 {
     TimerOutput::Scope t(time_table, "Setup system");
 
     right_hand_side_mf.reinit(locally_owned_dofs, communicator);
-    right_hand_side_exchanger.reinit(locally_owned_dofs, communicator);
 
     //--- Read-only variant of the solution that must be set after the solution
     locally_relevant_solution.reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
@@ -2614,17 +2604,17 @@ namespace Step33 {
   // pair of number of iterations and the final linear residual.
 
   template<int dim>
-  std::pair<unsigned int, double> ConservationLaw<dim>::solve(LinearAlgebra::distributed::Vector<double>& newton_update) {
+  std::pair<unsigned int, double> ConservationLaw<dim>::solve(PETScWrappers::MPI::Vector& newton_update) {
     TimerOutput::Scope t(time_table, "Solve");
 
     switch(parameters.solver) {
       case Parameters::Solver::direct:
       {
         SolverControl  solver_control(1, 0);
-        TrilinosWrappers::SolverDirect::AdditionalData data(parameters.output == Parameters::Solver::verbose);
-        TrilinosWrappers::SolverDirect direct(solver_control, data);
+        //PETScWrappers::SparseDirectMUMPS::AdditionalData data(parameters.output == Parameters::Solver::verbose);
+        PETScWrappers::SparseDirectMUMPS direct(solver_control, communicator);
 
-        direct.solve(newton_update, right_hand_side_mf);
+        direct.solve(matrix_free, newton_update, right_hand_side_mf);
 
         return {solver_control.last_step(), solver_control.last_value()};
       }
@@ -2632,7 +2622,9 @@ namespace Step33 {
       case Parameters::Solver::gmres:
       {
         SolverControl solver_control(parameters.max_iterations, parameters.linear_residual);
-        SolverGMRES<LinearAlgebra::distributed::Vector<double>> gmres(solver_control);
+        SolverGMRES<PETScWrappers::MPI::Vector> gmres(solver_control);
+        //PETScWrappers::PreconditionJacobi preconditioner;
+        //preconditioner.initialize(matrix_free);
         gmres.solve(matrix_free, newton_update, right_hand_side_mf, PreconditionIdentity());
 
         return {solver_control.last_step(), solver_control.last_value()};
@@ -2893,11 +2885,9 @@ namespace Step33 {
     // computation is, as well as the header for a table that indicates
     // progress of the nonlinear inner iteration:
     LA::MPI::Vector newton_update;
-    LinearAlgebra::distributed::Vector<double> newton_update_mf;
-    LinearAlgebra::ReadWriteVector<double> newton_update_exchanger;
+    PETScWrappers::MPI::Vector newton_update_mf;
     newton_update.reinit(locally_owned_dofs, communicator);
     newton_update_mf.reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
-    newton_update_exchanger.reinit(locally_owned_dofs, communicator);
 
     double time = 0.0;
     double next_output = time + parameters.output_step;
@@ -2948,8 +2938,7 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          right_hand_side_exchanger.import(right_hand_side, VectorOperation::insert);
-          right_hand_side_mf.import(right_hand_side_exchanger, VectorOperation::insert);
+          right_hand_side_mf = right_hand_side;
           matrix_free.set_current_time(time + parameters.time_step);
           matrix_free.set_lambda_old(lambda_old);
 
@@ -2963,8 +2952,7 @@ namespace Step33 {
             newton_update_mf = 0;
 
             std::pair<unsigned int, double> convergence = solve(newton_update_mf);
-            newton_update_exchanger.import(newton_update_mf, VectorOperation::insert);
-            newton_update.import(newton_update_exchanger, VectorOperation::insert);
+            newton_update = newton_update_mf;
 
             current_solution += newton_update;
 
@@ -2989,8 +2977,7 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          right_hand_side_exchanger.import(right_hand_side, VectorOperation::insert);
-          right_hand_side_mf.import(right_hand_side_exchanger, VectorOperation::insert);
+          right_hand_side_mf = right_hand_side;
           matrix_free.set_current_time(time + 2.0*parameters.theta*parameters.time_step);
           matrix_free.set_lambda_old(lambda_old);
           matrix_free.set_TR_BDF2_stage(TR_BDF2_stage);
@@ -3005,8 +2992,7 @@ namespace Step33 {
             newton_update_mf = 0;
 
             std::pair<unsigned int, double> convergence = solve(newton_update_mf);
-            newton_update_exchanger.import(newton_update_mf, VectorOperation::insert);
-            newton_update.import(newton_update_exchanger, VectorOperation::insert);
+            newton_update = newton_update_mf;
 
             current_solution += newton_update;
 
@@ -3034,8 +3020,7 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          right_hand_side_exchanger.import(right_hand_side, VectorOperation::insert);
-          right_hand_side_mf.import(right_hand_side_exchanger, VectorOperation::insert);
+          right_hand_side_mf = right_hand_side;
           matrix_free.set_current_time(time + parameters.time_step);
           matrix_free.set_lambda_old(lambda_old);
           matrix_free.set_TR_BDF2_stage(TR_BDF2_stage);
@@ -3050,8 +3035,7 @@ namespace Step33 {
             newton_update_mf = 0;
 
             std::pair<unsigned int, double> convergence = solve(newton_update_mf);
-            newton_update_exchanger.import(newton_update_mf, VectorOperation::insert);
-            newton_update.import(newton_update_exchanger, VectorOperation::insert);
+            newton_update = newton_update_mf;
 
             current_solution += newton_update;
 
@@ -3137,7 +3121,7 @@ int main(int argc, char *argv[]) {
     Parameters::AllParameters<2>::declare_parameters(prm);
     prm.parse_input(argv[1]);
 
-    Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, dealii::numbers::invalid_unsigned_int);
+    Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
 
     ConservationLaw<2> cons(prm);
     cons.run();
