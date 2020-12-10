@@ -67,6 +67,7 @@
 #include <deal.II/lac/solver_gmres.h>
 #include <deal.II/lac/petsc_matrix_free.h>
 #include <deal.II/lac/petsc_solver.h>
+#include <deal.II/lac/linear_operator.h>
 
 // To end this section, introduce everything in the dealii library into the
 // namespace into which the contents of this program will go:
@@ -1240,9 +1241,7 @@ namespace Step33 {
                             const QGauss<dim - 1>& face_quadrature,
                             TimerOutput&           time_table,
                             ParameterHandler&      prm,
-                            LA::MPI::Vector&       locally_relevant_solution,
-                            const MPI_Comm&        communicator,
-                            const unsigned int     n);
+                            LA::MPI::Vector&       locally_relevant_solution);
 
     void set_TR_BDF2_stage(const unsigned int stage);
 
@@ -1292,11 +1291,10 @@ namespace Step33 {
                                                         const QGauss<dim - 1>& face_quadrature,
                                                         TimerOutput&           time_table,
                                                         ParameterHandler&      prm,
-                                                        LA::MPI::Vector&       locally_relevant_solution,
-                                                        const MPI_Comm&        communicator,
-                                                        const unsigned int     n):
-    PETScWrappers::MatrixFree(communicator, n, n, n, n), dof_handler(dof_handler), mapping(mapping), quadrature(quadrature),
-    face_quadrature(face_quadrature), time_table(time_table), parameters(prm), locally_relevant_solution(locally_relevant_solution) {
+                                                        LA::MPI::Vector&       locally_relevant_solution):
+    PETScWrappers::MatrixFree(), dof_handler(dof_handler), mapping(mapping), quadrature(quadrature),
+    face_quadrature(face_quadrature), time_table(time_table), parameters(prm),
+    locally_relevant_solution(locally_relevant_solution) {
       //--- Compute the other two parameters of TR_BDF2 scheme
       if(parameters.time_integration_scheme == "TR_BDF2") {
         parameters.theta = 1.0 - std::sqrt(2)/2.0;
@@ -1570,6 +1568,8 @@ namespace Step33 {
                                            const PETScWrappers::VectorBase& src) const {
     TimerOutput::Scope t(time_table, "Action of linear operator");
 
+    AffineConstraints<double> constraints;
+
     const unsigned int dofs_per_cell = dof_handler.get_fe().dofs_per_cell;
 
     std::vector<types::global_dof_index> dof_indices(dofs_per_cell);
@@ -1607,8 +1607,8 @@ namespace Step33 {
         for(unsigned int i = 0; i < dofs_per_cell; ++i)
           cell_src(i) = src(dof_indices[i]);
         cell_matrix.vmult(cell_dst, cell_src);
-        for(unsigned int i = 0; i < dofs_per_cell; ++i)
-          dst(dof_indices[i]) += cell_dst(i);
+        constraints.distribute_local_to_global(cell_dst, dof_indices, dst);
+        dst.compress(VectorOperation::add);
 
         // Then loop over all the faces of this cell.  If a face is part of
         // the external boundary, then assemble boundary conditions there:
@@ -1621,8 +1621,8 @@ namespace Step33 {
             for(unsigned int i = 0; i < dofs_per_cell; ++i)
               cell_src(i) = src(dof_indices[i]);
             cell_matrices.first.vmult(cell_dst, cell_src);
-            for(unsigned int i = 0; i < dofs_per_cell; ++i)
-              dst(dof_indices[i]) += cell_dst(i);
+            constraints.distribute_local_to_global(cell_dst, dof_indices, dst);
+            dst.compress(VectorOperation::add);
           }
 
           // The alternative is that we are dealing with an internal face.
@@ -1648,13 +1648,13 @@ namespace Step33 {
                 for(unsigned int i = 0; i < dofs_per_cell; ++i)
                   cell_src(i) = src(dof_indices[i]);
                 cell_matrices.first.vmult(cell_dst, cell_src);
-                for(unsigned int i = 0; i < dofs_per_cell; ++i)
-                  dst(dof_indices[i]) += cell_dst(i);
+                constraints.distribute_local_to_global(cell_dst, dof_indices, dst);
+                dst.compress(VectorOperation::add);
                 for(unsigned int i = 0; i < dofs_per_cell; ++i)
                   cell_src(i) = src(dof_indices_neighbor[i]);
                 cell_matrices.second.vmult(cell_dst, cell_src);
-                for(unsigned int i = 0; i < dofs_per_cell; ++i)
-                  dst(dof_indices_neighbor[i]) += cell_dst(i);
+                constraints.distribute_local_to_global(cell_dst, dof_indices_neighbor, dst);
+                dst.compress(VectorOperation::add);
               }
             }
 
@@ -1683,13 +1683,13 @@ namespace Step33 {
               for(unsigned int i = 0; i < dofs_per_cell; ++i)
                 cell_src(i) = src(dof_indices[i]);
               cell_matrices.first.vmult(cell_dst, cell_src);
-              for(unsigned int i = 0; i < dofs_per_cell; ++i)
-                dst(dof_indices[i]) += cell_dst(i);
+              constraints.distribute_local_to_global(cell_dst, dof_indices, dst);
+              dst.compress(VectorOperation::add);
               for(unsigned int i = 0; i < dofs_per_cell; ++i)
                 cell_src(i) = src(dof_indices_neighbor[i]);
               cell_matrices.second.vmult(cell_dst, cell_src);
-              for(unsigned int i = 0; i < dofs_per_cell; ++i)
-                dst(dof_indices_neighbor[i]) += cell_dst(i);
+              constraints.distribute_local_to_global(cell_dst, dof_indices_neighbor, dst);
+              dst.compress(VectorOperation::add);
             }
             // Same refinement level
             else {
@@ -1706,13 +1706,11 @@ namespace Step33 {
               for(unsigned int i = 0; i < dofs_per_cell; ++i)
                 cell_src(i) = src(dof_indices[i]);
               cell_matrices.first.vmult(cell_dst, cell_src);
-              for(unsigned int i = 0; i < dofs_per_cell; ++i)
-                dst(dof_indices[i]) += cell_dst(i);
-              for(unsigned int i = 0; i < dofs_per_cell; ++i)
-                cell_src(i) = src(dof_indices_neighbor[i]);
+              constraints.distribute_local_to_global(cell_dst, dof_indices, dst);
+              dst.compress(VectorOperation::add);
               cell_matrices.second.vmult(cell_dst, cell_src);
-              for(unsigned int i = 0; i < dofs_per_cell; ++i)
-                dst(dof_indices_neighbor[i]) += cell_dst(i);
+              constraints.distribute_local_to_global(cell_dst, dof_indices_neighbor, dst);
+              dst.compress(VectorOperation::add);
             }
           }
         }
@@ -1762,8 +1760,7 @@ namespace Step33 {
     void copy_local_to_global(const std::vector<types::global_dof_index>& dof_indices);
     void assemble_rhs();
 
-    std::pair<unsigned int, double> solve(PETScWrappers::VectorBase&       newton_update,
-                                          const PETScWrappers::VectorBase& rhs);
+    std::pair<unsigned int, double> solve(PETScWrappers::MPI::Vector& newton_update);
 
     void compute_refinement_indicators(Vector<double>& indicator) const;
     void refine_grid(const Vector<double>& indicator);
@@ -1885,8 +1882,7 @@ namespace Step33 {
                Utilities::int_to_string(Utilities::MPI::n_mpi_processes(communicator)) + "proc.dat"),
       ptime_out(time_out, Utilities::MPI::this_mpi_process(communicator) == 0),
       time_table(ptime_out, TimerOutput::never, TimerOutput::wall_times),
-      matrix_free(dof_handler, mapping, quadrature, face_quadrature, time_table, prm, locally_relevant_solution,
-                  communicator, dof_handler.n_dofs()) {
+      matrix_free(dof_handler, mapping, quadrature, face_quadrature, time_table, prm, locally_relevant_solution) {
     //--- Compute the other two parameters of TR_BDF2 scheme
     if(parameters.time_integration_scheme == "TR_BDF2") {
       parameters.theta = 1.0 - std::sqrt(2)/2.0;
@@ -2601,8 +2597,7 @@ namespace Step33 {
   // pair of number of iterations and the final linear residual.
 
   template<int dim>
-  std::pair<unsigned int, double> ConservationLaw<dim>::solve(PETScWrappers::VectorBase&       newton_update,
-                                                              const PETScWrappers::VectorBase& rhs) {
+  std::pair<unsigned int, double> ConservationLaw<dim>::solve(PETScWrappers::MPI::Vector& newton_update) {
     TimerOutput::Scope t(time_table, "Solve");
 
     switch(parameters.solver) {
@@ -2612,7 +2607,7 @@ namespace Step33 {
         //PETScWrappers::SparseDirectMUMPS::AdditionalData data(parameters.output == Parameters::Solver::verbose);
         PETScWrappers::SparseDirectMUMPS direct(solver_control, communicator);
 
-        direct.solve(matrix_free, newton_update, rhs);
+        direct.solve(matrix_free, newton_update, right_hand_side);
 
         return {solver_control.last_step(), solver_control.last_value()};
       }
@@ -2620,10 +2615,10 @@ namespace Step33 {
       case Parameters::Solver::gmres:
       {
         SolverControl solver_control(parameters.max_iterations, parameters.linear_residual);
-        PETScWrappers::SolverGMRES gmres(solver_control);
-        PETScWrappers::PreconditionJacobi preconditioner;
-        preconditioner.initialize(matrix_free);
-        gmres.solve(matrix_free, newton_update, rhs, preconditioner);
+        SolverGMRES<PETScWrappers::MPI::Vector> gmres(solver_control);
+        //PETScWrappers::PreconditionJacobi preconditioner;
+        //preconditioner.initialize(matrix_free);
+        gmres.solve(matrix_free, newton_update, right_hand_side, PreconditionIdentity());
 
         return {solver_control.last_step(), solver_control.last_value()};
       }
@@ -2842,6 +2837,8 @@ namespace Step33 {
   template<int dim>
   void ConservationLaw<dim>::run() {
     make_grid_and_dofs();
+    const unsigned int n_dofs = dof_handler.n_dofs();
+    matrix_free.reinit(communicator, n_dofs, n_dofs, n_dofs, n_dofs);
 
     setup_system();
 
@@ -2882,10 +2879,8 @@ namespace Step33 {
     // output some status information so one can keep track of where a
     // computation is, as well as the header for a table that indicates
     // progress of the nonlinear inner iteration:
-    LA::MPI::Vector newton_update, newton_update_mf_tmp;
+    LA::MPI::Vector newton_update;
     newton_update.reinit(locally_owned_dofs, communicator);
-    newton_update_mf_tmp.reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
-    PETScWrappers::VectorBase newton_update_mf(newton_update_mf_tmp);
 
     double time = 0.0;
     double next_output = time + parameters.output_step;
@@ -2936,7 +2931,6 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          PETScWrappers::VectorBase right_hand_side_mf(right_hand_side);
           matrix_free.set_current_time(time + parameters.time_step);
           matrix_free.set_lambda_old(lambda_old);
 
@@ -2947,10 +2941,9 @@ namespace Step33 {
             break;
           }
           else {
-            newton_update_mf = 0;
+            newton_update = 0;
 
-            std::pair<unsigned int, double> convergence = solve(newton_update_mf, right_hand_side_mf);
-            newton_update.equ(1.0, newton_update_mf);
+            std::pair<unsigned int, double> convergence = solve(newton_update);
 
             current_solution += newton_update;
 
@@ -2975,7 +2968,6 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          PETScWrappers::VectorBase right_hand_side_mf(right_hand_side);
           matrix_free.set_current_time(time + 2.0*parameters.theta*parameters.time_step);
           matrix_free.set_lambda_old(lambda_old);
           matrix_free.set_TR_BDF2_stage(TR_BDF2_stage);
@@ -2987,10 +2979,9 @@ namespace Step33 {
             break;
           }
           else {
-            newton_update_mf = 0;
+            newton_update = 0;
 
-            std::pair<unsigned int, double> convergence = solve(newton_update_mf, right_hand_side_mf);
-            newton_update.equ(1.0, newton_update_mf);
+            std::pair<unsigned int, double> convergence = solve(newton_update);
 
             current_solution += newton_update;
 
@@ -3018,7 +3009,6 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          PETScWrappers::VectorBase right_hand_side_mf(right_hand_side);
           matrix_free.set_current_time(time + parameters.time_step);
           matrix_free.set_lambda_old(lambda_old);
           matrix_free.set_TR_BDF2_stage(TR_BDF2_stage);
@@ -3030,10 +3020,7 @@ namespace Step33 {
             break;
           }
           else {
-            newton_update_mf = 0;
-
-            std::pair<unsigned int, double> convergence = solve(newton_update_mf, right_hand_side_mf);
-            newton_update.equ(1.0, newton_update_mf);
+            std::pair<unsigned int, double> convergence = solve(newton_update);
 
             current_solution += newton_update;
 
