@@ -1762,7 +1762,8 @@ namespace Step33 {
     void copy_local_to_global(const std::vector<types::global_dof_index>& dof_indices);
     void assemble_rhs();
 
-    std::pair<unsigned int, double> solve(PETScWrappers::MPI::Vector& newton_update);
+    std::pair<unsigned int, double> solve(PETScWrappers::VectorBase&       newton_update,
+                                          const PETScWrappers::VectorBase& rhs);
 
     void compute_refinement_indicators(Vector<double>& indicator) const;
     void refine_grid(const Vector<double>& indicator);
@@ -1819,8 +1820,6 @@ namespace Step33 {
 
     LA::MPI::Vector locally_relevant_solution,
                     locally_relevant_old_solution;  //--- Extra variables for parallel purposes (read-only)
-
-    PETScWrappers::MPI::Vector                 right_hand_side_mf;
 
     // This final set of member variables (except for the object holding all
     // run-time parameters at the very bottom and a screen output stream that
@@ -1953,8 +1952,6 @@ namespace Step33 {
   template<int dim>
   void ConservationLaw<dim>::setup_system() {
     TimerOutput::Scope t(time_table, "Setup system");
-
-    right_hand_side_mf.reinit(locally_owned_dofs, communicator);
 
     //--- Read-only variant of the solution that must be set after the solution
     locally_relevant_solution.reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
@@ -2604,7 +2601,8 @@ namespace Step33 {
   // pair of number of iterations and the final linear residual.
 
   template<int dim>
-  std::pair<unsigned int, double> ConservationLaw<dim>::solve(PETScWrappers::MPI::Vector& newton_update) {
+  std::pair<unsigned int, double> ConservationLaw<dim>::solve(PETScWrappers::VectorBase&       newton_update,
+                                                              const PETScWrappers::VectorBase& rhs) {
     TimerOutput::Scope t(time_table, "Solve");
 
     switch(parameters.solver) {
@@ -2614,7 +2612,7 @@ namespace Step33 {
         //PETScWrappers::SparseDirectMUMPS::AdditionalData data(parameters.output == Parameters::Solver::verbose);
         PETScWrappers::SparseDirectMUMPS direct(solver_control, communicator);
 
-        direct.solve(matrix_free, newton_update, right_hand_side_mf);
+        direct.solve(matrix_free, newton_update, rhs);
 
         return {solver_control.last_step(), solver_control.last_value()};
       }
@@ -2622,10 +2620,10 @@ namespace Step33 {
       case Parameters::Solver::gmres:
       {
         SolverControl solver_control(parameters.max_iterations, parameters.linear_residual);
-        SolverGMRES<PETScWrappers::MPI::Vector> gmres(solver_control);
-        //PETScWrappers::PreconditionJacobi preconditioner;
-        //preconditioner.initialize(matrix_free);
-        gmres.solve(matrix_free, newton_update, right_hand_side_mf, PreconditionIdentity());
+        PETScWrappers::SolverGMRES gmres(solver_control);
+        PETScWrappers::PreconditionJacobi preconditioner;
+        preconditioner.initialize(matrix_free);
+        gmres.solve(matrix_free, newton_update, rhs, preconditioner);
 
         return {solver_control.last_step(), solver_control.last_value()};
       }
@@ -2884,10 +2882,10 @@ namespace Step33 {
     // output some status information so one can keep track of where a
     // computation is, as well as the header for a table that indicates
     // progress of the nonlinear inner iteration:
-    LA::MPI::Vector newton_update;
-    PETScWrappers::MPI::Vector newton_update_mf;
+    LA::MPI::Vector newton_update, newton_update_mf_tmp;
     newton_update.reinit(locally_owned_dofs, communicator);
-    newton_update_mf.reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
+    newton_update_mf_tmp.reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
+    PETScWrappers::VectorBase newton_update_mf(newton_update_mf_tmp);
 
     double time = 0.0;
     double next_output = time + parameters.output_step;
@@ -2938,7 +2936,7 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          right_hand_side_mf = right_hand_side;
+          PETScWrappers::VectorBase right_hand_side_mf(right_hand_side);
           matrix_free.set_current_time(time + parameters.time_step);
           matrix_free.set_lambda_old(lambda_old);
 
@@ -2951,8 +2949,8 @@ namespace Step33 {
           else {
             newton_update_mf = 0;
 
-            std::pair<unsigned int, double> convergence = solve(newton_update_mf);
-            newton_update = newton_update_mf;
+            std::pair<unsigned int, double> convergence = solve(newton_update_mf, right_hand_side_mf);
+            newton_update.equ(1.0, newton_update_mf);
 
             current_solution += newton_update;
 
@@ -2977,7 +2975,7 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          right_hand_side_mf = right_hand_side;
+          PETScWrappers::VectorBase right_hand_side_mf(right_hand_side);
           matrix_free.set_current_time(time + 2.0*parameters.theta*parameters.time_step);
           matrix_free.set_lambda_old(lambda_old);
           matrix_free.set_TR_BDF2_stage(TR_BDF2_stage);
@@ -2991,8 +2989,8 @@ namespace Step33 {
           else {
             newton_update_mf = 0;
 
-            std::pair<unsigned int, double> convergence = solve(newton_update_mf);
-            newton_update = newton_update_mf;
+            std::pair<unsigned int, double> convergence = solve(newton_update_mf, right_hand_side_mf);
+            newton_update.equ(1.0, newton_update_mf);
 
             current_solution += newton_update;
 
@@ -3020,7 +3018,7 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          right_hand_side_mf = right_hand_side;
+          PETScWrappers::VectorBase right_hand_side_mf(right_hand_side);
           matrix_free.set_current_time(time + parameters.time_step);
           matrix_free.set_lambda_old(lambda_old);
           matrix_free.set_TR_BDF2_stage(TR_BDF2_stage);
@@ -3034,8 +3032,8 @@ namespace Step33 {
           else {
             newton_update_mf = 0;
 
-            std::pair<unsigned int, double> convergence = solve(newton_update_mf);
-            newton_update = newton_update_mf;
+            std::pair<unsigned int, double> convergence = solve(newton_update_mf, right_hand_side_mf);
+            newton_update.equ(1.0, newton_update_mf);
 
             current_solution += newton_update;
 
