@@ -323,7 +323,7 @@ namespace Step35 {
 
     void vmult_rhs_pressure(Vec& dst, const Vec& src) const;
 
-    virtual void compute_diagonal() override {}
+    virtual void compute_diagonal() override;
 
   protected:
     RunTimeParameters::Data_Storage& eq_data;
@@ -403,6 +403,19 @@ namespace Step35 {
                                          Vec&                                         dst,
                                          const Vec&                                   src,
                                          const std::pair<unsigned int, unsigned int>& face_range) const;
+
+    void assemble_diagonal_cell_term_pressure(const MatrixFree<dim, Number>&               data,
+                                              Vec&                                         dst,
+                                              const Vec&                                   src,
+                                              const std::pair<unsigned int, unsigned int>& cell_range) const;
+    void assemble_diagonal_face_term_pressure(const MatrixFree<dim, Number>&               data,
+                                              Vec&                                         dst,
+                                              const Vec&                                   src,
+                                              const std::pair<unsigned int, unsigned int>& face_range) const;
+    void assemble_diagonal_boundary_term_pressure(const MatrixFree<dim, Number>&               data,
+                                                  Vec&                                         dst,
+                                                  const Vec&                                   src,
+                                                  const std::pair<unsigned int, unsigned int>& face_range) const;
   };
 
 
@@ -1206,9 +1219,9 @@ namespace Step35 {
     FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number> phi(data, true, 1);
 
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-      const auto& face_iterator = data.get_face_iterator(face, 0);
-      const double measure      = face_iterator.first->face(face_iterator.second)->measure();
-      const double coef_jump    = C_p/measure;
+      const auto&  face_iterator = data.get_face_iterator(face, 0);
+      const double measure       = face_iterator.first->face(face_iterator.second)->measure();
+      const double coef_jump     = C_p/measure;
       phi.reinit(face);
       phi.gather_evaluate(src, true, false);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
@@ -1219,6 +1232,7 @@ namespace Step35 {
       phi.integrate_scatter(true, false, dst);
     }
   }
+
 
   // Assemble boundary term for the pressure
   //
@@ -1240,6 +1254,7 @@ namespace Step35 {
 
 
   // Put together all previous steps
+  //
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   apply_add(Vec& dst, const Vec& src) const {
@@ -1261,6 +1276,149 @@ namespace Step35 {
     }
     else
       Assert(false, ExcNotImplemented());
+  }
+
+
+  // Assemble diagonal cell term for the pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_diagonal_cell_term_pressure(const MatrixFree<dim, Number>&               data,
+                                       Vec&                                         dst,
+                                       const Vec&                                   src,
+                                       const std::pair<unsigned int, unsigned int>& cell_range) const {
+    FEEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number> phi(data, 1);
+
+    AlignedVector<VectorizedArray<Number>> diagonal(phi.dofs_per_component);
+
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi.reinit(cell);
+      for(unsigned int i = 0; i < phi.dofs_per_component; ++i) {
+        for(unsigned int j = 0; j < phi.dofs_per_component; ++j)
+          phi.submit_dof_value(VectorizedArray<Number>(), j);
+        phi.submit_dof_value(make_vectorized_array<Number>(1.0), i);
+
+        phi.evaluate(false, true);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q)
+          phi.submit_gradient(-phi.get_gradient(q), q);
+        phi.integrate(false, true);
+        diagonal[i] = phi.get_dof_value(i);
+      }
+      for(unsigned int i = 0; i < phi.dofs_per_component; ++i)
+        phi.submit_dof_value(diagonal[i], i);
+      phi.distribute_local_to_global(dst);
+    }
+  }
+
+
+  // Assemble diagonal face term for the pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_diagonal_face_term_pressure(const MatrixFree<dim, Number>&               data,
+                                       Vec&                                         dst,
+                                       const Vec&                                   src,
+                                       const std::pair<unsigned int, unsigned int>& face_range) const {
+    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number> phi_p(data, true, 1), phi_m(data, false, 1);
+
+    AssertDimension(phi_p.dofs_per_component, phi_m.dofs_per_component);
+    AlignedVector<VectorizedArray<Number>> diagonal(phi_p.dofs_per_component);
+
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      const auto&  face_iterator = data.get_face_iterator(face, 0);
+      const double measure       = face_iterator.first->face(face_iterator.second)->measure();
+      const double coef_jump     = C_p/measure;
+      phi_p.reinit(face);
+      phi_m.reinit(face);
+      for(unsigned int i = 0; i < phi_p.dofs_per_component; ++i) {
+        for(unsigned int j = 0; j < phi_p.dofs_per_component; ++j) {
+          phi_p.submit_dof_value(VectorizedArray<Number>(), j);
+          phi_m.submit_dof_value(VectorizedArray<Number>(), j);
+        }
+        phi_p.submit_dof_value(make_vectorized_array<Number>(1.0), i);
+        phi_m.submit_dof_value(make_vectorized_array<Number>(1.0), i);
+        phi_p.evaluate(true, true);
+        phi_m.evaluate(true, true);
+        for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
+          const auto& n_plus        = phi_p.get_normal_vector(q);
+          const auto& avg_grad_pres = 0.5*(phi_p.get_gradient(q) + phi_m.get_gradient(q));
+          const auto& jump_pres     = phi_p.get_value(q) - phi_m.get_value(q);
+          phi_p.submit_value(scalar_product(avg_grad_pres, n_plus) - coef_jump*jump_pres, q);
+          phi_m.submit_value(-scalar_product(avg_grad_pres, n_plus) + coef_jump*jump_pres, q);
+          phi_p.submit_gradient(theta*0.5*jump_pres*n_plus, q);
+          phi_m.submit_gradient(theta*0.5*jump_pres*n_plus, q);
+        }
+        phi_p.integrate(true, true);
+        phi_m.integrate(true, true);
+        diagonal[i] = phi_p.get_dof_value(i) + phi_m.get_dof_value(i);
+      }
+      for(unsigned int i = 0; i < phi_p.dofs_per_component; ++i)
+        phi_p.submit_dof_value(diagonal[i], i);
+      phi_p.distribute_local_to_global(dst);
+    }
+  }
+
+
+  // Assemble boundary term for the pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_diagonal_boundary_term_pressure(const MatrixFree<dim, Number>&               data,
+                                           Vec&                                         dst,
+                                           const Vec&                                   src,
+                                           const std::pair<unsigned int, unsigned int>& face_range) const {
+    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number> phi(data, true, 1);
+
+    AlignedVector<VectorizedArray<Number>> diagonal(phi.dofs_per_component);
+
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      const auto&  face_iterator = data.get_face_iterator(face, 0);
+      const double measure       = face_iterator.first->face(face_iterator.second)->measure();
+      const double coef_jump     = C_p/measure;
+      phi.reinit(face);
+      for(unsigned int i = 0; i < phi.dofs_per_component; ++i) {
+        for(unsigned int j = 0; j < phi.dofs_per_component; ++j)
+          phi.submit_dof_value(VectorizedArray<Number>(), j);
+        phi.submit_dof_value(make_vectorized_array<Number>(1.0), i);
+
+        phi.evaluate(true, false);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& n_plus = phi.get_normal_vector(q);
+          const auto& pres   = phi.get_value(q);
+          phi.submit_value(-coef_jump*pres, q);
+        }
+        phi.integrate(true, false);
+        diagonal[i] = phi.get_dof_value(i);
+      }
+      for(unsigned int i = 0; i < phi.dofs_per_component; ++i)
+        phi.submit_dof_value(diagonal[i], i);
+      phi.distribute_local_to_global(dst);
+    }
+  }
+
+
+  // Put together all previous steps
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::compute_diagonal() {
+    if(NS_stage == 2) {
+      this->inverse_diagonal_entries.reset(new DiagonalMatrix<Vec>());
+      auto& inverse_diagonal = this->inverse_diagonal_entries->get_vector();
+      this->data->initialize_dof_vector(inverse_diagonal, 1);
+      Vec dummy;
+      dummy.reinit(inverse_diagonal.local_size());
+      this->data->loop(&NavierStokesProjectionOperator::assemble_diagonal_cell_term_pressure,
+                       &NavierStokesProjectionOperator::assemble_diagonal_face_term_pressure,
+                       &NavierStokesProjectionOperator::assemble_diagonal_boundary_term_pressure,
+                       this, inverse_diagonal, dummy, false,
+                       MatrixFree<dim, Number>::DataAccessOnFaces::unspecified,
+                       MatrixFree<dim, Number>::DataAccessOnFaces::unspecified);
+      for(unsigned int i = 0; i < inverse_diagonal.local_size(); ++i) {
+        Assert(inverse_diagonal.local_element(i) != 0.0,
+               ExcMessage("No diagonal entry in a definite operator should be zero"));
+        inverse_diagonal.local_element(i) = 1.0/inverse_diagonal.local_element(i);
+      }
+    }
   }
 
 
@@ -1696,7 +1854,7 @@ namespace Step35 {
   // will be executed sequentially.
   template<int dim>
   void NavierStokesProjection<dim>::diffusion_step() {
-    std::vector<unsigned int> tmp = {0};
+    const std::vector<unsigned int> tmp = {0};
     navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
     navier_stokes_matrix.set_vel_exact(vel_exact);
     if(TR_BDF2_stage == 1)
@@ -1727,28 +1885,26 @@ namespace Step35 {
   //
   template<int dim>
   void NavierStokesProjection<dim>::projection_step() {
-    std::vector<unsigned int> tmp = {1};
+    const std::vector<unsigned int> tmp = {1};
     navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
     navier_stokes_matrix.vmult_rhs_pressure(rhs_p, u_star);
 
     navier_stokes_matrix.set_NS_stage(2);
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_p.l2_norm());
-    SolverGMRES<LinearAlgebra::distributed::Vector<double>> gmres(solver_control);
+    SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
     PreconditionJacobi<NavierStokesProjectionOperator<dim,
                                                       EquationData::degree_p,
                                                       EquationData::degree_p + 1,
                                                       EquationData::degree_p + 2,
                                                       LinearAlgebra::distributed::Vector<double>,
                                                       double>> preconditioner;
-    if(TR_BDF2_stage == 1) {
-      //preconditioner.initialize(navier_stokes_matrix);
-      gmres.solve(navier_stokes_matrix, pres_int, rhs_p, PreconditionIdentity());
-    }
-    else {
-      //preconditioner.initialize(navier_stokes_matrix);
-      gmres.solve(navier_stokes_matrix, pres_n, rhs_p, PreconditionIdentity());
-    }
+    navier_stokes_matrix.compute_diagonal();
+    preconditioner.initialize(navier_stokes_matrix);
+    if(TR_BDF2_stage == 1)
+      cg.solve(navier_stokes_matrix, pres_int, rhs_p, preconditioner);
+    else
+      cg.solve(navier_stokes_matrix, pres_n, rhs_p, preconditioner);
   }
 
 
