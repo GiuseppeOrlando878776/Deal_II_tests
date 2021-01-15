@@ -342,12 +342,13 @@ namespace Step35 {
     virtual void apply_add(Vec& dst, const Vec& src) const override;
 
   private:
-    const double theta = 1.0;
+    const double theta_v = 0.0;
+    const double theta_p = 0.0;
 
     const double a21 = 0.5;
     const double a22 = 0.5;
     const double C_p = 5.0;
-    const double C_u = 0.1;
+    const double C_u = 0.0;
 
     Vec                         u_extr;
     EquationData::Velocity<dim> vel_exact;
@@ -520,7 +521,7 @@ namespace Step35 {
           for(unsigned int d = 0; d < dim; ++d)
             p_n_times_identity[d][d] = p_n;
           phi.submit_value(1.0/(gamma*dt)*u_n, q);
-          phi.submit_gradient(-a21/Re*grad_u_n - a21*tensor_product_u_n + p_n_times_identity, q);
+          phi.submit_gradient(-a21/Re*grad_u_n + a21*tensor_product_u_n + p_n_times_identity, q);
         }
         phi.integrate_scatter(true, true, dst);
       }
@@ -594,8 +595,8 @@ namespace Step35 {
           const auto& avg_tensor_product_u_n = 0.5*(outer_product(phi_old_p.get_value(q), phi_old_extr_p.get_value(q)) +
                                                     outer_product(phi_old_m.get_value(q), phi_old_extr_m.get_value(q)));
           const auto& avg_p_old               = 0.5*(phi_old_press_p.get_value(q) + phi_old_press_m.get_value(q));
-          phi_p.submit_value((a21/Re*avg_grad_u_old + a21*avg_tensor_product_u_n)*n_plus - avg_p_old*n_plus, q);
-          phi_m.submit_value(-(a21/Re*avg_grad_u_old + a21*avg_tensor_product_u_n)*n_plus + avg_p_old*n_plus, q);
+          phi_p.submit_value((a21/Re*avg_grad_u_old - a21*avg_tensor_product_u_n)*n_plus - avg_p_old*n_plus, q);
+          phi_m.submit_value(-(a21/Re*avg_grad_u_old - a21*avg_tensor_product_u_n)*n_plus + avg_p_old*n_plus, q);
         }
         phi_p.integrate_scatter(true, false, dst);
         phi_m.integrate_scatter(true, false, dst);
@@ -676,7 +677,7 @@ namespace Step35 {
           switch(boundary_id) {
             case 1:
             {
-              phi.submit_value((a21/Re*grad_u_old + a21*tensor_product_u_n)*n_plus - p_old*n_plus, q);
+              phi.submit_value((a21/Re*grad_u_old - a21*tensor_product_u_n)*n_plus - p_old*n_plus, q);
               break;
             }
             case 2:
@@ -694,21 +695,21 @@ namespace Step35 {
               const auto   lambda                 = std::abs(scalar_product(phi_old_extr.get_value(q), n_plus));
               const auto&  face_iterator          = data.get_face_iterator(face, 0);
               const double measure                = face_iterator.first->face(face_iterator.second)->measure();
-              phi.submit_value((a21/Re*grad_u_old + a21*tensor_product_u_n)*n_plus - p_old*n_plus +
-                               a22/Re*C_u/measure*u_int_m -
-                               0.5*a22*tensor_product_u_int_m*n_plus +
-                               0.5*a22*lambda*u_int_m, q);
-              phi.submit_gradient(-theta*a22/Re*outer_product(u_int_m, n_plus), q);
+              phi.submit_value((a21/Re*grad_u_old - a21*tensor_product_u_n)*n_plus - p_old*n_plus +
+                               a22/Re*2.0*C_u/measure*u_int_m -
+                               a22*tensor_product_u_int_m*n_plus +
+                               a22*lambda*u_int_m, q);
+              phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int_m, n_plus), q);
               break;
             }
             case 3:
             {
-              phi.submit_value((a21/Re*grad_u_old + a21*tensor_product_u_n)*n_plus - p_old*n_plus, q);
+              phi.submit_value((a21/Re*grad_u_old - a21*tensor_product_u_n)*n_plus - p_old*n_plus, q);
               break;
             }
             case 4:
             {
-              phi.submit_value((a21/Re*grad_u_old + a21*tensor_product_u_n)*n_plus - p_old*n_plus, q);
+              phi.submit_value((a21/Re*grad_u_old - a21*tensor_product_u_n)*n_plus - p_old*n_plus, q);
               break;
             }
             default:
@@ -769,9 +770,10 @@ namespace Step35 {
               const auto&  face_iterator      = data.get_face_iterator(face, 0);
               const double measure            = face_iterator.first->face(face_iterator.second)->measure();
               phi.submit_value((a31/Re*grad_u_old + a32/Re*grad_u_int -
-                                a31*tensor_product_u_n - a32*tensor_product_u_n_gamma)*n_plus - p_old*n_plus +
-                               a33/Re*C_u/measure*u_m - 0.5*a33*tensor_product_u_m*n_plus + 0.5*a33*lambda*u_m, q);
-              phi.submit_gradient(-theta*a33/Re*outer_product(u_m, n_plus), q);
+                               a31*tensor_product_u_n - a32*tensor_product_u_n_gamma)*n_plus - p_old*n_plus +
+                               a33/Re*2.0*C_u/measure*u_m -
+                               a33*tensor_product_u_m*n_plus + a33*lambda*u_m, q);
+              phi.submit_gradient(-theta_v*a33/Re*outer_product(u_m, n_plus), q);
               break;
             }
             case 3:
@@ -992,8 +994,8 @@ namespace Step35 {
                              a22*avg_tensor_product_u_int*n_plus + 0.5*a22*lambda*jump_u_int , q);
           phi_m.submit_value(-a22/Re*(-avg_grad_u_int*n_plus + coef_jump*jump_u_int) -
                               a22*avg_tensor_product_u_int*n_plus - 0.5*a22*lambda*jump_u_int, q);
-          phi_p.submit_gradient(-theta*0.5*a22/Re*outer_product(jump_u_int, n_plus), q);
-          phi_m.submit_gradient(-theta*0.5*a22/Re*outer_product(jump_u_int, n_plus), q);
+          phi_p.submit_gradient(-theta_v*0.5*a22/Re*outer_product(jump_u_int, n_plus), q);
+          phi_m.submit_gradient(-theta_v*0.5*a22/Re*outer_product(jump_u_int, n_plus), q);
         }
         phi_p.integrate_scatter(true, true, dst);
         phi_m.integrate_scatter(true, true, dst);
@@ -1027,8 +1029,8 @@ namespace Step35 {
                              a33*avg_tensor_product_u*n_plus + 0.5*a33*lambda*jump_u, q);
           phi_m.submit_value(-a33/Re*(-avg_grad_u*n_plus + coef_jump*jump_u) -
                               a33*avg_tensor_product_u*n_plus - 0.5*a33*lambda*jump_u, q);
-          phi_p.submit_gradient(-theta*0.5*a33/Re*outer_product(jump_u, n_plus), q);
-          phi_m.submit_gradient(-theta*0.5*a33/Re*outer_product(jump_u, n_plus), q);
+          phi_p.submit_gradient(-theta_v*0.5*a33/Re*outer_product(jump_u, n_plus), q);
+          phi_m.submit_gradient(-theta_v*0.5*a33/Re*outer_product(jump_u, n_plus), q);
         }
         phi_p.integrate_scatter(true, true, dst);
         phi_m.integrate_scatter(true, true, dst);
@@ -1052,8 +1054,8 @@ namespace Step35 {
         const auto   boundary_id    = data.get_boundary_id(face);
         const auto&  face_iterator  = data.get_face_iterator(face, 0);
         const double measure        = face_iterator.first->face(face_iterator.second)->measure();
-        const double coef_trasp     = (boundary_id == 2 || boundary_id == 3) ? 0.5 : 0.0;
-        const double coef_jump      = C_u/measure;
+        const double coef_trasp     = (boundary_id == 3) ? 0.5 : 0.0;
+        const double coef_jump      = (boundary_id == 3) ? C_u/measure : 2.0*C_u/measure;
         phi.reinit(face);
         phi.gather_evaluate(src, true, true);
         phi_old_extr.reinit(face);
@@ -1065,20 +1067,20 @@ namespace Step35 {
           const auto& u_int                = phi.get_value(q);
           const auto& tensor_product_u_int = outer_product(phi.get_value(q), phi_old_extr.get_value(q));
           const auto  lambda               = std::abs(scalar_product(phi_old_extr.get_value(q), n_plus));
-          const auto  coef_lambda          = (boundary_id == 2 || boundary_id == 3) ? 0.5*lambda : lambda;
+          const auto  coef_lambda          = (boundary_id == 3) ? 0.5*lambda : lambda;
           switch(boundary_id) {
             case 1:
             {
               phi.submit_value(a22/Re*(-grad_u_int*n_plus + coef_jump*u_int) +
                                a22*coef_trasp*tensor_product_u_int*n_plus + a22*coef_lambda*u_int, q);
-              phi.submit_gradient(-theta*a22/Re*outer_product(u_int, n_plus), q);
+              phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int, n_plus), q);
               break;
             }
             case 2:
             {
               phi.submit_value(a22/Re*(-grad_u_int*n_plus + coef_jump*u_int) +
                                a22*coef_trasp*tensor_product_u_int*n_plus + a22*coef_lambda*u_int, q);
-              phi.submit_gradient(-theta*a22/Re*outer_product(u_int, n_plus), q);
+              phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int, n_plus), q);
               break;
             }
             case 3:
@@ -1088,14 +1090,14 @@ namespace Step35 {
               const auto avg_tensor_product_u_int = 0.5*(tensor_product_u_int + tensor_product_u_int_m);
               phi.submit_value(a22/Re*(-grad_u_int*n_plus + coef_jump*(u_int - u_int_m)) +
                                a22*avg_tensor_product_u_int*n_plus + a22*coef_lambda*(u_int - u_int_m), q);
-              phi.submit_gradient(-theta*a22/Re*outer_product(u_int - u_int_m, n_plus), q);
+              phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int - u_int_m, n_plus), q);
               break;
             }
             case 4:
             {
               phi.submit_value(a22/Re*(-grad_u_int*n_plus + coef_jump*u_int) +
                                a22*coef_trasp*tensor_product_u_int*n_plus + a22*coef_lambda*u_int, q);
-              phi.submit_gradient(-theta*a22/Re*outer_product(u_int, n_plus), q);
+              phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int, n_plus), q);
               break;
             }
             default:
@@ -1112,8 +1114,8 @@ namespace Step35 {
         const auto&  face_iterator = data.get_face_iterator(face, 0);
         const double measure       = face_iterator.first->face(face_iterator.second)->measure();
         const auto   boundary_id   = data.get_boundary_id(face);
-        const double coef_trasp    = (boundary_id == 2 || boundary_id == 3) ? 0.5 : 0.0;
-        const double coef_jump     = C_u/measure;
+        const double coef_trasp    = (boundary_id == 3) ? 0.5 : 0.0;
+        const double coef_jump     = (boundary_id == 3) ? C_u/measure : 2.0*C_u/measure;
         phi.reinit(face);
         phi.gather_evaluate(src, true, true);
         phi_extr.reinit(face);
@@ -1125,20 +1127,20 @@ namespace Step35 {
           const auto& u                = phi.get_value(q);
           const auto& tensor_product_u = outer_product(phi.get_value(q), phi_extr.get_value(q));
           const auto  lambda           = std::abs(scalar_product(phi_extr.get_value(q), n_plus));
-          const auto  coef_lambda      = (boundary_id == 2 || boundary_id == 3) ? 0.5*lambda : lambda;
+          const auto  coef_lambda      = (boundary_id == 3) ? 0.5*lambda : lambda;
           switch(boundary_id) {
             case 1:
             {
               phi.submit_value(a33/Re*(-grad_u*n_plus + coef_jump*u) +
                                coef_trasp*a33*tensor_product_u*n_plus + a33*coef_lambda*u, q);
-              phi.submit_gradient(-theta*a33/Re*outer_product(u, n_plus), q);
+              phi.submit_gradient(-theta_v*a33/Re*outer_product(u, n_plus), q);
               break;
             }
             case 2:
             {
               phi.submit_value(a33/Re*(-grad_u*n_plus + coef_jump*u) +
                                coef_trasp*a33*tensor_product_u*n_plus + a33*coef_lambda*u, q);
-              phi.submit_gradient(-theta*a33/Re*outer_product(u, n_plus), q);
+              phi.submit_gradient(-theta_v*a33/Re*outer_product(u, n_plus), q);
               break;
             }
             case 3:
@@ -1148,14 +1150,14 @@ namespace Step35 {
               const auto avg_tensor_product_u = 0.5*(tensor_product_u + tensor_product_u_m);
               phi.submit_value(a33/Re*(-grad_u*n_plus + coef_jump*(u - u_m)) +
                                a33*avg_tensor_product_u*n_plus + a33*coef_lambda*(u - u_m), q);
-              phi.submit_gradient(-theta*a33/Re*outer_product(u - u_m, n_plus), q);
+              phi.submit_gradient(-theta_v*a33/Re*outer_product(u - u_m, n_plus), q);
               break;
             }
             case 4:
             {
               phi.submit_value(a33/Re*(-grad_u*n_plus + coef_jump*u) +
                                coef_trasp*a33*tensor_product_u*n_plus + a33*coef_lambda*u, q);
-              phi.submit_gradient(-theta*a33/Re*outer_product(u, n_plus), q);
+              phi.submit_gradient(-theta_v*a33/Re*outer_product(u, n_plus), q);
               break;
             }
             default:
@@ -1212,8 +1214,8 @@ namespace Step35 {
         const auto& jump_pres     = phi_p.get_value(q) - phi_m.get_value(q);
         phi_p.submit_value(scalar_product(avg_grad_pres, n_plus) - coef_jump*jump_pres, q);
         phi_m.submit_value(-scalar_product(avg_grad_pres, n_plus) + coef_jump*jump_pres, q);
-        phi_p.submit_gradient(theta*0.5*jump_pres*n_plus, q);
-        phi_m.submit_gradient(theta*0.5*jump_pres*n_plus, q);
+        phi_p.submit_gradient(theta_p*0.5*jump_pres*n_plus, q);
+        phi_m.submit_gradient(theta_p*0.5*jump_pres*n_plus, q);
       }
       phi_p.integrate_scatter(true, true, dst);
       phi_m.integrate_scatter(true, true, dst);
@@ -1238,8 +1240,7 @@ namespace Step35 {
       phi.reinit(face);
       phi.gather_evaluate(src, true, false);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        const auto& n_plus = phi.get_normal_vector(q);
-        const auto& pres   = phi.get_value(q);
+        const auto& pres = phi.get_value(q);
         phi.submit_value(-coef_jump*pres, q);
       }
       phi.integrate_scatter(true, false, dst);
@@ -1418,8 +1419,8 @@ namespace Step35 {
                                a22*avg_tensor_product_u_int*n_plus + 0.5*a22*lambda*jump_u_int , q);
             phi_m.submit_value(-a22/Re*(-avg_grad_u_int*n_plus + coef_jump*jump_u_int) -
                                a22*avg_tensor_product_u_int*n_plus - 0.5*a22*lambda*jump_u_int, q);
-            phi_p.submit_gradient(-theta*0.5*a22/Re*outer_product(jump_u_int, n_plus), q);
-            phi_m.submit_gradient(-theta*0.5*a22/Re*outer_product(jump_u_int, n_plus), q);
+            phi_p.submit_gradient(-theta_v*0.5*a22/Re*outer_product(jump_u_int, n_plus), q);
+            phi_m.submit_gradient(-theta_v*0.5*a22/Re*outer_product(jump_u_int, n_plus), q);
           }
           phi_p.integrate(true, true);
           diagonal_p[i] = phi_p.get_dof_value(i);
@@ -1475,8 +1476,8 @@ namespace Step35 {
                                a33*avg_tensor_product_u*n_plus + 0.5*a33*lambda*jump_u, q);
             phi_m.submit_value(-a33/Re*(-avg_grad_u*n_plus + coef_jump*jump_u) -
                                a33*avg_tensor_product_u*n_plus - 0.5*a33*lambda*jump_u, q);
-            phi_p.submit_gradient(-theta*0.5*a33/Re*outer_product(jump_u, n_plus), q);
-            phi_m.submit_gradient(-theta*0.5*a33/Re*outer_product(jump_u, n_plus), q);
+            phi_p.submit_gradient(-theta_v*0.5*a33/Re*outer_product(jump_u, n_plus), q);
+            phi_m.submit_gradient(-theta_v*0.5*a33/Re*outer_product(jump_u, n_plus), q);
           }
           phi_p.integrate(true, true);
           diagonal_p[i] = phi_p.get_dof_value(i);
@@ -1514,8 +1515,8 @@ namespace Step35 {
         const auto   boundary_id   = data.get_boundary_id(face);
         const auto&  face_iterator = data.get_face_iterator(face, 0);
         const double measure       = face_iterator.first->face(face_iterator.second)->measure();
-        const double coef_trasp    = (boundary_id == 2 || boundary_id == 3) ? 0.5 : 0.0;
-        const double coef_jump     = C_u/measure;
+        const double coef_trasp    = (boundary_id == 3) ? 0.5 : 0.0;
+        const double coef_jump     = (boundary_id == 3) ? C_u/measure : 2.0*C_u/measure;
         phi_old_extr.reinit(face);
         phi_old_extr.gather_evaluate(u_extr, true, false);
         phi.reinit(face);
@@ -1531,20 +1532,20 @@ namespace Step35 {
             const auto& u_int                = phi.get_value(q);
             const auto& tensor_product_u_int = outer_product(phi.get_value(q), phi_old_extr.get_value(q));
             const auto  lambda               = std::abs(scalar_product(phi_old_extr.get_value(q), n_plus));
-            const auto  coef_lambda          = (boundary_id == 2 || boundary_id == 3) ? 0.5*lambda : lambda;
+            const auto  coef_lambda          = (boundary_id == 3) ? 0.5*lambda : lambda;
             switch(boundary_id) {
               case 1:
               {
                 phi.submit_value(a22/Re*(-grad_u_int*n_plus + coef_jump*u_int) +
                                  a22*coef_trasp*tensor_product_u_int*n_plus + a22*coef_lambda*u_int, q);
-                phi.submit_gradient(-theta*a22/Re*outer_product(u_int, n_plus), q);
+                phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int, n_plus), q);
                 break;
               }
               case 2:
               {
                 phi.submit_value(a22/Re*(-grad_u_int*n_plus + coef_jump*u_int) +
                                  a22*coef_trasp*tensor_product_u_int*n_plus + a22*coef_lambda*u_int, q);
-                phi.submit_gradient(-theta*a22/Re*outer_product(u_int, n_plus), q);
+                phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int, n_plus), q);
                 break;
               }
               case 3:
@@ -1554,14 +1555,14 @@ namespace Step35 {
                 const auto avg_tensor_product_u_int = 0.5*(tensor_product_u_int + tensor_product_u_int_m);
                 phi.submit_value(a22/Re*(-grad_u_int*n_plus + coef_jump*(u_int - u_int_m)) +
                                  a22*avg_tensor_product_u_int*n_plus + a22*coef_lambda*(u_int - u_int_m), q);
-                phi.submit_gradient(-theta*a22/Re*outer_product(u_int - u_int_m, n_plus), q);
+                phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int - u_int_m, n_plus), q);
                 break;
               }
               case 4:
               {
                 phi.submit_value(a22/Re*(-grad_u_int*n_plus + coef_jump*u_int) +
                                  a22*coef_trasp*tensor_product_u_int*n_plus + a22*coef_lambda*u_int, q);
-                phi.submit_gradient(-theta*a22/Re*outer_product(u_int, n_plus), q);
+                phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int, n_plus), q);
                 break;
               }
               default:
@@ -1588,8 +1589,8 @@ namespace Step35 {
         const auto&  face_iterator = data.get_face_iterator(face, 0);
         const double measure       = face_iterator.first->face(face_iterator.second)->measure();
         const auto   boundary_id   = data.get_boundary_id(face);
-        const double coef_trasp    = (boundary_id == 2 || boundary_id == 3) ? 0.5 : 0.0;
-        const double coef_jump     = C_u/measure;
+        const double coef_trasp    = (boundary_id == 3) ? 0.5 : 0.0;
+        const double coef_jump     = (boundary_id == 3) ? C_u/measure : 2.0*C_u/measure;
         phi_extr.reinit(face);
         phi_extr.gather_evaluate(u_extr, true, false);
         phi.reinit(face);
@@ -1605,20 +1606,20 @@ namespace Step35 {
             const auto& u                = phi.get_value(q);
             const auto& tensor_product_u = outer_product(phi.get_value(q), phi_extr.get_value(q));
             const auto  lambda           = std::abs(scalar_product(phi_extr.get_value(q), n_plus));
-            const auto  coef_lambda      = (boundary_id == 2 || boundary_id == 3) ? 0.5*lambda : lambda;
+            const auto  coef_lambda      = (boundary_id == 3) ? 0.5*lambda : lambda;
             switch(boundary_id) {
               case 1:
               {
                 phi.submit_value(a33/Re*(-grad_u*n_plus + coef_jump*u) +
                                  coef_trasp*a33*tensor_product_u*n_plus + a33*coef_lambda*u, q);
-                phi.submit_gradient(-theta*a33/Re*outer_product(u, n_plus), q);
+                phi.submit_gradient(-theta_v*a33/Re*outer_product(u, n_plus), q);
                 break;
               }
               case 2:
               {
                 phi.submit_value(a33/Re*(-grad_u*n_plus + coef_jump*u) +
                                  coef_trasp*a33*tensor_product_u*n_plus + a33*coef_lambda*u, q);
-                phi.submit_gradient(-theta*a33/Re*outer_product(u, n_plus), q);
+                phi.submit_gradient(-theta_v*a33/Re*outer_product(u, n_plus), q);
                 break;
               }
               case 3:
@@ -1628,14 +1629,14 @@ namespace Step35 {
                 const auto avg_tensor_product_u = 0.5*(tensor_product_u + tensor_product_u_m);
                 phi.submit_value(a33/Re*(-grad_u*n_plus + coef_jump*(u - u_m)) +
                                  a33*avg_tensor_product_u*n_plus + a33*coef_lambda*(u - u_m), q);
-                phi.submit_gradient(-theta*a33/Re*outer_product(u - u_m, n_plus), q);
+                phi.submit_gradient(-theta_v*a33/Re*outer_product(u - u_m, n_plus), q);
                 break;
               }
               case 4:
               {
                 phi.submit_value(a33/Re*(-grad_u*n_plus + coef_jump*u) +
                                  coef_trasp*a33*tensor_product_u*n_plus + a33*coef_lambda*u, q);
-                phi.submit_gradient(-theta*a33/Re*outer_product(u, n_plus), q);
+                phi.submit_gradient(-theta_v*a33/Re*outer_product(u, n_plus), q);
                 break;
               }
               default:
@@ -1719,8 +1720,8 @@ namespace Step35 {
           const auto& jump_pres     = phi_p.get_value(q) - phi_m.get_value(q);
           phi_p.submit_value(scalar_product(avg_grad_pres, n_plus) - coef_jump*jump_pres, q);
           phi_m.submit_value(-scalar_product(avg_grad_pres, n_plus) + coef_jump*jump_pres, q);
-          phi_p.submit_gradient(theta*0.5*jump_pres*n_plus, q);
-          phi_m.submit_gradient(theta*0.5*jump_pres*n_plus, q);
+          phi_p.submit_gradient(theta_p*0.5*jump_pres*n_plus, q);
+          phi_m.submit_gradient(theta_p*0.5*jump_pres*n_plus, q);
         }
         phi_p.integrate(true, true);
         diagonal_p[i] = phi_p.get_dof_value(i);
@@ -1761,8 +1762,7 @@ namespace Step35 {
 
         phi.evaluate(true, false);
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          const auto& n_plus = phi.get_normal_vector(q);
-          const auto& pres   = phi.get_value(q);
+          const auto& pres = phi.get_value(q);
           phi.submit_value(-coef_jump*pres, q);
         }
         phi.integrate(true, false);
@@ -2291,7 +2291,7 @@ namespace Step35 {
     navier_stokes_matrix.set_NS_stage(2);
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_p.l2_norm());
-    SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
+    SolverGMRES<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
     if(TR_BDF2_stage == 1)
       cg.solve(navier_stokes_matrix, pres_int, rhs_p, PreconditionIdentity());
     else
@@ -2335,25 +2335,51 @@ namespace Step35 {
                                                    joint_endc   = joint_dof_handler.end(),
                                                    vel_cell     = dof_handler_velocity.begin_active(),
                                                    pres_cell    = dof_handler_pressure.begin_active();
-    for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
-      joint_cell->get_dof_indices(loc_joint_dof_indices);
-      vel_cell->get_dof_indices(loc_vel_dof_indices);
-      pres_cell->get_dof_indices(loc_pres_dof_indices);
-      for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
-        switch(joint_fe.system_to_base_index(i).first.first) {
-          case 0:
-            Assert(joint_fe.system_to_base_index(i).first.second < dim,
-                   ExcInternalError());
-            joint_solution(loc_joint_dof_indices[i]) =
-            u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
-            break;
-          case 1:
-            Assert(joint_fe.system_to_base_index(i).first.second == 0,
-                   ExcInternalError());
-            joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
-            break;
-          default:
-            Assert(false, ExcInternalError());
+    if(TR_BDF2_stage == 2) {
+      for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
+        joint_cell->get_dof_indices(loc_joint_dof_indices);
+        vel_cell->get_dof_indices(loc_vel_dof_indices);
+        pres_cell->get_dof_indices(loc_pres_dof_indices);
+        for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
+          switch(joint_fe.system_to_base_index(i).first.first) {
+            case 0:
+              Assert(joint_fe.system_to_base_index(i).first.second < dim,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) =
+              u_extr(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            case 1:
+              Assert(joint_fe.system_to_base_index(i).first.second == 0,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = pres_int(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            default:
+              Assert(false, ExcInternalError());
+          }
+        }
+      }
+    }
+    else if(TR_BDF2_stage == 1) {
+      for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
+        joint_cell->get_dof_indices(loc_joint_dof_indices);
+        vel_cell->get_dof_indices(loc_vel_dof_indices);
+        pres_cell->get_dof_indices(loc_pres_dof_indices);
+        for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
+          switch(joint_fe.system_to_base_index(i).first.first) {
+            case 0:
+              Assert(joint_fe.system_to_base_index(i).first.second < dim,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) =
+              u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            case 1:
+              Assert(joint_fe.system_to_base_index(i).first.second == 0,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            default:
+              Assert(false, ExcInternalError());
+          }
         }
       }
     }
@@ -2366,8 +2392,14 @@ namespace Step35 {
     component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
     data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
     data_out.build_patches(EquationData::degree_p + 1);
-    std::ofstream output("solution-" + Utilities::int_to_string(step, 5) + ".vtk");
-    data_out.write_vtk(output);
+    if(TR_BDF2_stage == 1) {
+      std::ofstream output("solution-fin-" + Utilities::int_to_string(step, 5) + ".vtk");
+      data_out.write_vtk(output);
+    }
+    else if(TR_BDF2_stage == 2) {
+      std::ofstream output("solution-int-" + Utilities::int_to_string(step, 5) + ".vtk");
+      data_out.write_vtk(output);
+    }
   }
 
 
@@ -2390,7 +2422,7 @@ namespace Step35 {
     output_results(1);
     for(unsigned int n = 2; n <= n_steps; ++n) {
       if(n % output_interval == 0) {
-        verbose_cout << "Plotting Solution" << std::endl;
+        verbose_cout << "Plotting Solution final" << std::endl;
         output_results(n);
       }
       std::cout << "Step = " << n << " Time = " << (n * dt) << std::endl;
@@ -2402,6 +2434,7 @@ namespace Step35 {
       vel_exact.advance_time(gamma*dt);
       u_star = u_extr;
       diffusion_step();
+      u_extr = u_star;
       verbose_cout << "  Projection Step stage 1" << std::endl;
       pres_Diff.vmult(u_tmp, pres_n);
       u_tmp.equ(gamma*dt, u_tmp);
@@ -2413,7 +2446,10 @@ namespace Step35 {
       u_tmp.equ(-gamma*dt, u_tmp);
       u_n_gamma += u_tmp;
       TR_BDF2_stage = 2; //--- Flag to pass at second stage
-      //--- Second stage of TR-BDF2
+      if(n % output_interval == 0) {
+        verbose_cout << "Plotting Solution intermediate" << std::endl;
+        output_results(n);
+      }      //--- Second stage of TR-BDF2
       u_n_minus_1 = u_n;
       verbose_cout << "  Interpolating the velocity stage 2" << std::endl;
       interpolate_velocity();
