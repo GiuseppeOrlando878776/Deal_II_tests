@@ -696,9 +696,9 @@ namespace Step35 {
               const auto&  face_iterator          = data.get_face_iterator(face, 0);
               const double measure                = face_iterator.first->face(face_iterator.second)->measure();
               phi.submit_value((a21/Re*grad_u_old - a21*tensor_product_u_n)*n_plus - p_old*n_plus +
-                               a22/Re*2.0*C_u/measure*u_int_m -
-                               a22*tensor_product_u_int_m*n_plus +
-                               a22*lambda*u_int_m, q);
+                               a22/Re*C_u/measure*u_int_m -
+                               a22*0.5*tensor_product_u_int_m*n_plus +
+                               a22*0.5*lambda*u_int_m, q);
               phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int_m, n_plus), q);
               break;
             }
@@ -771,8 +771,8 @@ namespace Step35 {
               const double measure            = face_iterator.first->face(face_iterator.second)->measure();
               phi.submit_value((a31/Re*grad_u_old + a32/Re*grad_u_int -
                                a31*tensor_product_u_n - a32*tensor_product_u_n_gamma)*n_plus - p_old*n_plus +
-                               a33/Re*2.0*C_u/measure*u_m -
-                               a33*tensor_product_u_m*n_plus + a33*lambda*u_m, q);
+                               a33/Re*C_u/measure*u_m -
+                               a33*0.5*tensor_product_u_m*n_plus + a33*0.5*lambda*u_m, q);
               phi.submit_gradient(-theta_v*a33/Re*outer_product(u_m, n_plus), q);
               break;
             }
@@ -884,12 +884,14 @@ namespace Step35 {
     FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi(data, true, 1);
     FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_proj(data, true, 0);
 
+    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
+
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi_proj.reinit(face);
       phi_proj.gather_evaluate(src, true, false);
       phi.reinit(face);
       for(unsigned int q = 0; q < phi.n_q_points; ++q)
-        phi.submit_value(scalar_product(phi_proj.get_value(q), phi.get_normal_vector(q)), q);
+        phi.submit_value(coeff*scalar_product(phi_proj.get_value(q), phi.get_normal_vector(q)), q);
       phi.integrate_scatter(true, false, dst);
     }
   }
@@ -1054,8 +1056,8 @@ namespace Step35 {
         const auto   boundary_id    = data.get_boundary_id(face);
         const auto&  face_iterator  = data.get_face_iterator(face, 0);
         const double measure        = face_iterator.first->face(face_iterator.second)->measure();
-        const double coef_trasp     = (boundary_id == 3) ? 0.5 : 0.0;
-        const double coef_jump      = (boundary_id == 3) ? C_u/measure : 2.0*C_u/measure;
+        const double coef_trasp     = (boundary_id <= 4) ? 0.5 : 0.0;
+        const double coef_jump      = (boundary_id <= 4) ? C_u/measure : 2.0*C_u/measure;
         phi.reinit(face);
         phi.gather_evaluate(src, true, true);
         phi_old_extr.reinit(face);
@@ -1067,7 +1069,7 @@ namespace Step35 {
           const auto& u_int                = phi.get_value(q);
           const auto& tensor_product_u_int = outer_product(phi.get_value(q), phi_old_extr.get_value(q));
           const auto  lambda               = std::abs(scalar_product(phi_old_extr.get_value(q), n_plus));
-          const auto  coef_lambda          = (boundary_id == 3) ? 0.5*lambda : lambda;
+          const auto  coef_lambda          = (boundary_id <= 4) ? 0.5*lambda : lambda;
           switch(boundary_id) {
             case 1:
             {
@@ -1114,8 +1116,8 @@ namespace Step35 {
         const auto&  face_iterator = data.get_face_iterator(face, 0);
         const double measure       = face_iterator.first->face(face_iterator.second)->measure();
         const auto   boundary_id   = data.get_boundary_id(face);
-        const double coef_trasp    = (boundary_id == 3) ? 0.5 : 0.0;
-        const double coef_jump     = (boundary_id == 3) ? C_u/measure : 2.0*C_u/measure;
+        const double coef_trasp    = (boundary_id <= 4) ? 0.5 : 0.0;
+        const double coef_jump     = (boundary_id <= 4) ? C_u/measure : 2.0*C_u/measure;
         phi.reinit(face);
         phi.gather_evaluate(src, true, true);
         phi_extr.reinit(face);
@@ -1127,7 +1129,7 @@ namespace Step35 {
           const auto& u                = phi.get_value(q);
           const auto& tensor_product_u = outer_product(phi.get_value(q), phi_extr.get_value(q));
           const auto  lambda           = std::abs(scalar_product(phi_extr.get_value(q), n_plus));
-          const auto  coef_lambda      = (boundary_id == 3) ? 0.5*lambda : lambda;
+          const auto  coef_lambda      = (boundary_id <= 4) ? 0.5*lambda : lambda;
           switch(boundary_id) {
             case 1:
             {
@@ -1515,8 +1517,8 @@ namespace Step35 {
         const auto   boundary_id   = data.get_boundary_id(face);
         const auto&  face_iterator = data.get_face_iterator(face, 0);
         const double measure       = face_iterator.first->face(face_iterator.second)->measure();
-        const double coef_trasp    = (boundary_id == 3) ? 0.5 : 0.0;
-        const double coef_jump     = (boundary_id == 3) ? C_u/measure : 2.0*C_u/measure;
+        const double coef_trasp    = (boundary_id <= 4) ? 0.5 : 0.0;
+        const double coef_jump     = (boundary_id <= 4) ? C_u/measure : 2.0*C_u/measure;
         phi_old_extr.reinit(face);
         phi_old_extr.gather_evaluate(u_extr, true, false);
         phi.reinit(face);
@@ -1532,7 +1534,7 @@ namespace Step35 {
             const auto& u_int                = phi.get_value(q);
             const auto& tensor_product_u_int = outer_product(phi.get_value(q), phi_old_extr.get_value(q));
             const auto  lambda               = std::abs(scalar_product(phi_old_extr.get_value(q), n_plus));
-            const auto  coef_lambda          = (boundary_id == 3) ? 0.5*lambda : lambda;
+            const auto  coef_lambda          = (boundary_id <= 4) ? 0.5*lambda : lambda;
             switch(boundary_id) {
               case 1:
               {
@@ -1589,8 +1591,8 @@ namespace Step35 {
         const auto&  face_iterator = data.get_face_iterator(face, 0);
         const double measure       = face_iterator.first->face(face_iterator.second)->measure();
         const auto   boundary_id   = data.get_boundary_id(face);
-        const double coef_trasp    = (boundary_id == 3) ? 0.5 : 0.0;
-        const double coef_jump     = (boundary_id == 3) ? C_u/measure : 2.0*C_u/measure;
+        const double coef_trasp    = (boundary_id <= 4) ? 0.5 : 0.0;
+        const double coef_jump     = (boundary_id <= 4) ? C_u/measure : 2.0*C_u/measure;
         phi_extr.reinit(face);
         phi_extr.gather_evaluate(u_extr, true, false);
         phi.reinit(face);
@@ -1606,7 +1608,7 @@ namespace Step35 {
             const auto& u                = phi.get_value(q);
             const auto& tensor_product_u = outer_product(phi.get_value(q), phi_extr.get_value(q));
             const auto  lambda           = std::abs(scalar_product(phi_extr.get_value(q), n_plus));
-            const auto  coef_lambda      = (boundary_id == 3) ? 0.5*lambda : lambda;
+            const auto  coef_lambda      = (boundary_id <= 4) ? 0.5*lambda : lambda;
             switch(boundary_id) {
               case 1:
               {
@@ -1981,6 +1983,8 @@ namespace Step35 {
 
     // The final function implements postprocessing the output
     void output_results(const unsigned int step);
+
+    void output_results_2(const unsigned int step);
   };
 
 
@@ -2403,6 +2407,89 @@ namespace Step35 {
   }
 
 
+  template<int dim>
+  void NavierStokesProjection<dim>::output_results_2(const unsigned int step) {
+    const FESystem<dim> joint_fe(fe_velocity, 1, fe_pressure, 1);
+    DoFHandler<dim>     joint_dof_handler(triangulation);
+    joint_dof_handler.distribute_dofs(joint_fe);
+    Assert(joint_dof_handler.n_dofs() == (dof_handler_velocity.n_dofs() + dof_handler_pressure.n_dofs()),
+           ExcInternalError());
+    Vector<double> joint_solution(joint_dof_handler.n_dofs());
+    std::vector<types::global_dof_index> loc_joint_dof_indices(joint_fe.n_dofs_per_cell()),
+                                         loc_vel_dof_indices(fe_velocity.n_dofs_per_cell()),
+                                         loc_pres_dof_indices(fe_pressure.n_dofs_per_cell());
+    typename DoFHandler<dim>::active_cell_iterator joint_beginc = joint_dof_handler.begin_active(),
+                                                   joint_endc   = joint_dof_handler.end(),
+                                                   vel_cell     = dof_handler_velocity.begin_active(),
+                                                   pres_cell    = dof_handler_pressure.begin_active();
+    if(TR_BDF2_stage == 2) {
+      for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
+        joint_cell->get_dof_indices(loc_joint_dof_indices);
+        vel_cell->get_dof_indices(loc_vel_dof_indices);
+        pres_cell->get_dof_indices(loc_pres_dof_indices);
+        for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
+          switch(joint_fe.system_to_base_index(i).first.first) {
+            case 0:
+              Assert(joint_fe.system_to_base_index(i).first.second < dim,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) =
+              u_star(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            case 1:
+              Assert(joint_fe.system_to_base_index(i).first.second == 0,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = pres_int(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            default:
+              Assert(false, ExcInternalError());
+          }
+        }
+      }
+    }
+    else if(TR_BDF2_stage == 1) {
+      for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
+        joint_cell->get_dof_indices(loc_joint_dof_indices);
+        vel_cell->get_dof_indices(loc_vel_dof_indices);
+        pres_cell->get_dof_indices(loc_pres_dof_indices);
+        for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
+          switch(joint_fe.system_to_base_index(i).first.first) {
+            case 0:
+              Assert(joint_fe.system_to_base_index(i).first.second < dim,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) =
+              u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            case 1:
+              Assert(joint_fe.system_to_base_index(i).first.second == 0,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            default:
+              Assert(false, ExcInternalError());
+          }
+        }
+      }
+    }
+    std::vector<std::string> joint_solution_names(dim, "v");
+    joint_solution_names.emplace_back("p");
+    DataOut<dim> data_out;
+    data_out.attach_dof_handler(joint_dof_handler);
+    std::vector<DataComponentInterpretation::DataComponentInterpretation>
+    component_interpretation(dim + 1, DataComponentInterpretation::component_is_part_of_vector);
+    component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
+    data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
+    data_out.build_patches(EquationData::degree_p + 1);
+    if(TR_BDF2_stage == 1) {
+      std::ofstream output("solution-fin-" + Utilities::int_to_string(step, 5) + ".vtk");
+      data_out.write_vtk(output);
+    }
+    else if(TR_BDF2_stage == 2) {
+      std::ofstream output("solution-int_s-" + Utilities::int_to_string(step, 5) + ".vtk");
+      data_out.write_vtk(output);
+    }
+  }
+
+
   // @sect4{ <code>NavierStokesProjection::run</code> }
 
   // This is the time marching function, which starting at <code>t_0</code>
@@ -2449,6 +2536,7 @@ namespace Step35 {
       if(n % output_interval == 0) {
         verbose_cout << "Plotting Solution intermediate" << std::endl;
         output_results(n);
+        output_results_2(n);
       }      //--- Second stage of TR-BDF2
       u_n_minus_1 = u_n;
       verbose_cout << "  Interpolating the velocity stage 2" << std::endl;
