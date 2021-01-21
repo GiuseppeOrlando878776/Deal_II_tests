@@ -814,7 +814,7 @@ namespace Step59
     Triangulation<dim> triangulation;
 #endif
 
-    FE_DGQHermite<dim> fe;
+    FE_DGQ<dim> fe;
     DoFHandler<dim>    dof_handler;
 
     using SystemMatrixType = LaplaceOperator<dim, fe_degree, double>;
