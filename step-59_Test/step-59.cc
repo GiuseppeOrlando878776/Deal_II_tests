@@ -156,7 +156,6 @@ namespace Step59
   // function `get_penalty_factor()` that centralizes the selection of the
   // penalty parameter in the symmetric interior penalty method according to
   // step-39.
-
   template <int dim, int fe_degree, typename number>
   class LaplaceOperator : public Subscriptor {
   public:
@@ -203,37 +202,6 @@ namespace Step59
     std::shared_ptr<const MatrixFree<dim, number>> data;
   };
 
-
-
-  // The `%PreconditionBlockJacobi` class defines our custom preconditioner for
-  // this problem. As opposed to step-37 which was based on the matrix
-  // diagonal, we here compute an approximate inversion of the diagonal blocks
-  // in the discontinuous Galerkin method by using the so-called fast
-  // diagonalization method discussed in the introduction.
-
-  template <int dim, int fe_degree, typename number>
-  class PreconditionBlockJacobi {
-  public:
-    using value_type = number;
-
-    void clear() {
-      cell_matrices.clear();
-    }
-
-    void initialize(const LaplaceOperator<dim, fe_degree, number>& op);
-
-    void vmult(LinearAlgebra::distributed::Vector<number>&       dst,
-               const LinearAlgebra::distributed::Vector<number>& src) const;
-
-    void Tvmult(LinearAlgebra::distributed::Vector<number>&       dst,
-                const LinearAlgebra::distributed::Vector<number>& src) const {
-      vmult(dst, src);
-    }
-
-  private:
-    std::shared_ptr<const MatrixFree<dim, number>> data;
-    std::vector<TensorProductMatrixSymmetricSum<dim, VectorizedArray<number>, fe_degree + 1>> cell_matrices;
-  };
 
 
   // This free-standing function is used in both the `LaplaceOperator` and
@@ -621,173 +589,6 @@ namespace Step59
   }
 
 
-  // Next we turn to the preconditioner initialization. As explained in the
-  // introduction, we want to construct an (approximate) inverse of the cell
-  // matrices from a product of 1D mass and Laplace matrices. Our first task
-  // is to compute the 1D matrices, which we do by first creating a 1D finite
-  // element. Instead of anticipating FE_DGQHermite<1> here, we get the finite
-  // element's name from DoFHandler, replace the @p dim argument (2 or 3) by 1
-  // to create a 1D name, and construct the 1D element by using FETools.
-  template <int dim, int fe_degree, typename number>
-  void PreconditionBlockJacobi<dim, fe_degree, number>::initialize(const LaplaceOperator<dim, fe_degree, number>& op) {
-    data = op.get_matrix_free();
-
-    std::string name = data->get_dof_handler().get_fe().get_name();
-    name.replace(name.find('<') + 1, 1, "1");
-    std::unique_ptr<FiniteElement<1>> fe_1d = FETools::get_fe_by_name<1>(name);
-
-    // As for computing the 1D matrices on the unit element, we simply write
-    // down what a typical assembly procedure over rows and columns of the
-    // matrix as well as the quadrature points would do. We select the same
-    // Laplace matrices once and for all using the coefficients 0.5 for
-    // interior faces (but possibly scaled differently in different directions
-    // as a result of the mesh). Thus, we make a slight mistake at the
-    // Dirichlet boundary (where the correct factor would be 1 for the
-    // derivative terms and 2 for the penalty term, see step-39) or at the
-    // Neumann boundary where the factor should be zero. Since we only use
-    // this class as a smoother inside a multigrid scheme, this error is not
-    // going to have any significant effect and merely affects smoothing
-    // quality.
-    const unsigned int                                 N = fe_degree + 1;
-    FullMatrix<double>                                 laplace_unscaled(N, N);
-    std::array<Table<2, VectorizedArray<number>>, dim> mass_matrices;
-    std::array<Table<2, VectorizedArray<number>>, dim> laplace_matrices;
-    for(unsigned int d = 0; d < dim; ++d) {
-      mass_matrices[d].reinit(N, N);
-      laplace_matrices[d].reinit(N, N);
-    }
-
-    QGauss<1> quadrature(N);
-    for(unsigned int i = 0; i < N; ++i) {
-      for(unsigned int j = 0; j < N; ++j) {
-        double sum_mass = 0, sum_laplace = 0;
-        for(unsigned int q = 0; q < quadrature.size(); ++q) {
-          sum_mass += (fe_1d->shape_value(i, quadrature.point(q)) *
-                       fe_1d->shape_value(j, quadrature.point(q))) *
-                       quadrature.weight(q);
-          sum_laplace += (fe_1d->shape_grad(i, quadrature.point(q))[0] *
-                          fe_1d->shape_grad(j, quadrature.point(q))[0]) *
-                          quadrature.weight(q);
-        }
-        for(unsigned int d = 0; d < dim; ++d)
-          mass_matrices[d](i, j) = sum_mass;
-
-        // The left and right boundary terms assembled by the next two
-        // statements appear to have somewhat arbitrary signs, but those are
-        // correct as can be verified by looking at step-39 and inserting
-        // the value -1 and 1 for the normal vector in the 1D case.
-        sum_laplace += (1.0*fe_1d->shape_value(i, Point<1>()) *
-                            fe_1d->shape_value(j, Point<1>()) * op.get_penalty_factor() +
-                        0.5*fe_1d->shape_grad(i, Point<1>())[0] *
-                            fe_1d->shape_value(j, Point<1>()) +
-                        0.5*fe_1d->shape_grad(j, Point<1>())[0] *
-                            fe_1d->shape_value(i, Point<1>()));
-
-        sum_laplace += (1.0*fe_1d->shape_value(i, Point<1>(1.0)) *
-                            fe_1d->shape_value(j, Point<1>(1.0)) * op.get_penalty_factor() -
-                        0.5*fe_1d->shape_grad(i, Point<1>(1.0))[0] *
-                            fe_1d->shape_value(j, Point<1>(1.0)) -
-                        0.5*fe_1d->shape_grad(j, Point<1>(1.0))[0] *
-                            fe_1d->shape_value(i, Point<1>(1.0)));
-
-        laplace_unscaled(i, j) = sum_laplace;
-      }
-    }
-
-    // Next, we go through the cells and pass the scaled matrices to
-    // TensorProductMatrixSymmetricSum to actually compute the generalized
-    // eigenvalue problem for representing the inverse: Since the matrix
-    // approximation is constructed as $A\otimes M + M\otimes A$ and the
-    // weights are constant for each element, we can apply all weights on the
-    // Laplace matrix and simply keep the mass matrices unscaled. In the loop
-    // over cells, we want to make use of the geometry compression provided by
-    // the MatrixFree class and check if the current geometry is the same as
-    // on the last cell batch, in which case there is nothing to do. This
-    // compression can be accessed by
-    // FEEvaluation::get_mapping_data_index_offset() once `reinit()` has been
-    // called.
-    //
-    // Once we have accessed the inverse Jacobian through the FEEvaluation
-    // access function (we take the one for the zeroth quadrature point as
-    // they should be the same on all quadrature points for a Cartesian cell),
-    // we check that it is diagonal and then extract the determinant of the
-    // original Jacobian, i.e., the inverse of the determinant of the inverse
-    // Jacobian, and set the weight as $\text{det}(J) / h_d^2$ according to
-    // the 1D Laplacian times $d-1$ copies of the mass matrix.
-    cell_matrices.clear();
-    FEEvaluation<dim, fe_degree, fe_degree + 1, 1, number> phi(*data);
-    unsigned int old_mapping_data_index = numbers::invalid_unsigned_int;
-    for(unsigned int cell = 0; cell < data->n_cell_batches(); ++cell) {
-      phi.reinit(cell);
-
-      if(phi.get_mapping_data_index_offset() == old_mapping_data_index)
-        continue;
-
-      Tensor<2, dim, VectorizedArray<number>> inverse_jacobian = phi.inverse_jacobian(0);
-
-      for(unsigned int d = 0; d < dim; ++d) {
-        for(unsigned int e = 0; e < dim; ++e) {
-          if(d != e) {
-            for(unsigned int v = 0; v < VectorizedArray<number>::size(); ++v)
-              AssertThrow(inverse_jacobian[d][e][v] == 0.0, ExcNotImplemented());
-          }
-        }
-      }
-
-      VectorizedArray<number> jacobian_determinant = inverse_jacobian[0][0];
-      for(unsigned int e = 1; e < dim; ++e)
-        jacobian_determinant *= inverse_jacobian[e][e];
-      jacobian_determinant = 1. / jacobian_determinant;
-
-      for(unsigned int d = 0; d < dim; ++d) {
-        const VectorizedArray<number> scaling_factor = inverse_jacobian[d][d] * inverse_jacobian[d][d] * jacobian_determinant;
-
-        // Once we know the factor by which we should scale the Laplace
-        // matrix, we apply this weight to the unscaled DG Laplace matrix
-        // and send the array to the class TensorProductMatrixSymmetricSum
-        // for computing the generalized eigenvalue problem mentioned in
-        // the introduction.
-
-        for(unsigned int i = 0; i < N; ++i) {
-          for(unsigned int j = 0; j < N; ++j)
-            laplace_matrices[d](i, j) = scaling_factor * laplace_unscaled(i, j);
-        }
-      }
-      if(cell_matrices.size() <= phi.get_mapping_data_index_offset())
-        cell_matrices.resize(phi.get_mapping_data_index_offset() + 1);
-      cell_matrices[phi.get_mapping_data_index_offset()].reinit(mass_matrices, laplace_matrices);
-    }
-  }
-
-
-  // The vmult function for the approximate block-Jacobi preconditioner is
-  // very simple in the DG context: We simply need to read the values of the
-  // current cell batch, apply the inverse for the given entry in the array of
-  // tensor product matrix, and write the result back. In this loop, we
-  // overwrite the content in `dst` rather than first setting the entries to
-  // zero. This is legitimate for a DG method because every cell has
-  // independent degrees of freedom. Furthermore, we manually write out the
-  // loop over all cell batches, rather than going through
-  // MatrixFree::cell_loop(). We do this because we know that we are not going
-  // to need data exchange over the MPI network here as all computations are
-  // done on the cells held locally on each processor.
-  template <int dim, int fe_degree, typename number>
-  void PreconditionBlockJacobi<dim, fe_degree, number>::vmult(LinearAlgebra::distributed::Vector<number>&       dst,
-                                                              const LinearAlgebra::distributed::Vector<number>& src) const {
-    adjust_ghost_range_if_necessary(*data, dst);
-    adjust_ghost_range_if_necessary(*data, src);
-
-    FEEvaluation<dim, fe_degree, fe_degree + 1, 1, number> phi(*data);
-    for(unsigned int cell = 0; cell < data->n_cell_batches(); ++cell) {
-      phi.reinit(cell);
-      phi.read_dof_values(src);
-      cell_matrices[phi.get_mapping_data_index_offset()].apply_inverse(
-          ArrayView<VectorizedArray<number>>(phi.begin_dof_values(), phi.dofs_per_cell),
-          ArrayView<const VectorizedArray<number>>(phi.begin_dof_values(), phi.dofs_per_cell));
-      phi.set_dof_values(dst);
-    }
-  }
-
 
   // The definition of the LaplaceProblem class is very similar to
   // step-37. One difference is the fact that we add the element degree as a
@@ -819,9 +620,6 @@ namespace Step59
 
     using SystemMatrixType = LaplaceOperator<dim, fe_degree, double>;
     SystemMatrixType system_matrix;
-
-    using LevelMatrixType = LaplaceOperator<dim, fe_degree, float>;
-    MGLevelObject<LevelMatrixType> mg_matrices;
 
     LinearAlgebra::distributed::Vector<double> solution;
     LinearAlgebra::distributed::Vector<double> system_rhs;
@@ -866,7 +664,6 @@ namespace Step59
     setup_time = 0.0;
 
     system_matrix.clear();
-    mg_matrices.clear_elements();
 
     dof_handler.distribute_dofs(fe);
     dof_handler.distribute_mg_dofs();
@@ -897,26 +694,6 @@ namespace Step59
 
     setup_time += time.wall_time();
     time_details << "Setup matrix-free system      " << time.wall_time() << " s"
-                 << std::endl;
-    time.restart();
-
-    const unsigned int nlevels = triangulation.n_global_levels();
-    mg_matrices.resize(0, nlevels - 1);
-
-    for(unsigned int level = 0; level < nlevels; ++level) {
-      typename MatrixFree<dim, float>::AdditionalData additional_data;
-      additional_data.tasks_parallel_scheme = MatrixFree<dim, float>::AdditionalData::none;
-      additional_data.mapping_update_flags  = (update_gradients | update_JxW_values);
-      additional_data.mapping_update_flags_inner_faces = (update_gradients | update_JxW_values);
-      additional_data.mapping_update_flags_boundary_faces = (update_gradients | update_JxW_values);
-      additional_data.mg_level = level;
-      const auto mg_mf_storage_level = std::make_shared<MatrixFree<dim, float>>();
-      mg_mf_storage_level->reinit(dof_handler, dummy, QGauss<1>(fe.degree + 1), additional_data);
-
-      mg_matrices[level].initialize(mg_mf_storage_level);
-    }
-    setup_time += time.wall_time();
-    time_details << "Setup matrix-free levels      " << time.wall_time() << " s"
                  << std::endl;
   }
 
@@ -1047,56 +824,15 @@ namespace Step59
   template <int dim, int fe_degree>
   void LaplaceProblem<dim, fe_degree>::solve() {
     Timer                            time;
-    MGTransferMatrixFree<dim, float> mg_transfer;
-    mg_transfer.build(dof_handler);
-    setup_time += time.wall_time();
-    time_details << "MG build transfer time        " << time.wall_time()
-                 << " s\n";
-    time.restart();
-
-    using SmootherType = PreconditionChebyshev<LevelMatrixType,
-                                               LinearAlgebra::distributed::Vector<float>,
-                                               PreconditionBlockJacobi<dim, fe_degree, float>>;
-    mg::SmootherRelaxation<SmootherType, LinearAlgebra::distributed::Vector<float>>  mg_smoother;
-    MGLevelObject<typename SmootherType::AdditionalData> smoother_data;
-    smoother_data.resize(0, triangulation.n_global_levels() - 1);
-    for(unsigned int level = 0; level < triangulation.n_global_levels(); ++level) {
-      if(level > 0) {
-        smoother_data[level].smoothing_range     = 15.;
-        smoother_data[level].degree              = 3;
-        smoother_data[level].eig_cg_n_iterations = 10;
-      }
-      else {
-        smoother_data[0].smoothing_range = 2e-2;
-        smoother_data[0].degree          = numbers::invalid_unsigned_int;
-        smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
-      }
-      smoother_data[level].preconditioner = std::make_shared<PreconditionBlockJacobi<dim, fe_degree, float>>();
-      smoother_data[level].preconditioner->initialize(mg_matrices[level]);
-    }
-    mg_smoother.initialize(mg_matrices, smoother_data);
-
-    MGCoarseGridApplySmoother<LinearAlgebra::distributed::Vector<float>> mg_coarse;
-    mg_coarse.initialize(mg_smoother);
-
-    mg::Matrix<LinearAlgebra::distributed::Vector<float>> mg_matrix(mg_matrices);
-
-    Multigrid<LinearAlgebra::distributed::Vector<float>> mg(mg_matrix, mg_coarse, mg_transfer, mg_smoother, mg_smoother);
-
-    PreconditionMG<dim,
-                   LinearAlgebra::distributed::Vector<float>,
-                   MGTransferMatrixFree<dim, float>> preconditioner(dof_handler, mg, mg_transfer);
 
     SolverControl solver_control(10000, 1e-12 * system_rhs.l2_norm());
     SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
     setup_time += time.wall_time();
-    time_details << "MG build smoother time        " << time.wall_time()
-                 << "s\n";
     pcout << "Total setup time              " << setup_time << " s\n";
 
     time.reset();
     time.start();
-    cg.solve(system_matrix, solution, system_rhs, preconditioner);
+    cg.solve(system_matrix, solution, system_rhs, PreconditionIdentity());
 
     pcout << "Time solve (" << solver_control.last_step() << " iterations)    "
           << time.wall_time() << " s" << std::endl;
