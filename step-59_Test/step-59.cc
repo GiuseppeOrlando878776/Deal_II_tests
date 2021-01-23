@@ -397,6 +397,7 @@ namespace Step59
                                                            const LinearAlgebra::distributed::Vector<number>& src,
                                                            const std::pair<unsigned int, unsigned int>&      cell_range) const {
     FEEvaluation<dim, fe_degree, fe_degree + 1, 1, number> phi(data);
+
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
       phi.gather_evaluate(src, false, true);
@@ -445,6 +446,7 @@ namespace Step59
                                                            const std::pair<unsigned int, unsigned int>&      face_range) const {
     FEFaceEvaluation<dim, fe_degree, fe_degree + 1, 1, number> phi_p(data, true);
     FEFaceEvaluation<dim, fe_degree, fe_degree + 1, 1, number> phi_m(data, false);
+
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       // On a given batch of faces, we first update the pointers to the
       // current face and then access the vector. As mentioned above, we
@@ -483,11 +485,11 @@ namespace Step59
       // `data.get_face_info(face).exterior_face_no`. Finally, we must also
       // take the absolute value of these factors as the normal could point
       // into either positive or negative direction.
-      const VectorizedArray<number> inverse_length_normal_to_face = 0.5 * (std::abs((phi_p.get_normal_vector(0) *
-                                                                                     phi_p.inverse_jacobian(0))[dim - 1]) +
-                                                                            std::abs((phi_m.get_normal_vector(0) *
-                                                                                      phi_m.inverse_jacobian(0))[dim - 1]));
-      const VectorizedArray<number> sigma = inverse_length_normal_to_face * get_penalty_factor();
+      const auto& inverse_length_normal_to_face = 0.5 * (std::abs((phi_p.get_normal_vector(0) *
+                                                                   phi_p.inverse_jacobian(0))[dim - 1]) +
+                                                         std::abs((phi_m.get_normal_vector(0) *
+                                                                   phi_m.inverse_jacobian(0))[dim - 1]));
+      const auto sigma = inverse_length_normal_to_face * get_penalty_factor();
 
       // In the loop over the quadrature points, we eventually compute all
       // contributions to the interior penalty scheme. According to the
@@ -504,17 +506,15 @@ namespace Step59
       // gets the factor of one half due to the average in the test function
       // slot.
       for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
-        const VectorizedArray<number> solution_jump = (phi_p.get_value(q) - phi_m.get_value(q));
-        const VectorizedArray<number> average_normal_derivative = (phi_p.get_normal_derivative(q) +
-                                                                   phi_m.get_normal_derivative(q)) *
-                                                                   number(0.5);
-        const VectorizedArray<number> test_by_value = solution_jump * sigma - average_normal_derivative;
+        const auto& jump_p     = phi_p.get_value(q) - phi_m.get_value(q);
+        const auto& n_plus     = phi_p.get_normal_vector(q);
+        const auto& avg_grad_p = 0.5*(phi_p.get_gradient(q) + phi_m.get_gradient(q));
 
-        phi_p.submit_value(test_by_value, q);
-        phi_m.submit_value(-test_by_value, q);
+        phi_p.submit_value(sigma*jump_p - scalar_product(avg_grad_p, n_plus), q);
+        phi_m.submit_value(-sigma*jump_p + scalar_product(avg_grad_p, n_plus), q);
 
-        phi_p.submit_normal_derivative(-solution_jump * number(0.5), q);
-        phi_m.submit_normal_derivative(-solution_jump * number(0.5), q);
+        phi_p.submit_gradient(-0.5*jump_p*n_plus, q);
+        phi_m.submit_gradient(-0.5*jump_p*n_plus, q);
       }
 
       // Once we are done with the loop over quadrature points, we can do
@@ -563,26 +563,30 @@ namespace Step59
                                                                const LinearAlgebra::distributed::Vector<number>& src,
                                                                const std::pair<unsigned int, unsigned int>&      face_range) const {
     FEFaceEvaluation<dim, fe_degree, fe_degree + 1, 1, number> phi(data, true);
+
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi.reinit(face);
       phi.gather_evaluate(src, true, true);
 
-      const VectorizedArray<number> inverse_length_normal_to_face = std::abs((phi.get_normal_vector(0) *
-                                                                              phi.inverse_jacobian(0))[dim - 1]);
-      const VectorizedArray<number> sigma = inverse_length_normal_to_face * get_penalty_factor();
+      const auto& inverse_length_normal_to_face = std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
+      const auto  sigma = inverse_length_normal_to_face * get_penalty_factor();
 
       const bool is_dirichlet = (data.get_boundary_id(face) == 0);
 
-      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        const VectorizedArray<number> u_p = phi.get_value(q);
-        const VectorizedArray<number> u_m = is_dirichlet ? -u_p : u_p;
-        const VectorizedArray<number> normal_derivative_p = phi.get_normal_derivative(q);
-        const VectorizedArray<number> normal_derivative_m = is_dirichlet ? normal_derivative_p : -normal_derivative_p;
-        const VectorizedArray<number> solution_jump = (u_p - u_m);
-        const VectorizedArray<number> average_normal_derivative = (normal_derivative_p + normal_derivative_m) * number(0.5);
-        const VectorizedArray<number> test_by_value = solution_jump * sigma - average_normal_derivative;
-        phi.submit_normal_derivative(-solution_jump * number(0.5), q);
-        phi.submit_value(test_by_value, q);
+      if(is_dirichlet) {
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& pres   = phi.get_value(q);
+          const auto& grad_p = phi.get_gradient(q);
+          const auto& n_plus = phi.get_normal_vector(q);
+          phi.submit_gradient(-pres*n_plus, q);
+          phi.submit_value(2.0*sigma*pres - scalar_product(grad_p, n_plus), q);
+        }
+      }
+      else {
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          phi.submit_normal_derivative(0.0, q);
+          phi.submit_value(0.0, q);
+        }
       }
       phi.integrate_scatter(true, true, dst);
     }
