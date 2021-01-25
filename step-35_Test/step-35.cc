@@ -344,7 +344,7 @@ namespace Step35 {
 
     void vmult_grad_p_projection(Vec& dst, const Vec& src) const;
 
-    virtual void compute_diagonal() override;
+    virtual void compute_diagonal() override {}
 
   protected:
     RunTimeParameters::Data_Storage& eq_data;
@@ -426,20 +426,6 @@ namespace Step35 {
                                          Vec&                                         dst,
                                          const Vec&                                   src,
                                          const std::pair<unsigned int, unsigned int>& face_range) const;
-
-    void assemble_diagonal_cell_term_velocity(const MatrixFree<dim, Number>&               data,
-                                              Vec&                                         dst,
-                                              const Vec&                                   src,
-                                              const std::pair<unsigned int, unsigned int>& cell_range) const;
-    void assemble_diagonal_face_term_velocity(const MatrixFree<dim, Number>&               data,
-                                              Vec&                                         dst,
-                                              const Vec&                                   src,
-                                              const std::pair<unsigned int, unsigned int>& face_range) const;
-    void assemble_diagonal_boundary_term_velocity(const MatrixFree<dim, Number>&               data,
-                                                  Vec&                                         dst,
-                                                  const Vec&                                   src,
-                                                  const std::pair<unsigned int, unsigned int>& face_range) const;
-
 
     void assemble_cell_term_projection_grad_p(const MatrixFree<dim, Number>&               data,
                                               Vec&                                         dst,
@@ -705,12 +691,10 @@ namespace Step35 {
             for(unsigned int d = 0; d < dim; ++d)
               u_int_m[d][v] = vel_exact.value(point, d);
           }
-          const auto   tensor_product_u_int_m = outer_product(u_int_m, phi_old_extr.get_value(q));
-          const auto   lambda                 = 0.0*std::abs(scalar_product(phi_old_extr.get_value(q), n_plus));
+          const auto tensor_product_u_int_m = outer_product(u_int_m, phi_old_extr.get_value(q));
           phi.submit_value((a21/Re*grad_u_old - a21*tensor_product_u_n)*n_plus - p_old*n_plus +
                            a22/Re*2.0*coef_jump*u_int_m -
-                           a22*tensor_product_u_int_m*n_plus +
-                           a22*lambda*u_int_m, q);
+                           a22*tensor_product_u_int_m*n_plus, q);
           phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int_m, n_plus), q);
         }
         phi.integrate_scatter(true, true, dst);
@@ -751,12 +735,10 @@ namespace Step35 {
               u_m[d][v] = vel_exact.value(point, d);
           }
           const auto tensor_product_u_m = outer_product(u_m, phi_extr.get_value(q));
-          const auto lambda             = 0.0*std::abs(scalar_product(phi_extr.get_value(q), n_plus));
           phi.submit_value((a31/Re*grad_u_old + a32/Re*grad_u_int -
                            a31*tensor_product_u_n - a32*tensor_product_u_n_gamma)*n_plus - p_old*n_plus +
                            a33/Re*2.0*coef_jump*u_m -
-                           a33*tensor_product_u_m*n_plus +
-                           a33*lambda*u_m, q);
+                           a33*tensor_product_u_m*n_plus, q);
           phi.submit_gradient(-theta_v*a33/Re*outer_product(u_m, n_plus), q);
         }
         phi.integrate_scatter(true, true, dst);
@@ -782,6 +764,74 @@ namespace Step35 {
   // Assemble rhs cell term for the pressure
   //
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_rhs_cell_term_pressure(const MatrixFree<dim, Number>&               data,
+                                  Vec&                                         dst,
+                                  const Vec&                                   src,
+                                  const std::pair<unsigned int, unsigned int>& cell_range) const {
+    FEEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi(data, 1);
+
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi.reinit(cell);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        VectorizedArray<double> rhs_val = VectorizedArray<double>();
+        Point<dim, VectorizedArray<double>> point_batch = phi.quadrature_point(q);
+        for(unsigned int v = 0; v < VectorizedArray<double>::size(); ++v) {
+          Point<dim> single_point;
+          for(unsigned int d = 0; d < dim; ++d)
+            single_point[d] = point_batch[d][v];
+          rhs_val[v] = 4.0*pres_exact.value(single_point);
+        }
+        phi.submit_value(rhs_val, q);
+      }
+      phi.integrate_scatter(true, false, dst);
+    }
+  }
+
+  // Assemble rhs face term for the pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_rhs_face_term_pressure(const MatrixFree<dim, Number>&               data,
+                                  Vec&                                         dst,
+                                  const Vec&                                   src,
+                                  const std::pair<unsigned int, unsigned int>& face_range) const {}
+
+
+  // Assemble rhs boundary term for the pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_rhs_boundary_term_pressure(const MatrixFree<dim, Number>&               data,
+                                      Vec&                                         dst,
+                                      const Vec&                                   src,
+                                      const std::pair<unsigned int, unsigned int>& face_range) const {
+    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number> phi(data, true, 1);
+
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      phi.reinit(face);
+      const double coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1][0]);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        auto boundary_value          = VectorizedArray<Number>();
+        const auto& point_vectorized = phi.quadrature_point(q);
+        const auto& n_plus           = phi.get_normal_vector(q);
+        for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
+          Point<dim> point;
+          for(unsigned int d = 0; d < dim; ++d)
+            point[d] = point_vectorized[d][v];
+          boundary_value[v] = pres_exact.value(point);
+        }
+        phi.submit_value(2.0*coef_jump*boundary_value, q);
+        phi.submit_normal_derivative(-theta_p*boundary_value, q);
+      }
+      phi.integrate_scatter(true, true, dst);
+    }
+  }
+
+
+  // Assemble rhs cell term for the pressure
+  //
+  /*template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   assemble_rhs_cell_term_pressure(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
@@ -870,7 +920,7 @@ namespace Step35 {
       }
       phi.integrate_scatter(true, true, dst);
     }
-  }
+  }*/
 
 
   // Put together all the previous steps for pressure
@@ -965,12 +1015,10 @@ namespace Step35 {
           const auto& jump_u_int               = phi_p.get_value(q) - phi_m.get_value(q);
           const auto& avg_tensor_product_u_int = 0.5*(outer_product(phi_p.get_value(q), phi_old_extr_p.get_value(q)) +
                                                       outer_product(phi_m.get_value(q), phi_old_extr_m.get_value(q)));
-          const auto  lambda                   = 0.0*std::max(std::abs(scalar_product(phi_old_extr_p.get_value(q), n_plus)),
-                                                          std::abs(scalar_product(phi_old_extr_m.get_value(q), n_plus)));
           phi_p.submit_value(a22/Re*(-avg_grad_u_int*n_plus + coef_jump*jump_u_int) +
-                             a22*avg_tensor_product_u_int*n_plus + a22*0.5*lambda*jump_u_int , q);
+                             a22*avg_tensor_product_u_int*n_plus, q);
           phi_m.submit_value(-a22/Re*(-avg_grad_u_int*n_plus + coef_jump*jump_u_int) -
-                              a22*avg_tensor_product_u_int*n_plus - a22*0.5*lambda*jump_u_int, q);
+                              a22*avg_tensor_product_u_int*n_plus, q);
           phi_p.submit_gradient(-theta_v*a22/Re*0.5*outer_product(jump_u_int, n_plus), q);
           phi_m.submit_gradient(-theta_v*a22/Re*0.5*outer_product(jump_u_int, n_plus), q);
         }
@@ -999,12 +1047,10 @@ namespace Step35 {
           const auto& jump_u               = phi_p.get_value(q) - phi_m.get_value(q);
           const auto& avg_tensor_product_u = 0.5*(outer_product(phi_p.get_value(q), phi_extr_p.get_value(q)) +
                                                   outer_product(phi_m.get_value(q), phi_extr_m.get_value(q)));
-          const auto  lambda               = 0.0*std::max(std::abs(scalar_product(phi_extr_p.get_value(q), n_plus)),
-                                                      std::abs(scalar_product(phi_extr_m.get_value(q), n_plus)));
           phi_p.submit_value(a33/Re*(-avg_grad_u*n_plus + coef_jump*jump_u) +
-                             a33*avg_tensor_product_u*n_plus + a33*0.5*lambda*jump_u, q);
+                             a33*avg_tensor_product_u*n_plus, q);
           phi_m.submit_value(-a33/Re*(-avg_grad_u*n_plus + coef_jump*jump_u) -
-                              a33*avg_tensor_product_u*n_plus - a33*0.5*lambda*jump_u, q);
+                              a33*avg_tensor_product_u*n_plus, q);
           phi_p.submit_gradient(-theta_v*a33/Re*0.5*outer_product(jump_u, n_plus), q);
           phi_m.submit_gradient(-theta_v*a33/Re*0.5*outer_product(jump_u, n_plus), q);
         }
@@ -1039,9 +1085,8 @@ namespace Step35 {
           const auto& grad_u_int           = phi.get_gradient(q);
           const auto& u_int                = phi.get_value(q);
           const auto& tensor_product_u_int = outer_product(phi.get_value(q), phi_old_extr.get_value(q));
-          const auto  lambda               = 0.0*std::abs(scalar_product(phi_old_extr.get_value(q), n_plus));
           phi.submit_value(a22/Re*(-grad_u_int*n_plus + 2.0*coef_jump*u_int) +
-                           a22*coef_trasp*tensor_product_u_int*n_plus + a22*lambda*u_int, q);
+                           a22*coef_trasp*tensor_product_u_int*n_plus, q);
           phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int, n_plus), q);
         }
         phi.integrate_scatter(true, true, dst);
@@ -1063,9 +1108,8 @@ namespace Step35 {
           const auto& grad_u           = phi.get_gradient(q);
           const auto& u                = phi.get_value(q);
           const auto& tensor_product_u = outer_product(phi.get_value(q), phi_extr.get_value(q));
-          const auto  lambda           = 0.0*std::abs(scalar_product(phi_extr.get_value(q), n_plus));
           phi.submit_value(a33/Re*(-grad_u*n_plus + 2.0*coef_jump*u) +
-                           a33*coef_trasp*tensor_product_u*n_plus + a33*lambda*u, q);
+                           a33*coef_trasp*tensor_product_u*n_plus, q);
           phi.submit_gradient(-theta_v*a33/Re*outer_product(u, n_plus), q);
         }
         phi.integrate_scatter(true, true, dst);
@@ -1176,320 +1220,6 @@ namespace Step35 {
     else if(NS_stage == 3) {
       this->data->cell_loop(&NavierStokesProjectionOperator::assemble_cell_term_projection_grad_p,
                             this, dst, src, false);
-    }
-    else
-      Assert(false, ExcNotImplemented());
-  }
-
-
-  // Assemble diagonal cell term for the velocity
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  assemble_diagonal_cell_term_velocity(const MatrixFree<dim, Number>&               data,
-                                       Vec&                                         dst,
-                                       const Vec&                                   src,
-                                       const std::pair<unsigned int, unsigned int>& cell_range) const {
-    if(TR_BDF2_stage == 1) {
-      FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0), phi_old_extr(data, 0);
-
-      AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal(phi.dofs_per_component);
-      Tensor<1, dim, VectorizedArray<Number>> tmp;
-      for(unsigned int d = 0; d < dim; ++d)
-        tmp[d] = make_vectorized_array<Number>(1.0);
-
-      for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-        phi_old_extr.reinit(cell);
-        phi_old_extr.gather_evaluate(u_extr, true, false);
-        phi.reinit(cell);
-        for(unsigned int i = 0; i < phi.dofs_per_component; ++i) {
-          for(unsigned int j = 0; j < phi.dofs_per_component; ++j)
-            phi.submit_dof_value(Tensor<1, dim, VectorizedArray<Number>>(), j);
-          phi.submit_dof_value(tmp, i);
-          phi.evaluate(true, true);
-          for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-            const auto& u_int                = phi.get_value(q);
-            const auto& grad_u_int           = phi.get_gradient(q);
-            const auto& u_n_gamma_ov_2       = phi_old_extr.get_value(q);
-            const auto& tensor_product_u_int = outer_product(u_int, u_n_gamma_ov_2);
-            phi.submit_value(1.0/(gamma*dt)*u_int, q);
-            phi.submit_gradient(-a22*tensor_product_u_int + a22/Re*grad_u_int, q);
-          }
-          phi.integrate(true, true);
-          diagonal[i] = phi.get_dof_value(i);
-        }
-        for(unsigned int i = 0; i < phi.dofs_per_component; ++i)
-          phi.submit_dof_value(diagonal[i], i);
-        phi.distribute_local_to_global(dst);
-      }
-    }
-    else {
-      FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0), phi_int_extr(data, 0);
-
-      AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal(phi.dofs_per_component);
-      Tensor<1, dim, VectorizedArray<Number>> tmp;
-      for(unsigned int d = 0; d < dim; ++d)
-        tmp[d] = make_vectorized_array<Number>(1.0);
-
-      for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-        phi_int_extr.reinit(cell);
-        phi_int_extr.gather_evaluate(u_extr, true, false);
-        phi.reinit(cell);
-        for(unsigned int i = 0; i < phi.dofs_per_component; ++i) {
-          for(unsigned int j = 0; j < phi.dofs_per_component; ++j)
-            phi.submit_dof_value(Tensor<1, dim, VectorizedArray<Number>>(), j);
-          phi.submit_dof_value(tmp, i);
-          phi.evaluate(true, true);
-          for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-            const auto& u_curr                   = phi.get_value(q);
-            const auto& grad_u_curr              = phi.get_gradient(q);
-            const auto& u_n1_int                 = phi_int_extr.get_value(q);
-            const auto& tensor_product_u_curr    = outer_product(u_curr, u_n1_int);
-            phi.submit_value(1.0/((1.0 - gamma)*dt)*u_curr, q);
-            phi.submit_gradient(-a33*tensor_product_u_curr + a33/Re*grad_u_curr, q);
-          }
-          phi.integrate(true, true);
-          diagonal[i] = phi.get_dof_value(i);
-        }
-        for(unsigned int i = 0; i < phi.dofs_per_component; ++i)
-          phi.submit_dof_value(diagonal[i], i);
-        phi.distribute_local_to_global(dst);
-      }
-    }
-  }
-
-
-  // Assemble diagonal face term for the velocity
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  assemble_diagonal_face_term_velocity(const MatrixFree<dim, Number>&               data,
-                                       Vec&                                         dst,
-                                       const Vec&                                   src,
-                                       const std::pair<unsigned int, unsigned int>& face_range) const {
-    if(TR_BDF2_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
-                                                                     phi_old_extr_p(data, true, 0), phi_old_extr_m(data, false, 0);
-
-      AssertDimension(phi_p.dofs_per_component, phi_m.dofs_per_component);
-      AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal_p(phi_p.dofs_per_component), diagonal_m(phi_m.dofs_per_component);
-      Tensor<1, dim, VectorizedArray<Number>> tmp;
-      for(unsigned int d = 0; d < dim; ++d)
-        tmp[d] = make_vectorized_array<Number>(1.0);
-
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_old_extr_p.reinit(face);
-        phi_old_extr_p.gather_evaluate(u_extr, true, false);
-        phi_old_extr_m.reinit(face);
-        phi_old_extr_m.gather_evaluate(u_extr, true, false);
-        phi_p.reinit(face);
-        phi_m.reinit(face);
-        const double coef_jump = C_u*0.5*(std::abs((phi_p.get_normal_vector(0)*phi_p.inverse_jacobian(0))[dim - 1][0]) +
-                                          std::abs((phi_m.get_normal_vector(0)*phi_m.inverse_jacobian(0))[dim - 1][0]));
-        for(unsigned int i = 0; i < phi_p.dofs_per_component; ++i) {
-          for(unsigned int j = 0; j < phi_p.dofs_per_component; ++j) {
-            phi_p.submit_dof_value(Tensor<1, dim, VectorizedArray<Number>>(), j);
-            phi_m.submit_dof_value(Tensor<1, dim, VectorizedArray<Number>>(), j);
-          }
-          phi_p.submit_dof_value(tmp, i);
-          phi_p.evaluate(true, true);
-          phi_m.submit_dof_value(tmp, i);
-          phi_m.evaluate(true, true);
-          for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
-            const auto& n_plus                   = phi_p.get_normal_vector(q);
-            const auto& avg_grad_u_int           = 0.5*(phi_p.get_gradient(q) + phi_m.get_gradient(q));
-            const auto& jump_u_int               = phi_p.get_value(q) - phi_m.get_value(q);
-            const auto& avg_tensor_product_u_int = 0.5*(outer_product(phi_p.get_value(q), phi_old_extr_p.get_value(q)) +
-                                                        outer_product(phi_m.get_value(q), phi_old_extr_m.get_value(q)));
-            const auto  lambda                   = 0.0*std::max(std::abs(scalar_product(phi_old_extr_p.get_value(q), n_plus)),
-                                                            std::abs(scalar_product(phi_old_extr_m.get_value(q), n_plus)));
-            phi_p.submit_value(a22/Re*(-avg_grad_u_int*n_plus + coef_jump*jump_u_int) +
-                               a22*avg_tensor_product_u_int*n_plus + a22*0.5*lambda*jump_u_int , q);
-            phi_m.submit_value(-a22/Re*(-avg_grad_u_int*n_plus + coef_jump*jump_u_int) -
-                               a22*avg_tensor_product_u_int*n_plus - a22*0.5*lambda*jump_u_int, q);
-            phi_p.submit_gradient(-theta_v*0.5*a22/Re*outer_product(jump_u_int, n_plus), q);
-            phi_m.submit_gradient(-theta_v*0.5*a22/Re*outer_product(jump_u_int, n_plus), q);
-          }
-          phi_p.integrate(true, true);
-          diagonal_p[i] = phi_p.get_dof_value(i);
-          phi_m.integrate(true, true);
-          diagonal_m[i] = phi_m.get_dof_value(i);
-        }
-        for(unsigned int i = 0; i < phi_p.dofs_per_component; ++i) {
-          phi_p.submit_dof_value(diagonal_p[i], i);
-          phi_m.submit_dof_value(diagonal_m[i], i);
-        }
-        phi_p.distribute_local_to_global(dst);
-        phi_m.distribute_local_to_global(dst);
-      }
-    }
-    else {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
-                                                                     phi_extr_p(data, true, 0), phi_extr_m(data, false, 0);
-
-      AssertDimension(phi_p.dofs_per_component, phi_m.dofs_per_component);
-      AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal_p(phi_p.dofs_per_component), diagonal_m(phi_m.dofs_per_component);
-      Tensor<1, dim, VectorizedArray<Number>> tmp;
-      for(unsigned int d = 0; d < dim; ++d)
-        tmp[d] = make_vectorized_array<Number>(1.0);
-
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_extr_p.reinit(face);
-        phi_extr_p.gather_evaluate(u_extr, true, false);
-        phi_extr_m.reinit(face);
-        phi_extr_m.gather_evaluate(u_extr, true, false);
-        phi_p.reinit(face);
-        phi_m.reinit(face);
-        const double coef_jump = C_u*0.5*(std::abs((phi_p.get_normal_vector(0)*phi_p.inverse_jacobian(0))[dim - 1][0]) +
-                                          std::abs((phi_m.get_normal_vector(0)*phi_m.inverse_jacobian(0))[dim - 1][0]));
-        for(unsigned int i = 0; i < phi_p.dofs_per_component; ++i) {
-          for(unsigned int j = 0; j < phi_p.dofs_per_component; ++j) {
-            phi_p.submit_dof_value(Tensor<1, dim, VectorizedArray<Number>>(), j);
-            phi_m.submit_dof_value(Tensor<1, dim, VectorizedArray<Number>>(), j);
-          }
-          phi_p.submit_dof_value(tmp, i);
-          phi_p.evaluate(true, true);
-          phi_m.submit_dof_value(tmp, i);
-          phi_m.evaluate(true, true);
-          for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
-            const auto& n_plus               = phi_p.get_normal_vector(q);
-            const auto& avg_grad_u           = 0.5*(phi_p.get_gradient(q) + phi_m.get_gradient(q));
-            const auto& jump_u               = phi_p.get_value(q) - phi_m.get_value(q);
-            const auto& avg_tensor_product_u = 0.5*(outer_product(phi_p.get_value(q), phi_extr_p.get_value(q)) +
-                                                    outer_product(phi_m.get_value(q), phi_extr_m.get_value(q)));
-            const auto  lambda               = 0.0*std::max(std::abs(scalar_product(phi_extr_p.get_value(q), n_plus)),
-                                                        std::abs(scalar_product(phi_extr_m.get_value(q), n_plus)));
-            phi_p.submit_value(a33/Re*(-avg_grad_u*n_plus + coef_jump*jump_u) +
-                               a33*avg_tensor_product_u*n_plus + 0.5*a33*lambda*jump_u, q);
-            phi_m.submit_value(-a33/Re*(-avg_grad_u*n_plus + coef_jump*jump_u) -
-                               a33*avg_tensor_product_u*n_plus - 0.5*a33*lambda*jump_u, q);
-            phi_p.submit_gradient(-theta_v*0.5*a33/Re*outer_product(jump_u, n_plus), q);
-            phi_m.submit_gradient(-theta_v*0.5*a33/Re*outer_product(jump_u, n_plus), q);
-          }
-          phi_p.integrate(true, true);
-          diagonal_p[i] = phi_p.get_dof_value(i);
-          phi_m.integrate(true, true);
-          diagonal_m[i] = phi_m.get_dof_value(i);
-        }
-        for(unsigned int i = 0; i < phi_p.dofs_per_component; ++i) {
-          phi_p.submit_dof_value(diagonal_p[i], i);
-          phi_m.submit_dof_value(diagonal_m[i], i);
-        }
-        phi_p.distribute_local_to_global(dst);
-        phi_m.distribute_local_to_global(dst);
-      }
-    }
-  }
-
-
-  // Assemble boundary term for the velocity
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  assemble_diagonal_boundary_term_velocity(const MatrixFree<dim, Number>&               data,
-                                           Vec&                                         dst,
-                                           const Vec&                                   src,
-                                           const std::pair<unsigned int, unsigned int>& face_range) const {
-    if(TR_BDF2_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, true, 0), phi_old_extr(data, true, 0);
-
-      AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal(phi.dofs_per_component);
-      Tensor<1, dim, VectorizedArray<Number>> tmp;
-      for(unsigned int d = 0; d < dim; ++d)
-        tmp[d] = make_vectorized_array<Number>(1.0);
-
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_old_extr.reinit(face);
-        phi_old_extr.gather_evaluate(u_extr, true, false);
-        phi.reinit(face);
-        const double coef_jump  = C_u*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1][0]);
-        const double coef_trasp = 0.0;
-        for(unsigned int i = 0; i < phi.dofs_per_component; ++i) {
-          for(unsigned int j = 0; j < phi.dofs_per_component; ++j)
-            phi.submit_dof_value(Tensor<1, dim, VectorizedArray<Number>>(), j);
-          phi.submit_dof_value(tmp, i);
-          phi.evaluate(true, true);
-          for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-            const auto& n_plus               = phi.get_normal_vector(q);
-            const auto& tensor_product_n     = outer_product(n_plus, n_plus);
-            const auto& grad_u_int           = phi.get_gradient(q);
-            const auto& u_int                = phi.get_value(q);
-            const auto& tensor_product_u_int = outer_product(phi.get_value(q), phi_old_extr.get_value(q));
-            const auto  lambda               = 0.0*std::abs(scalar_product(phi_old_extr.get_value(q), n_plus));
-            phi.submit_value(a22/Re*(-grad_u_int*n_plus + 2.0*coef_jump*u_int) +
-                             a22*coef_trasp*tensor_product_u_int*n_plus + a22*lambda*u_int, q);
-            phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int, n_plus), q);
-          }
-          phi.integrate(true, true);
-          diagonal[i] = phi.get_dof_value(i);
-        }
-        for(unsigned int i = 0; i < phi.dofs_per_component; ++i)
-          phi.submit_dof_value(diagonal[i], i);
-        phi.distribute_local_to_global(dst);
-      }
-    }
-    else {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, true, 0), phi_extr(data, true, 0);
-
-      AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal(phi.dofs_per_component);
-      Tensor<1, dim, VectorizedArray<Number>> tmp;
-      for(unsigned int d = 0; d < dim; ++d)
-        tmp[d] = make_vectorized_array<Number>(1.0);
-
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_extr.reinit(face);
-        phi_extr.gather_evaluate(u_extr, true, false);
-        phi.reinit(face);
-        const double coef_jump  = C_u*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1][0]);
-        const double coef_trasp = 0.0;
-        for(unsigned int i = 0; i < phi.dofs_per_component; ++i) {
-          for(unsigned int j = 0; j < phi.dofs_per_component; ++j)
-            phi.submit_dof_value(Tensor<1, dim, VectorizedArray<Number>>(), j);
-          phi.submit_dof_value(tmp, i);
-          phi.evaluate(true, true);
-          for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-            const auto& n_plus           = phi.get_normal_vector(q);
-            const auto& tensor_product_n = outer_product(n_plus, n_plus);
-            const auto& grad_u           = phi.get_gradient(q);
-            const auto& u                = phi.get_value(q);
-            const auto& tensor_product_u = outer_product(phi.get_value(q), phi_extr.get_value(q));
-            const auto  lambda           = 0.0*std::abs(scalar_product(phi_extr.get_value(q), n_plus));
-            phi.submit_value(a33/Re*(-grad_u*n_plus + 2.0*coef_jump*u) +
-                             a33*coef_trasp*tensor_product_u*n_plus + a33*lambda*u, q);
-            phi.submit_gradient(-theta_v*a33/Re*outer_product(u, n_plus), q);
-          }
-          phi.integrate(true, true);
-          diagonal[i] = phi.get_dof_value(i);
-        }
-        for(unsigned int i = 0; i < phi.dofs_per_component; ++i)
-          phi.submit_dof_value(diagonal[i], i);
-        phi.distribute_local_to_global(dst);
-      }
-    }
-  }
-
-
-  // Put together all previous steps
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::compute_diagonal() {
-    if(NS_stage == 1) {
-      this->inverse_diagonal_entries.reset(new DiagonalMatrix<Vec>());
-      auto& inverse_diagonal = this->inverse_diagonal_entries->get_vector();
-      this->data->initialize_dof_vector(inverse_diagonal, 0);
-      Vec dummy;
-      dummy.reinit(inverse_diagonal.local_size());
-      this->data->loop(&NavierStokesProjectionOperator::assemble_diagonal_cell_term_velocity,
-                       &NavierStokesProjectionOperator::assemble_diagonal_face_term_velocity,
-                       &NavierStokesProjectionOperator::assemble_diagonal_boundary_term_velocity,
-                       this, inverse_diagonal, dummy, false,
-                       MatrixFree<dim, Number>::DataAccessOnFaces::unspecified,
-                       MatrixFree<dim, Number>::DataAccessOnFaces::unspecified);
-      for(unsigned int i = 0; i < inverse_diagonal.local_size(); ++i) {
-        Assert(inverse_diagonal.local_element(i) != 0.0,
-               ExcMessage("No diagonal entry in a definite operator should be zero"));
-        inverse_diagonal.local_element(i) = 1.0/inverse_diagonal.local_element(i);
-      }
     }
     else
       Assert(false, ExcNotImplemented());
@@ -1807,14 +1537,6 @@ namespace Step35 {
     SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
     SolverGMRES<LinearAlgebra::distributed::Vector<double>>
     gmres(solver_control, SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData(vel_Krylov_size));
-    PreconditionJacobi<NavierStokesProjectionOperator<dim,
-                                                      EquationData::degree_p,
-                                                      EquationData::degree_p + 1,
-                                                      EquationData::degree_p + 2,
-                                                      LinearAlgebra::distributed::Vector<double>,
-                                                      double>> preconditioner;
-    navier_stokes_matrix.compute_diagonal();
-    preconditioner.initialize(navier_stokes_matrix);
     gmres.solve(navier_stokes_matrix, u_star, rhs_u, PreconditionIdentity());
   }
 
@@ -1833,7 +1555,7 @@ namespace Step35 {
     navier_stokes_matrix.set_NS_stage(2);
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_p.l2_norm());
-    SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
+    SolverGMRES<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
     if(TR_BDF2_stage == 1)
       cg.solve(navier_stokes_matrix, pres_int, rhs_p, PreconditionIdentity());
     else
@@ -1933,7 +1655,6 @@ namespace Step35 {
       u_n_gamma += u_tmp;
       u_n_minus_1 = u_n;
       TR_BDF2_stage = 2; //--- Flag to pass at second stage
-      analyze_results();
       //--- Second stage of TR-BDF2
       verbose_cout << "  Interpolating the velocity stage 2" << std::endl;
       interpolate_velocity();
