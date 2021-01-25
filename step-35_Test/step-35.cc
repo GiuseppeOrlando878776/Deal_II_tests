@@ -368,8 +368,8 @@ namespace Step35 {
 
     const double theta_v = 0.0;
     const double theta_p = 1.0;
-    const double C_p = 1.0*fe_degree_p*(fe_degree_p + 1);
-    const double C_u = 1.0*fe_degree_v*(fe_degree_v + 1);
+    const double C_p = 100.0*fe_degree_p*(fe_degree_p + 1);
+    const double C_u = 100.0*fe_degree_v*(fe_degree_v + 1);
 
     Vec                         u_extr;
     EquationData::Velocity<dim> vel_exact;
@@ -676,7 +676,7 @@ namespace Step35 {
         phi_old_press.reinit(face);
         phi_old_press.gather_evaluate(src[2], true, false);
         phi.reinit(face);
-        const double coef_jump = C_u*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1][0]);
+        const auto coef_jump = C_u*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& n_plus             = phi.get_normal_vector(q);
           const auto& grad_u_old         = phi_old.get_gradient(q);
@@ -704,7 +704,7 @@ namespace Step35 {
       FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, true, 0),
                                                                      phi_old(data, true, 0),
                                                                      phi_int(data, true, 0),
-                                                                     phi_extr(data, true, 0);
+                                                                     phi_int_extr(data, true, 0);
       FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi_old_press(data, true, 1);
 
       for(unsigned int face = face_range.first; face < face_range.second; ++ face) {
@@ -714,10 +714,10 @@ namespace Step35 {
         phi_int.gather_evaluate(src[1], true, true);
         phi_old_press.reinit(face);
         phi_old_press.gather_evaluate(src[2], true, false);
-        phi_extr.reinit(face);
-        phi_extr.gather_evaluate(src[3], true, false);
+        phi_int_extr.reinit(face);
+        phi_int_extr.gather_evaluate(src[3], true, false);
         phi.reinit(face);
-        const double coef_jump = C_u*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1][0]);
+        const auto coef_jump = C_u*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& n_plus                   = phi.get_normal_vector(q);
           const auto& grad_u_old               = phi_old.get_gradient(q);
@@ -734,7 +734,7 @@ namespace Step35 {
             for(unsigned int d = 0; d < dim; ++d)
               u_m[d][v] = vel_exact.value(point, d);
           }
-          const auto tensor_product_u_m = outer_product(u_m, phi_extr.get_value(q));
+          const auto tensor_product_u_m = outer_product(u_m, phi_int_extr.get_value(q));
           phi.submit_value((a31/Re*grad_u_old + a32/Re*grad_u_int -
                            a31*tensor_product_u_n - a32*tensor_product_u_n_gamma)*n_plus - p_old*n_plus +
                            a33/Re*2.0*coef_jump*u_m -
@@ -763,7 +763,7 @@ namespace Step35 {
 
   // Assemble rhs cell term for the pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  /*template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   assemble_rhs_cell_term_pressure(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
@@ -786,7 +786,7 @@ namespace Step35 {
       }
       phi.integrate_scatter(true, false, dst);
     }
-  }
+  }*/
 
   // Assemble rhs face term for the pressure
   //
@@ -810,19 +810,27 @@ namespace Step35 {
 
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi.reinit(face);
-      const double coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1][0]);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        auto boundary_value          = VectorizedArray<Number>();
-        const auto& point_vectorized = phi.quadrature_point(q);
-        const auto& n_plus           = phi.get_normal_vector(q);
-        for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-          Point<dim> point;
-          for(unsigned int d = 0; d < dim; ++d)
-            point[d] = point_vectorized[d][v];
-          boundary_value[v] = pres_exact.value(point);
+      const auto coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
+      if(data.get_boundary_id(face) == 1) {
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          auto boundary_value          = VectorizedArray<Number>();
+          const auto& point_vectorized = phi.quadrature_point(q);
+          const auto& n_plus           = phi.get_normal_vector(q);
+          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
+            Point<dim> point;
+            for(unsigned int d = 0; d < dim; ++d)
+              point[d] = point_vectorized[d][v];
+            boundary_value[v] = pres_exact.value(point);
+          }
+          phi.submit_value(2.0*coef_jump*boundary_value, q);
+          phi.submit_normal_derivative(-theta_p*boundary_value, q);
         }
-        phi.submit_value(2.0*coef_jump*boundary_value, q);
-        phi.submit_normal_derivative(-theta_p*boundary_value, q);
+      }
+      else {
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          phi.submit_value(0.0, q);
+          phi.submit_normal_derivative(0.0, q);
+        }
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -831,7 +839,7 @@ namespace Step35 {
 
   // Assemble rhs cell term for the pressure
   //
-  /*template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   assemble_rhs_cell_term_pressure(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
@@ -844,20 +852,20 @@ namespace Step35 {
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi_proj.reinit(cell);
-      phi_proj.gather_evaluate(src, true, false);
+      phi_proj.gather_evaluate(src, false, true);
       phi.reinit(cell);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        const auto& u_star_star = phi_proj.get_value(q);
-        phi.submit_gradient(coeff*u_star_star, q);
+        const auto& u_star_star = phi_proj.get_divergence(q);
+        phi.submit_value(-coeff*u_star_star, q);
       }
-      phi.integrate_scatter(false, true, dst);
+      phi.integrate_scatter(true, false, dst);
     }
   }
 
 
   // Assemble rhs face term for the pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  /*template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   assemble_rhs_face_term_pressure(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
@@ -904,7 +912,7 @@ namespace Step35 {
       phi_proj.reinit(face);
       phi_proj.gather_evaluate(src, true, false);
       phi.reinit(face);
-      const double coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1][0]);
+      const auto coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         auto boundary_value          = VectorizedArray<Number>();
         const auto& point_vectorized = phi.quadrature_point(q);
@@ -1003,8 +1011,8 @@ namespace Step35 {
         phi_p.gather_evaluate(src, true, true);
         phi_m.reinit(face);
         phi_m.gather_evaluate(src, true, true);
-        const double coef_jump = C_u*0.5*(std::abs((phi_p.get_normal_vector(0)*phi_p.inverse_jacobian(0))[dim - 1][0]) +
-                                          std::abs((phi_m.get_normal_vector(0)*phi_m.inverse_jacobian(0))[dim - 1][0]));
+        const auto coef_jump = C_u*0.5*(std::abs((phi_p.get_normal_vector(0)*phi_p.inverse_jacobian(0))[dim - 1]) +
+                                        std::abs((phi_m.get_normal_vector(0)*phi_m.inverse_jacobian(0))[dim - 1]));
         phi_old_extr_p.reinit(face);
         phi_old_extr_p.gather_evaluate(u_extr, true, false);
         phi_old_extr_m.reinit(face);
@@ -1019,8 +1027,8 @@ namespace Step35 {
                              a22*avg_tensor_product_u_int*n_plus, q);
           phi_m.submit_value(-a22/Re*(-avg_grad_u_int*n_plus + coef_jump*jump_u_int) -
                               a22*avg_tensor_product_u_int*n_plus, q);
-          phi_p.submit_gradient(-theta_v*a22/Re*0.5*outer_product(jump_u_int, n_plus), q);
-          phi_m.submit_gradient(-theta_v*a22/Re*0.5*outer_product(jump_u_int, n_plus), q);
+          phi_p.submit_normal_derivative(-theta_v*a22/Re*0.5*jump_u_int, q);
+          phi_m.submit_normal_derivative(-theta_v*a22/Re*0.5*jump_u_int, q);
         }
         phi_p.integrate_scatter(true, true, dst);
         phi_m.integrate_scatter(true, true, dst);
@@ -1039,8 +1047,8 @@ namespace Step35 {
         phi_extr_p.gather_evaluate(u_extr, true, false);
         phi_extr_m.reinit(face);
         phi_extr_m.gather_evaluate(u_extr, true, false);
-        const double coef_jump = C_u*0.5*(std::abs((phi_p.get_normal_vector(0)*phi_p.inverse_jacobian(0))[dim - 1][0]) +
-                                          std::abs((phi_m.get_normal_vector(0)*phi_m.inverse_jacobian(0))[dim - 1][0]));
+        const auto coef_jump = C_u*0.5*(std::abs((phi_p.get_normal_vector(0)*phi_p.inverse_jacobian(0))[dim - 1]) +
+                                        std::abs((phi_m.get_normal_vector(0)*phi_m.inverse_jacobian(0))[dim - 1]));
         for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
           const auto& n_plus               = phi_p.get_normal_vector(q);
           const auto& avg_grad_u           = 0.5*(phi_p.get_gradient(q) + phi_m.get_gradient(q));
@@ -1051,8 +1059,8 @@ namespace Step35 {
                              a33*avg_tensor_product_u*n_plus, q);
           phi_m.submit_value(-a33/Re*(-avg_grad_u*n_plus + coef_jump*jump_u) -
                               a33*avg_tensor_product_u*n_plus, q);
-          phi_p.submit_gradient(-theta_v*a33/Re*0.5*outer_product(jump_u, n_plus), q);
-          phi_m.submit_gradient(-theta_v*a33/Re*0.5*outer_product(jump_u, n_plus), q);
+          phi_p.submit_normal_derivative(-theta_v*a33/Re*0.5*jump_u, q);
+          phi_m.submit_normal_derivative(-theta_v*a33/Re*0.5*jump_u, q);
         }
         phi_p.integrate_scatter(true, true, dst);
         phi_m.integrate_scatter(true, true, dst);
@@ -1075,7 +1083,7 @@ namespace Step35 {
       for(unsigned int face = face_range.first; face < face_range.second; ++face) {
         phi.reinit(face);
         phi.gather_evaluate(src, true, true);
-        const double coef_jump  = C_u*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1][0]);
+        const auto coef_jump  = C_u*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
         const double coef_trasp = 0.0;
         phi_old_extr.reinit(face);
         phi_old_extr.gather_evaluate(u_extr, true, false);
@@ -1087,7 +1095,7 @@ namespace Step35 {
           const auto& tensor_product_u_int = outer_product(phi.get_value(q), phi_old_extr.get_value(q));
           phi.submit_value(a22/Re*(-grad_u_int*n_plus + 2.0*coef_jump*u_int) +
                            a22*coef_trasp*tensor_product_u_int*n_plus, q);
-          phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int, n_plus), q);
+          phi.submit_normal_derivative(-theta_v*a22/Re*u_int, q);
         }
         phi.integrate_scatter(true, true, dst);
       }
@@ -1098,7 +1106,7 @@ namespace Step35 {
       for(unsigned int face = face_range.first; face < face_range.second; ++face) {
         phi.reinit(face);
         phi.gather_evaluate(src, true, true);
-        const double coef_jump  = C_u*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1][0]);
+        const auto coef_jump  = C_u*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
         const double coef_trasp = 0.0;
         phi_extr.reinit(face);
         phi_extr.gather_evaluate(u_extr, true, false);
@@ -1110,7 +1118,7 @@ namespace Step35 {
           const auto& tensor_product_u = outer_product(phi.get_value(q), phi_extr.get_value(q));
           phi.submit_value(a33/Re*(-grad_u*n_plus + 2.0*coef_jump*u) +
                            a33*coef_trasp*tensor_product_u*n_plus, q);
-          phi.submit_gradient(-theta_v*a33/Re*outer_product(u, n_plus), q);
+          phi.submit_normal_derivative(-theta_v*a33/Re*u, q);
         }
         phi.integrate_scatter(true, true, dst);
       }
@@ -1153,8 +1161,8 @@ namespace Step35 {
       phi_p.gather_evaluate(src, true, true);
       phi_m.reinit(face);
       phi_m.gather_evaluate(src, true, true);
-      const double coef_jump = C_p*0.5*(std::abs((phi_p.get_normal_vector(0)*phi_p.inverse_jacobian(0))[dim - 1][0]) +
-                                        std::abs((phi_m.get_normal_vector(0)*phi_m.inverse_jacobian(0))[dim - 1][0]));
+      const auto coef_jump = C_p*0.5*(std::abs((phi_p.get_normal_vector(0)*phi_p.inverse_jacobian(0))[dim - 1]) +
+                                      std::abs((phi_m.get_normal_vector(0)*phi_m.inverse_jacobian(0))[dim - 1]));
       for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
         const auto& n_plus        = phi_p.get_normal_vector(q);
         const auto& avg_grad_pres = 0.5*(phi_p.get_gradient(q) + phi_m.get_gradient(q));
@@ -1183,13 +1191,21 @@ namespace Step35 {
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi.reinit(face);
       phi.gather_evaluate(src, true, false);
-      const double coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1][0]);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        const auto& pres   = phi.get_value(q);
-        const auto& grad_p = phi.get_gradient(q);
-        const auto& n_plus = phi.get_normal_vector(q);
-        phi.submit_value(2.0*coef_jump*pres - scalar_product(grad_p, n_plus), q);
-        phi.submit_gradient(-theta_p*pres*n_plus, q);
+      const auto coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
+      if(data.get_boundary_id(face) == 1) {
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& pres   = phi.get_value(q);
+          const auto& grad_p = phi.get_gradient(q);
+          const auto& n_plus = phi.get_normal_vector(q);
+          phi.submit_value(2.0*coef_jump*pres - scalar_product(grad_p, n_plus), q);
+          phi.submit_gradient(-theta_p*pres*n_plus, q);
+        }
+      }
+      else {
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          phi.submit_normal_derivative(0.0, q);
+          phi.submit_value(0.0, q);
+        }
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -1422,7 +1438,7 @@ namespace Step35 {
     upper_right[0] = 2.0*numbers::PI;
     for(unsigned int d = 1; d < dim; ++d)
       upper_right[d] = upper_right[0];
-    GridGenerator::hyper_rectangle(triangulation, Point<dim>(), upper_right);
+    GridGenerator::hyper_rectangle(triangulation, Point<dim>(), upper_right, true);
 
     std::cout << "Number of refines = " << n_refines << std::endl;
     triangulation.refine_global(n_refines);
@@ -1555,7 +1571,7 @@ namespace Step35 {
     navier_stokes_matrix.set_NS_stage(2);
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_p.l2_norm());
-    SolverGMRES<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
+    SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
     if(TR_BDF2_stage == 1)
       cg.solve(navier_stokes_matrix, pres_int, rhs_p, PreconditionIdentity());
     else
