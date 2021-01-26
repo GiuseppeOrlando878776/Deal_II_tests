@@ -88,6 +88,8 @@ namespace Step35 {
       bool         verbose;
       unsigned int output_interval;
 
+      std::string dir;
+
     protected:
       ParameterHandler prm;
     };
@@ -172,6 +174,8 @@ namespace Step35 {
       }
       prm.leave_subsection();
 
+      prm.declare_entry("saving directory", "SimTest");
+
       prm.declare_entry("verbose",
                         "true",
                         Patterns::Bool(),
@@ -223,6 +227,8 @@ namespace Step35 {
       }
       prm.leave_subsection();
 
+      dir = prm.get("saving directory");
+
       verbose = prm.get_bool("verbose");
 
       output_interval = prm.get_integer("output_interval");
@@ -251,6 +257,11 @@ namespace Step35 {
 
       virtual void vector_value(const Point<dim>& p,
                                 Vector<double>&   values) const override;
+
+      virtual Tensor<1, dim, double> gradient(const Point<dim>& p,
+                                              const unsigned int component = 0) const override;
+
+      virtual void vector_gradient(const Point<dim>& p, std::vector<Tensor<1, dim, double>>& gradients) const override;
 
     private:
       double Re;
@@ -281,6 +292,31 @@ namespace Step35 {
       Assert(values.size() == dim, ExcDimensionMismatch(values.size(), dim));
       for(unsigned int i = 0; i < dim; ++i)
         values[i] = value(p, i);
+    }
+
+
+    template<int dim>
+    Tensor<1, dim, double> Velocity<dim>::gradient(const Point<dim>& p, const unsigned int component) const {
+      AssertIndexRange(component, 2);
+      Tensor<1, dim, double> result;
+      const double curr_time = this->get_time();
+      if(component == 0) {
+        result[0] = -std::sin(p(0))*std::sin(p(1))*std::exp(-2.0*curr_time/Re);
+        result[1] =  std::cos(p(0))*std::cos(p(1))*std::exp(-2.0*curr_time/Re);
+      }
+      else {
+        result[0] = -std::cos(p(0))*std::cos(p(1))*std::exp(-2.0*curr_time/Re);
+        result[1] =  std::sin(p(0))*std::sin(p(1))*std::exp(-2.0*curr_time/Re);
+      }
+      return result;
+    }
+
+
+    template<int dim>
+    void Velocity<dim>::vector_gradient(const Point<dim>& p, std::vector<Tensor<1, dim, double>>& gradients) const {
+      Assert(gradients.size() == dim, ExcDimensionMismatch(gradients.size(), dim));
+      for(unsigned int i = 0; i < dim; ++i)
+        gradients[i] = gradient(p, i);
     }
 
 
@@ -366,9 +402,9 @@ namespace Step35 {
     const double a21 = 0.5;
     const double a22 = 0.5;
 
-    const double theta_v = 0.0;
+    const double theta_v = 1.0;
     const double theta_p = 1.0;
-    const double C_p = 100.0*fe_degree_p*(fe_degree_p + 1);
+    const double C_p = 10.0*fe_degree_p*(fe_degree_p + 1);
     const double C_u = 100.0*fe_degree_v*(fe_degree_v + 1);
 
     Vec                         u_extr;
@@ -763,30 +799,29 @@ namespace Step35 {
 
   // Assemble rhs cell term for the pressure
   //
-  /*template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   assemble_rhs_cell_term_pressure(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
                                   const Vec&                                   src,
                                   const std::pair<unsigned int, unsigned int>& cell_range) const {
     FEEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi(data, 1);
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_proj(data, 0);
+
+    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi_proj.reinit(cell);
+      phi_proj.gather_evaluate(src, false, true);
       phi.reinit(cell);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        VectorizedArray<double> rhs_val = VectorizedArray<double>();
-        Point<dim, VectorizedArray<double>> point_batch = phi.quadrature_point(q);
-        for(unsigned int v = 0; v < VectorizedArray<double>::size(); ++v) {
-          Point<dim> single_point;
-          for(unsigned int d = 0; d < dim; ++d)
-            single_point[d] = point_batch[d][v];
-          rhs_val[v] = 4.0*pres_exact.value(single_point);
-        }
-        phi.submit_value(rhs_val, q);
+        const auto& u_star_star = phi_proj.get_divergence(q);
+        phi.submit_value(-coeff*u_star_star, q);
       }
       phi.integrate_scatter(true, false, dst);
     }
-  }*/
+  }
+
 
   // Assemble rhs face term for the pressure
   //
@@ -815,7 +850,6 @@ namespace Step35 {
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           auto boundary_value          = VectorizedArray<Number>();
           const auto& point_vectorized = phi.quadrature_point(q);
-          const auto& n_plus           = phi.get_normal_vector(q);
           for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
             Point<dim> point;
             for(unsigned int d = 0; d < dim; ++d)
@@ -835,100 +869,6 @@ namespace Step35 {
       phi.integrate_scatter(true, true, dst);
     }
   }
-
-
-  // Assemble rhs cell term for the pressure
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  assemble_rhs_cell_term_pressure(const MatrixFree<dim, Number>&               data,
-                                  Vec&                                         dst,
-                                  const Vec&                                   src,
-                                  const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi(data, 1);
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_proj(data, 0);
-
-    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
-
-    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-      phi_proj.reinit(cell);
-      phi_proj.gather_evaluate(src, false, true);
-      phi.reinit(cell);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        const auto& u_star_star = phi_proj.get_divergence(q);
-        phi.submit_value(-coeff*u_star_star, q);
-      }
-      phi.integrate_scatter(true, false, dst);
-    }
-  }
-
-
-  // Assemble rhs face term for the pressure
-  //
-  /*template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  assemble_rhs_face_term_pressure(const MatrixFree<dim, Number>&               data,
-                                  Vec&                                         dst,
-                                  const Vec&                                   src,
-                                  const std::pair<unsigned int, unsigned int>& face_range) const {
-    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi_p(data, true, 1), phi_m(data, false, 1);
-    FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_proj_p(data, true, 0), phi_proj_m(data, false, 0);
-
-    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
-
-    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-      phi_proj_p.reinit(face);
-      phi_proj_p.gather_evaluate(src, true, false);
-      phi_proj_m.reinit(face);
-      phi_proj_m.gather_evaluate(src, true, false);
-      phi_p.reinit(face);
-      phi_m.reinit(face);
-      for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
-        const auto& n_plus           = phi_p.get_normal_vector(q);
-        const auto& avg_u_star_star  = 0.5*(phi_proj_p.get_value(q) + phi_proj_m.get_value(q));
-        phi_p.submit_value(-coeff*scalar_product(avg_u_star_star, n_plus), q);
-        phi_m.submit_value(coeff*scalar_product(avg_u_star_star, n_plus), q);
-      }
-      phi_p.integrate_scatter(true, false, dst);
-      phi_m.integrate_scatter(true, false, dst);
-    }
-  }
-
-
-  // Assemble rhs boundary term for the pressure
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  assemble_rhs_boundary_term_pressure(const MatrixFree<dim, Number>&               data,
-                                      Vec&                                         dst,
-                                      const Vec&                                   src,
-                                      const std::pair<unsigned int, unsigned int>& face_range) const {
-    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi(data, true, 1);
-    FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_proj(data, true, 0);
-
-    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
-
-    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-      phi_proj.reinit(face);
-      phi_proj.gather_evaluate(src, true, false);
-      phi.reinit(face);
-      const auto coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        auto boundary_value          = VectorizedArray<Number>();
-        const auto& point_vectorized = phi.quadrature_point(q);
-        const auto& n_plus           = phi.get_normal_vector(q);
-        for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-          Point<dim> point;
-          for(unsigned int d = 0; d < dim; ++d)
-            point[d] = point_vectorized[d][v];
-          boundary_value[v] = pres_exact.value(point);
-        }
-        phi.submit_value(-coeff*scalar_product(phi_proj.get_value(q), n_plus) + 2.0*coef_jump*boundary_value, q);
-        phi.submit_gradient(-theta_p*boundary_value*n_plus, q);
-      }
-      phi.integrate_scatter(true, true, dst);
-    }
-  }*/
 
 
   // Put together all the previous steps for pressure
@@ -1305,7 +1245,7 @@ namespace Step35 {
   public:
     NavierStokesProjection(RunTimeParameters::Data_Storage& data);
 
-    void run(const bool verbose = false);
+    void run(const bool verbose = false, const unsigned int output_interval = 10);
 
   protected:
     const double       dt;
@@ -1360,7 +1300,11 @@ namespace Step35 {
 
     void project_grad(const unsigned int flag);
 
-    void analyze_results() const;
+    void analyze_results();
+
+    void output_results(const unsigned int step);
+
+    void output_errors(const unsigned int step);
 
   private:
     std::shared_ptr<MatrixFree<dim, double>> matrix_free_storage;
@@ -1377,6 +1321,16 @@ namespace Step35 {
     unsigned int vel_update_prec;
     double       vel_eps;
     double       vel_diag_strength;
+
+    Vector<double> H1_error_per_cell_vel, L2_error_per_cell_vel, Linfty_error_per_cell_vel,
+                   H1_rel_error_per_cell_vel, L2_rel_error_per_cell_vel, Linfty_rel_error_per_cell_vel,
+                   L2_error_per_cell_pres, Linfty_error_per_cell_pres,
+                   L2_rel_error_per_cell_pres, Linfty_rel_error_per_cell_pres;
+
+    std::string saving_dir;
+
+    std::ofstream output_error_pres;
+    std::ofstream output_error_vel;
   };
 
 
@@ -1408,7 +1362,10 @@ namespace Step35 {
     vel_off_diagonals(data.vel_off_diagonals),
     vel_update_prec(data.vel_update_prec),
     vel_eps(data.vel_eps),
-    vel_diag_strength(data.vel_diag_strength) {
+    vel_diag_strength(data.vel_diag_strength),
+    saving_dir(data.dir),
+    output_error_pres("./" + data.dir + "/error_analysis_pres.dat", std::ofstream::out),
+    output_error_vel("./" + data.dir + "/error_analysis_vel.dat", std::ofstream::out) {
       if(EquationData::degree_p < 1) {
         std::cout
         << " WARNING: The chosen pair of finite element spaces is not stable."
@@ -1443,6 +1400,17 @@ namespace Step35 {
     std::cout << "Number of refines = " << n_refines << std::endl;
     triangulation.refine_global(n_refines);
     std::cout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
+    Vector<double> error_per_cell_tmp(triangulation.n_active_cells());
+    H1_error_per_cell_vel.reinit(error_per_cell_tmp);
+    L2_error_per_cell_vel.reinit(error_per_cell_tmp);
+    Linfty_error_per_cell_vel.reinit(error_per_cell_tmp);
+    H1_rel_error_per_cell_vel.reinit(error_per_cell_tmp);
+    L2_rel_error_per_cell_vel.reinit(error_per_cell_tmp);
+    Linfty_rel_error_per_cell_vel.reinit(error_per_cell_tmp);
+    L2_error_per_cell_pres.reinit(error_per_cell_tmp);
+    Linfty_error_per_cell_pres.reinit(error_per_cell_tmp);
+    L2_rel_error_per_cell_pres.reinit(error_per_cell_tmp);
+    Linfty_rel_error_per_cell_pres.reinit(error_per_cell_tmp);
 
     dof_handler_velocity.distribute_dofs(fe_velocity);
     dof_handler_pressure.distribute_dofs(fe_pressure);
@@ -1605,31 +1573,170 @@ namespace Step35 {
   // numerical result against the analytic solution.
   //
   template <int dim>
-  void NavierStokesProjection<dim>::analyze_results() const {
-    Vector<double> error_per_cell(triangulation.n_active_cells());
+  void NavierStokesProjection<dim>::analyze_results() {
+    u_tmp = 0;
+    pres_int = 0;
 
-    if(TR_BDF2_stage == 1) {
-      VectorTools::integrate_difference(dof_handler_velocity, u_n, vel_exact,
-                                        error_per_cell, quadrature_velocity, VectorTools::L2_norm);
-      const double error_vel = VectorTools::compute_global_error(triangulation, error_per_cell, VectorTools::L2_norm);
-      std::cout << "Verification via L2 error velocity:    "<< error_vel << std::endl;
+    VectorTools::integrate_difference(dof_handler_velocity, u_n, vel_exact,
+                                      H1_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
+    const double error_vel_H1 = VectorTools::compute_global_error(triangulation, H1_error_per_cell_vel, VectorTools::H1_norm);
+    VectorTools::integrate_difference(dof_handler_velocity, u_tmp, vel_exact,
+                                      H1_rel_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
+    const double H1_vel = VectorTools::compute_global_error(triangulation, H1_rel_error_per_cell_vel, VectorTools::H1_norm);
+    for(unsigned int d = 0; d < triangulation.n_active_cells(); ++d)
+      H1_rel_error_per_cell_vel[d] = H1_error_per_cell_vel[d]/H1_rel_error_per_cell_vel[d];
+    const double error_rel_vel_H1 = error_vel_H1/H1_vel;
+    std::cout << "Verification via H1 error velocity:    "<< error_vel_H1 << std::endl;
+    std::cout << "Verification via H1 relative error velocity:    "<< error_rel_vel_H1 << std::endl;
 
-      VectorTools::integrate_difference(dof_handler_pressure, pres_n, pres_exact,
-                                        error_per_cell, quadrature_pressure, VectorTools::L2_norm);
-      const double error_pres = VectorTools::compute_global_error(triangulation, error_per_cell, VectorTools::L2_norm);
-      std::cout << "Verification via L2 error pressure:    "<< error_pres << std::endl;
+    VectorTools::integrate_difference(dof_handler_velocity, u_n, vel_exact,
+                                      L2_error_per_cell_vel, quadrature_velocity, VectorTools::L2_norm);
+    const double error_vel_L2 = VectorTools::compute_global_error(triangulation, L2_error_per_cell_vel, VectorTools::L2_norm);
+    VectorTools::integrate_difference(dof_handler_velocity, u_tmp, vel_exact,
+                                      L2_rel_error_per_cell_vel, quadrature_velocity, VectorTools::L2_norm);
+    const double L2_vel = VectorTools::compute_global_error(triangulation, L2_rel_error_per_cell_vel, VectorTools::L2_norm);
+    for(unsigned int d = 0; d < triangulation.n_active_cells(); ++d)
+      L2_rel_error_per_cell_vel[d] = L2_error_per_cell_vel[d]/L2_rel_error_per_cell_vel[d];
+    const double error_rel_vel_L2 = error_vel_L2/L2_vel;
+    std::cout << "Verification via L2 error velocity:    "<< error_vel_L2 << std::endl;
+    std::cout << "Verification via L2 relative error velocity:    "<< error_rel_vel_L2 << std::endl;
+
+    VectorTools::integrate_difference(dof_handler_velocity, u_n, vel_exact,
+                                      Linfty_error_per_cell_vel, quadrature_velocity, VectorTools::Linfty_norm);
+    const double error_vel_Linfty = VectorTools::compute_global_error(triangulation, Linfty_error_per_cell_vel, VectorTools::Linfty_norm);
+    VectorTools::integrate_difference(dof_handler_velocity, u_tmp, vel_exact,
+                                      Linfty_rel_error_per_cell_vel, quadrature_velocity, VectorTools::Linfty_norm);
+    const double Linfty_vel = VectorTools::compute_global_error(triangulation, Linfty_rel_error_per_cell_vel, VectorTools::Linfty_norm);
+    for(unsigned int d = 0; d < triangulation.n_active_cells(); ++d)
+      Linfty_rel_error_per_cell_vel[d] = Linfty_error_per_cell_vel[d]/Linfty_rel_error_per_cell_vel[d];
+    const double error_rel_vel_Linfty = error_vel_Linfty/Linfty_vel;
+    std::cout << "Verification via Linfty error velocity:    "<< error_vel_Linfty << std::endl;
+    std::cout << "Verification via Linfty relative error velocity:    "<< error_rel_vel_Linfty << std::endl;
+
+    VectorTools::integrate_difference(dof_handler_pressure, pres_n, pres_exact,
+                                      L2_error_per_cell_pres, quadrature_pressure, VectorTools::L2_norm);
+    const double error_pres_L2 = VectorTools::compute_global_error(triangulation, L2_error_per_cell_pres, VectorTools::L2_norm);
+    VectorTools::integrate_difference(dof_handler_pressure, pres_int, pres_exact,
+                                      L2_rel_error_per_cell_pres, quadrature_pressure, VectorTools::L2_norm);
+    const double pres_L2 = VectorTools::compute_global_error(triangulation, L2_rel_error_per_cell_pres, VectorTools::L2_norm);
+    for(unsigned int d = 0; d < triangulation.n_active_cells(); ++d)
+      L2_rel_error_per_cell_pres[d] = L2_error_per_cell_pres[d]/L2_rel_error_per_cell_pres[d];
+    const double error_rel_pres_L2 = error_pres_L2/pres_L2;
+    std::cout << "Verification via L2 error pressure:    "<< error_pres_L2 << std::endl;
+    std::cout << "Verification via L2 relative error pressure:    "<< error_rel_pres_L2 << std::endl;
+
+    VectorTools::integrate_difference(dof_handler_pressure, pres_n, pres_exact,
+                                      Linfty_error_per_cell_pres, quadrature_pressure, VectorTools::Linfty_norm);
+    const double error_pres_Linfty =
+    VectorTools::compute_global_error(triangulation, Linfty_error_per_cell_pres, VectorTools::Linfty_norm);
+    VectorTools::integrate_difference(dof_handler_pressure, pres_int, pres_exact,
+                                      Linfty_rel_error_per_cell_pres, quadrature_pressure, VectorTools::Linfty_norm);
+    const double pres_Linfty = VectorTools::compute_global_error(triangulation, Linfty_rel_error_per_cell_pres, VectorTools::Linfty_norm);
+    for(unsigned int d = 0; d < triangulation.n_active_cells(); ++d)
+      Linfty_rel_error_per_cell_pres[d] = Linfty_error_per_cell_pres[d]/Linfty_rel_error_per_cell_pres[d];
+    const double error_rel_pres_Linfty = error_pres_Linfty/pres_Linfty;
+    std::cout << "Verification via Linfty error pressure:    "<< error_pres_Linfty << std::endl;
+    std::cout << "Verification via Linfty relative error pressure:    "<< error_rel_pres_Linfty << std::endl;
+
+    output_error_vel << error_vel_H1 << std::endl;
+    output_error_vel << error_rel_vel_H1 << std::endl;
+    output_error_vel << error_vel_L2 << std::endl;
+    output_error_vel << error_rel_vel_L2 << std::endl;
+    output_error_vel << error_vel_Linfty << std::endl;
+    output_error_vel << error_rel_vel_Linfty << std::endl;
+
+    output_error_pres << error_pres_L2 << std::endl;
+    output_error_pres << error_rel_pres_L2 << std::endl;
+    output_error_pres << error_pres_Linfty << std::endl;
+    output_error_pres << error_rel_pres_Linfty << std::endl;
+  }
+
+
+  // @sect4{ <code>NavierStokesProjection::output_results</code> }
+
+  // This method plots the current solution. The main difficulty is that we want
+  // to create a single output file that contains the data for all velocity
+  // components and the pressure. On the other hand, velocities and the pressure
+  // live on separate DoFHandler objects, and
+  // so can't be written to the same file using a single DataOut object. As a
+  // consequence, we have to work a bit harder to get the various pieces of data
+  // into a single DoFHandler object, and then use that to drive graphical
+  // output.
+  //
+  template<int dim>
+  void NavierStokesProjection<dim>::output_results(const unsigned int step) {
+    const FESystem<dim> joint_fe(fe_velocity, 1, fe_pressure, 1);
+    DoFHandler<dim>     joint_dof_handler(triangulation);
+    joint_dof_handler.distribute_dofs(joint_fe);
+    Assert(joint_dof_handler.n_dofs() == (dof_handler_velocity.n_dofs() + dof_handler_pressure.n_dofs()),
+           ExcInternalError());
+    Vector<double> joint_solution(joint_dof_handler.n_dofs());
+    std::vector<types::global_dof_index> loc_joint_dof_indices(joint_fe.n_dofs_per_cell()),
+                                         loc_vel_dof_indices(fe_velocity.n_dofs_per_cell()),
+                                         loc_pres_dof_indices(fe_pressure.n_dofs_per_cell());
+    typename DoFHandler<dim>::active_cell_iterator joint_beginc = joint_dof_handler.begin_active(),
+                                                   joint_endc   = joint_dof_handler.end(),
+                                                   vel_cell     = dof_handler_velocity.begin_active(),
+                                                   pres_cell    = dof_handler_pressure.begin_active();
+    for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
+      joint_cell->get_dof_indices(loc_joint_dof_indices);
+      vel_cell->get_dof_indices(loc_vel_dof_indices);
+      pres_cell->get_dof_indices(loc_pres_dof_indices);
+      for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
+        switch(joint_fe.system_to_base_index(i).first.first) {
+          case 0:
+            Assert(joint_fe.system_to_base_index(i).first.second < dim,
+                   ExcInternalError());
+            joint_solution(loc_joint_dof_indices[i]) = u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
+            break;
+          case 1:
+            Assert(joint_fe.system_to_base_index(i).first.second == 0,
+                   ExcInternalError());
+            joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
+            break;
+          default:
+            Assert(false, ExcInternalError());
+        }
+      }
     }
-    else {
-      VectorTools::integrate_difference(dof_handler_velocity, u_n_gamma, vel_exact,
-                                        error_per_cell, quadrature_velocity, VectorTools::L2_norm);
-      const double error_vel = VectorTools::compute_global_error(triangulation, error_per_cell, VectorTools::L2_norm);
-      std::cout << "Verification via L2 error velocity:    "<< error_vel << std::endl;
+    std::vector<std::string> joint_solution_names(dim, "v");
+    joint_solution_names.emplace_back("p");
+    DataOut<dim> data_out;
+    data_out.attach_dof_handler(joint_dof_handler);
+    std::vector<DataComponentInterpretation::DataComponentInterpretation>
+    component_interpretation(dim + 1, DataComponentInterpretation::component_is_part_of_vector);
+    component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
+    data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
+    data_out.build_patches(EquationData::degree_p + 1);
+    std::ofstream output("./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtk");
+    data_out.write_vtk(output);
+  }
 
-      VectorTools::integrate_difference(dof_handler_pressure, pres_int, pres_exact,
-                                        error_per_cell, quadrature_pressure, VectorTools::L2_norm);
-      const double error_pres = VectorTools::compute_global_error(triangulation, error_per_cell, VectorTools::L2_norm);
-      std::cout << "Verification via L2 error pressure:    "<< error_pres << std::endl;
-    }
+
+  template<int dim>
+  void NavierStokesProjection<dim>::output_errors(const unsigned int step) {
+    DataOut<dim> data_out;
+    data_out.attach_dof_handler(dof_handler_velocity);
+    data_out.add_data_vector(H1_error_per_cell_vel, "H1_error_velocity");
+    data_out.add_data_vector(L2_error_per_cell_vel, "L2_error_velocity");
+    data_out.add_data_vector(Linfty_error_per_cell_vel, "Linfty_error_velocity");
+    data_out.add_data_vector(H1_rel_error_per_cell_vel, "H1_relative_error_velocity");
+    data_out.add_data_vector(L2_rel_error_per_cell_vel, "L2_relative_error_velocity");
+    data_out.add_data_vector(Linfty_rel_error_per_cell_vel, "Linfty_relative_error_velocity");
+    data_out.build_patches();
+    std::ofstream output_vel("./" + saving_dir + "/errors_velocity-" + Utilities::int_to_string(step, 5) + ".vtk");
+    data_out.write_vtk(output_vel);
+
+    data_out.clear();
+
+    data_out.attach_dof_handler(dof_handler_pressure);
+    data_out.add_data_vector(L2_error_per_cell_pres, "L2_error_pressure");
+    data_out.add_data_vector(Linfty_error_per_cell_pres, "Linfty_error_pressure");
+    data_out.add_data_vector(L2_rel_error_per_cell_pres, "L2_relative_error_pressure");
+    data_out.add_data_vector(Linfty_rel_error_per_cell_pres, "Linfty_relative_error_pressure");
+    data_out.build_patches();
+    std::ofstream output_pres("./" + saving_dir + "/errors_pressure-" + Utilities::int_to_string(step, 5) + ".vtk");
+    data_out.write_vtk(output_pres);
   }
 
 
@@ -1644,12 +1751,19 @@ namespace Step35 {
   // we use the ConditionalOStream class to do that for us.
   //
   template<int dim>
-  void NavierStokesProjection<dim>::run(const bool verbose) {
-    analyze_results();
+  void NavierStokesProjection<dim>::run(const bool verbose, const unsigned int output_interval) {
     ConditionalOStream verbose_cout(std::cout, verbose);
 
     const auto n_steps = static_cast<unsigned int>((T - t_0) / dt);
+    analyze_results();
+    output_results(1);
+    output_errors(1);
     for(unsigned int n = 2; n <= n_steps; ++n) {
+      if(n % output_interval == 0) {
+        verbose_cout << "Plotting Solution final" << std::endl;
+        output_results(n);
+        output_errors(n);
+      }
       std::cout << "Step = " << n << " Time = " << (n * dt) << std::endl;
       //--- First stage of TR-BDF2
       verbose_cout << "  Interpolating the velocity stage 1" << std::endl;
@@ -1692,6 +1806,8 @@ namespace Step35 {
       TR_BDF2_stage = 1; //--- Flag to pass at first stage at next step
       analyze_results();
     }
+    output_results(n_steps);
+    output_errors(n_steps);
   }
 
 } // namespace Step35
@@ -1711,7 +1827,7 @@ int main() {
     deallog.depth_console(data.verbose ? 2 : 0);
 
     NavierStokesProjection<2> test(data);
-    test.run(data.verbose);
+    test.run(data.verbose, data.output_interval);
   }
   catch(std::exception &exc) {
     std::cerr << std::endl
