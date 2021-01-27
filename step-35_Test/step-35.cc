@@ -70,11 +70,11 @@ namespace Step35 {
 
       void read_data(const std::string& filename);
 
-      double dt;
       double initial_time;
       double final_time;
 
       double Reynolds;
+      double CFL;
 
       unsigned int n_global_refines;
 
@@ -95,10 +95,10 @@ namespace Step35 {
     };
 
     // In the constructor of this class we declare all the parameters.
-    Data_Storage::Data_Storage(): dt(5e-4),
-                                  initial_time(0.0),
+    Data_Storage::Data_Storage(): initial_time(0.0),
                                   final_time(1.0),
                                   Reynolds(1.0),
+                                  CFL(1.0),
                                   n_global_refines(0),
                                   vel_max_iterations(1000),
                                   vel_Krylov_size(30),
@@ -127,8 +127,8 @@ namespace Step35 {
 
       prm.enter_subsection("Time step data");
       {
-        prm.declare_entry("dt",
-                          "5e-4",
+        prm.declare_entry("CFL",
+                          "1.0",
                           Patterns::Double(0.0),
                           " The time step size. ");
       }
@@ -206,7 +206,7 @@ namespace Step35 {
 
       prm.enter_subsection("Time step data");
       {
-        dt = prm.get_double("dt");
+        CFL = prm.get_double("CFL");
       }
       prm.leave_subsection();
 
@@ -366,6 +366,8 @@ namespace Step35 {
 
     NavierStokesProjectionOperator(RunTimeParameters::Data_Storage& data);
 
+    void set_dt(const double time_step);
+
     void set_TR_BDF2_stage(const unsigned int stage);
 
     void set_NS_stage(const unsigned int stage);
@@ -402,10 +404,10 @@ namespace Step35 {
     const double a21 = 0.5;
     const double a22 = 0.5;
 
-    const double theta_v = 1.0;
+    const double theta_v = 0.0;
     const double theta_p = 1.0;
     const double C_p = 10.0*fe_degree_p*(fe_degree_p + 1);
-    const double C_u = 100.0*fe_degree_v*(fe_degree_v + 1);
+    const double C_u = 10.0*fe_degree_v*(fe_degree_v + 1);
 
     Vec                         u_extr;
     EquationData::Velocity<dim> vel_exact;
@@ -486,10 +488,18 @@ namespace Step35 {
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   NavierStokesProjectionOperator(RunTimeParameters::Data_Storage& data):
-    MatrixFreeOperators::Base<dim, Vec>(), eq_data(data), Re(data.Reynolds), dt(data.dt),
+    MatrixFreeOperators::Base<dim, Vec>(), eq_data(data), Re(data.Reynolds), dt(5e-4),
                                            gamma(2.0 - std::sqrt(2.0)), a31((1.0 - gamma)/(2.0*(2.0 - gamma))),
                                            a32(a31), a33(1.0/(2.0 - gamma)), TR_BDF2_stage(1), NS_stage(1), u_extr(),
                                            vel_exact(data.Reynolds, data.initial_time), pres_exact(data.Reynolds, data.initial_time) {}
+
+  // Setter oftime-step
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  set_dt(const double time_step) {
+    dt = time_step;
+  }
 
 
   // Setter of TR-BDF2 stage (this can be known only during the effective execution
@@ -728,9 +738,10 @@ namespace Step35 {
               u_int_m[d][v] = vel_exact.value(point, d);
           }
           const auto tensor_product_u_int_m = outer_product(u_int_m, phi_old_extr.get_value(q));
+          const auto lambda                 = std::abs(scalar_product(phi_old_extr.get_value(q), n_plus));
           phi.submit_value((a21/Re*grad_u_old - a21*tensor_product_u_n)*n_plus - p_old*n_plus +
                            a22/Re*2.0*coef_jump*u_int_m -
-                           a22*tensor_product_u_int_m*n_plus, q);
+                           a22*tensor_product_u_int_m*n_plus + a22*lambda*u_int_m, q);
           phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int_m, n_plus), q);
         }
         phi.integrate_scatter(true, true, dst);
@@ -771,10 +782,11 @@ namespace Step35 {
               u_m[d][v] = vel_exact.value(point, d);
           }
           const auto tensor_product_u_m = outer_product(u_m, phi_int_extr.get_value(q));
+          const auto lambda             = std::abs(scalar_product(phi_int_extr.get_value(q), n_plus));
           phi.submit_value((a31/Re*grad_u_old + a32/Re*grad_u_int -
                            a31*tensor_product_u_n - a32*tensor_product_u_n_gamma)*n_plus - p_old*n_plus +
                            a33/Re*2.0*coef_jump*u_m -
-                           a33*tensor_product_u_m*n_plus, q);
+                           a33*tensor_product_u_m*n_plus + a33*lambda*u_m, q);
           phi.submit_gradient(-theta_v*a33/Re*outer_product(u_m, n_plus), q);
         }
         phi.integrate_scatter(true, true, dst);
@@ -871,6 +883,109 @@ namespace Step35 {
   }
 
 
+  // Assemble rhs cell term for the pressure
+  //
+  /*template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_rhs_cell_term_pressure(const MatrixFree<dim, Number>&               data,
+                                  Vec&                                         dst,
+                                  const Vec&                                   src,
+                                  const std::pair<unsigned int, unsigned int>& cell_range) const {
+    FEEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi(data, 1);
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_proj(data, 0);
+
+    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
+
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi_proj.reinit(cell);
+      phi_proj.gather_evaluate(src, true, false);
+      phi.reinit(cell);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        const auto& u_star_star = phi_proj.get_value(q);
+        phi.submit_gradient(coeff*u_star_star, q);
+      }
+      phi.integrate_scatter(false, true, dst);
+    }
+  }
+
+
+  // Assemble rhs face term for the pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_rhs_face_term_pressure(const MatrixFree<dim, Number>&               data,
+                                  Vec&                                         dst,
+                                  const Vec&                                   src,
+                                  const std::pair<unsigned int, unsigned int>& face_range) const {
+    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi_p(data, true, 1), phi_m(data, false, 1);
+    FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_proj_p(data, true, 0), phi_proj_m(data, false, 0);
+
+    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
+
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      phi_proj_p.reinit(face);
+      phi_proj_p.gather_evaluate(src, true, false);
+      phi_proj_m.reinit(face);
+      phi_proj_m.gather_evaluate(src, true, false);
+      phi_p.reinit(face);
+      phi_m.reinit(face);
+      for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
+        const auto& n_plus           = phi_p.get_normal_vector(q);
+        const auto& avg_u_star_star  = 0.5*(phi_proj_p.get_value(q) + phi_proj_m.get_value(q));
+        phi_p.submit_value(-coeff*scalar_product(avg_u_star_star, n_plus), q);
+        phi_m.submit_value(coeff*scalar_product(avg_u_star_star, n_plus), q);
+      }
+      phi_p.integrate_scatter(true, false, dst);
+      phi_m.integrate_scatter(true, false, dst);
+    }
+  }
+
+
+  // Assemble rhs boundary term for the pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_rhs_boundary_term_pressure(const MatrixFree<dim, Number>&               data,
+                                      Vec&                                         dst,
+                                      const Vec&                                   src,
+                                      const std::pair<unsigned int, unsigned int>& face_range) const {
+    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi(data, true, 1);
+    FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_proj(data, true, 0);
+
+    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
+
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      phi_proj.reinit(face);
+      phi_proj.gather_evaluate(src, true, false);
+      phi.reinit(face);
+      const auto coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
+      if(data.get_boundary_id(face) == 1) {
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          auto boundary_value          = VectorizedArray<Number>();
+          const auto& point_vectorized = phi.quadrature_point(q);
+          const auto& n_plus           = phi.get_normal_vector(q);
+          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
+            Point<dim> point;
+            for(unsigned int d = 0; d < dim; ++d)
+              point[d] = point_vectorized[d][v];
+            boundary_value[v] = pres_exact.value(point);
+          }
+          phi.submit_value(-coeff*scalar_product(phi_proj.get_value(q), n_plus) + 2.0*coef_jump*boundary_value, q);
+          phi.submit_normal_derivative(-theta_p*boundary_value, q);
+        }
+      }
+      else {
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& n_plus = phi.get_normal_vector(q);
+          phi.submit_value(-coeff*scalar_product(phi_proj.get_value(q), n_plus), q);
+          phi.submit_normal_derivative(0.0, q);
+        }
+      }
+      phi.integrate_scatter(true, true, dst);
+    }
+  }*/
+
+
   // Put together all the previous steps for pressure
   //
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
@@ -963,10 +1078,12 @@ namespace Step35 {
           const auto& jump_u_int               = phi_p.get_value(q) - phi_m.get_value(q);
           const auto& avg_tensor_product_u_int = 0.5*(outer_product(phi_p.get_value(q), phi_old_extr_p.get_value(q)) +
                                                       outer_product(phi_m.get_value(q), phi_old_extr_m.get_value(q)));
+          const auto  lambda                   = std::max(std::abs(scalar_product(phi_old_extr_p.get_value(q), n_plus)),
+                                                          std::abs(scalar_product(phi_old_extr_m.get_value(q), n_plus)));
           phi_p.submit_value(a22/Re*(-avg_grad_u_int*n_plus + coef_jump*jump_u_int) +
-                             a22*avg_tensor_product_u_int*n_plus, q);
+                             a22*avg_tensor_product_u_int*n_plus + 0.5*a22*lambda*jump_u_int, q);
           phi_m.submit_value(-a22/Re*(-avg_grad_u_int*n_plus + coef_jump*jump_u_int) -
-                              a22*avg_tensor_product_u_int*n_plus, q);
+                              a22*avg_tensor_product_u_int*n_plus - 0.5*a22*lambda*jump_u_int, q);
           phi_p.submit_normal_derivative(-theta_v*a22/Re*0.5*jump_u_int, q);
           phi_m.submit_normal_derivative(-theta_v*a22/Re*0.5*jump_u_int, q);
         }
@@ -995,10 +1112,12 @@ namespace Step35 {
           const auto& jump_u               = phi_p.get_value(q) - phi_m.get_value(q);
           const auto& avg_tensor_product_u = 0.5*(outer_product(phi_p.get_value(q), phi_extr_p.get_value(q)) +
                                                   outer_product(phi_m.get_value(q), phi_extr_m.get_value(q)));
+          const auto  lambda               = std::max(std::abs(scalar_product(phi_extr_p.get_value(q), n_plus)),
+                                                      std::abs(scalar_product(phi_extr_m.get_value(q), n_plus)));
           phi_p.submit_value(a33/Re*(-avg_grad_u*n_plus + coef_jump*jump_u) +
-                             a33*avg_tensor_product_u*n_plus, q);
+                             a33*avg_tensor_product_u*n_plus + 0.5*a33*lambda*jump_u, q);
           phi_m.submit_value(-a33/Re*(-avg_grad_u*n_plus + coef_jump*jump_u) -
-                              a33*avg_tensor_product_u*n_plus, q);
+                              a33*avg_tensor_product_u*n_plus - 0.5*a33*lambda*jump_u, q);
           phi_p.submit_normal_derivative(-theta_v*a33/Re*0.5*jump_u, q);
           phi_m.submit_normal_derivative(-theta_v*a33/Re*0.5*jump_u, q);
         }
@@ -1033,8 +1152,9 @@ namespace Step35 {
           const auto& grad_u_int           = phi.get_gradient(q);
           const auto& u_int                = phi.get_value(q);
           const auto& tensor_product_u_int = outer_product(phi.get_value(q), phi_old_extr.get_value(q));
+          const auto  lambda               = std::abs(scalar_product(phi_old_extr.get_value(q), n_plus));
           phi.submit_value(a22/Re*(-grad_u_int*n_plus + 2.0*coef_jump*u_int) +
-                           a22*coef_trasp*tensor_product_u_int*n_plus, q);
+                           a22*coef_trasp*tensor_product_u_int*n_plus + a22*lambda*u_int, q);
           phi.submit_normal_derivative(-theta_v*a22/Re*u_int, q);
         }
         phi.integrate_scatter(true, true, dst);
@@ -1056,8 +1176,9 @@ namespace Step35 {
           const auto& grad_u           = phi.get_gradient(q);
           const auto& u                = phi.get_value(q);
           const auto& tensor_product_u = outer_product(phi.get_value(q), phi_extr.get_value(q));
+          const auto  lambda           = std::abs(scalar_product(phi_extr.get_value(q), n_plus));
           phi.submit_value(a33/Re*(-grad_u*n_plus + 2.0*coef_jump*u) +
-                           a33*coef_trasp*tensor_product_u*n_plus, q);
+                           a33*coef_trasp*tensor_product_u*n_plus + a33*lambda*u, q);
           phi.submit_normal_derivative(-theta_v*a33/Re*u, q);
         }
         phi.integrate_scatter(true, true, dst);
@@ -1248,12 +1369,12 @@ namespace Step35 {
     void run(const bool verbose = false, const unsigned int output_interval = 10);
 
   protected:
-    const double       dt;
     const double       t_0;
     const double       T;
     const double       gamma;         //--- TR-BDF2 parameter
     unsigned int       TR_BDF2_stage; //--- Flag to check at which current stage of TR-BDF2 are
     const double       Re;
+    const double       CFL;
 
     EquationData::Velocity<dim> vel_exact;
     EquationData::Pressure<dim> pres_exact;
@@ -1327,6 +1448,8 @@ namespace Step35 {
                    L2_error_per_cell_pres, Linfty_error_per_cell_pres,
                    L2_rel_error_per_cell_pres, Linfty_rel_error_per_cell_pres;
 
+    double dt;
+
     std::string saving_dir;
 
     std::ofstream output_error_pres;
@@ -1342,12 +1465,12 @@ namespace Step35 {
   // load the initial data.
   template<int dim>
   NavierStokesProjection<dim>::NavierStokesProjection(RunTimeParameters::Data_Storage& data):
-    dt(data.dt),
     t_0(data.initial_time),
     T(data.final_time),
     gamma(2.0 - std::sqrt(2.0)),  //--- Save also in the NavierStokes class the TR-BDF2 parameter value
     TR_BDF2_stage(1),             //--- Initialize the flag for the TR_BDF2 stage
     Re(data.Reynolds),
+    CFL(data.CFL),
     vel_exact(data.Reynolds, data.initial_time),
     pres_exact(data.Reynolds, data.initial_time),
     fe_velocity(FE_DGQ<dim>(EquationData::degree_p + 1), dim),
@@ -1400,6 +1523,9 @@ namespace Step35 {
     std::cout << "Number of refines = " << n_refines << std::endl;
     triangulation.refine_global(n_refines);
     std::cout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
+    dt = CFL*2.0*numbers::PI/(std::pow(2, n_refines))/(EquationData::degree_p + 1);
+    navier_stokes_matrix.set_dt(dt);
+
     Vector<double> error_per_cell_tmp(triangulation.n_active_cells());
     H1_error_per_cell_vel.reinit(error_per_cell_tmp);
     L2_error_per_cell_vel.reinit(error_per_cell_tmp);
@@ -1754,17 +1880,18 @@ namespace Step35 {
   void NavierStokesProjection<dim>::run(const bool verbose, const unsigned int output_interval) {
     ConditionalOStream verbose_cout(std::cout, verbose);
 
-    const auto n_steps = static_cast<unsigned int>((T - t_0) / dt);
+    const auto n_steps = static_cast<unsigned int>(std::ceil((T - t_0) / dt));
     analyze_results();
     output_results(1);
     output_errors(1);
+    double time = t_0 + dt;
     for(unsigned int n = 2; n <= n_steps; ++n) {
       if(n % output_interval == 0) {
         verbose_cout << "Plotting Solution final" << std::endl;
         output_results(n);
         output_errors(n);
       }
-      std::cout << "Step = " << n << " Time = " << (n * dt) << std::endl;
+      std::cout << "Step = " << n << " Time = " << time + dt << std::endl;
       //--- First stage of TR-BDF2
       verbose_cout << "  Interpolating the velocity stage 1" << std::endl;
       interpolate_velocity();
@@ -1805,6 +1932,11 @@ namespace Step35 {
       u_n += u_tmp;
       TR_BDF2_stage = 1; //--- Flag to pass at first stage at next step
       analyze_results();
+      time += dt;
+      if(T - time < dt && T - time > 0.0) {
+        dt = T - time;
+        navier_stokes_matrix.set_dt(dt);
+      }
     }
     output_results(n_steps);
     output_errors(n_steps);
