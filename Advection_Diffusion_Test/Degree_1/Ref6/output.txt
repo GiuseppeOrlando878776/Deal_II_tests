@@ -1,0 +1,477 @@
+Number of refines = 6
+Number of active cells: 4096
+dim (X_h) = 16384
+Re        = 100
+
+Verification via H1 error:    0.125678
+Verification via H1 relative error:    0.0231647
+Verification via L2 error:    0.00502816
+Verification via L2 relative error:    0.00160523
+Verification via Linfty error:    0.00159906
+Verification via Linfty relative error:    0.00160446
+Step = 2 Time = 0.294524
+  Solution stage 1 
+DEAL:GMRES::Starting value 43.9707
+DEAL:GMRES::Convergence step 19 value 1.55763e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.145518
+DEAL:GMRES::Convergence step 11 value 1.44019e-06
+Verification via H1 error:    0.138896
+Verification via H1 relative error:    0.0256767
+Verification via L2 error:    0.00523812
+Verification via L2 relative error:    0.00167719
+Verification via Linfty error:    0.00233229
+Verification via Linfty relative error:    0.00234708
+Plotting Solution final
+Step = 3 Time = 0.441786
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.124152
+DEAL:GMRES::Convergence step 11 value 1.10742e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.124456
+DEAL:GMRES::Convergence step 10 value 2.74153e-06
+Verification via H1 error:    0.139705
+Verification via H1 relative error:    0.0259023
+Verification via L2 error:    0.00527895
+Verification via L2 relative error:    0.00169525
+Verification via Linfty error:    0.0023402
+Verification via Linfty relative error:    0.00236199
+Plotting Solution final
+Step = 4 Time = 0.589049
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.121125
+DEAL:GMRES::Convergence step 11 value 1.13795e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.121860
+DEAL:GMRES::Convergence step 11 value 1.51106e-06
+Verification via H1 error:    0.139668
+Verification via H1 relative error:    0.0259718
+Verification via L2 error:    0.00536993
+Verification via L2 relative error:    0.00172956
+Verification via Linfty error:    0.00231578
+Verification via Linfty relative error:    0.00234423
+Plotting Solution final
+Step = 5 Time = 0.736311
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.118613
+DEAL:GMRES::Convergence step 11 value 1.25435e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.119832
+DEAL:GMRES::Convergence step 11 value 1.54445e-06
+Verification via H1 error:    0.139472
+Verification via H1 relative error:    0.0260119
+Verification via L2 error:    0.00550085
+Verification via L2 relative error:    0.00177695
+Verification via Linfty error:    0.00229543
+Verification via Linfty relative error:    0.00233049
+Plotting Solution final
+Step = 6 Time = 0.883573
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.117254
+DEAL:GMRES::Convergence step 11 value 1.10441e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.118934
+DEAL:GMRES::Convergence step 11 value 1.33328e-06
+Verification via H1 error:    0.139127
+Verification via H1 relative error:    0.0260241
+Verification via L2 error:    0.0056441
+Verification via L2 relative error:    0.0018286
+Verification via Linfty error:    0.00226583
+Verification via Linfty relative error:    0.00230722
+Plotting Solution final
+Step = 7 Time = 1.03084
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.117002
+DEAL:GMRES::Convergence step 11 value 9.67245e-07
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.119098
+DEAL:GMRES::Convergence step 11 value 1.38529e-06
+Verification via H1 error:    0.138643
+Verification via H1 relative error:    0.0260101
+Verification via L2 error:    0.005776
+Verification via L2 relative error:    0.00187685
+Verification via Linfty error:    0.00223974
+Verification via Linfty relative error:    0.00228738
+Plotting Solution final
+Step = 8 Time = 1.1781
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.117735
+DEAL:GMRES::Convergence step 11 value 1.10803e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.120148
+DEAL:GMRES::Convergence step 11 value 1.56450e-06
+Verification via H1 error:    0.138042
+Verification via H1 relative error:    0.0259737
+Verification via L2 error:    0.00587724
+Verification via L2 relative error:    0.00191539
+Verification via Linfty error:    0.0022103
+Verification via Linfty relative error:    0.00226397
+Plotting Solution final
+Step = 9 Time = 1.32536
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.119224
+DEAL:GMRES::Convergence step 11 value 1.10800e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.121840
+DEAL:GMRES::Convergence step 11 value 1.58012e-06
+Verification via H1 error:    0.137352
+Verification via H1 relative error:    0.0259201
+Verification via L2 error:    0.00593349
+Verification via L2 relative error:    0.00193942
+Verification via Linfty error:    0.00227136
+Verification via Linfty relative error:    0.00233338
+Plotting Solution final
+Step = 10 Time = 1.47262
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.121195
+DEAL:GMRES::Convergence step 11 value 1.06246e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.123893
+DEAL:GMRES::Convergence step 11 value 1.58500e-06
+Verification via H1 error:    0.136606
+Verification via H1 relative error:    0.0258554
+Verification via L2 error:    0.00593532
+Verification via L2 relative error:    0.00194574
+Verification via Linfty error:    0.00235916
+Verification via Linfty relative error:    0.00243072
+Plotting Solution final
+Step = 11 Time = 1.61988
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.123365
+DEAL:GMRES::Convergence step 11 value 1.07471e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.126036
+DEAL:GMRES::Convergence step 11 value 1.62977e-06
+Verification via H1 error:    0.135839
+Verification via H1 relative error:    0.0257859
+Verification via L2 error:    0.00587819
+Verification via L2 relative error:    0.0019327
+Verification via Linfty error:    0.0023937
+Verification via Linfty relative error:    0.00247359
+Plotting Solution final
+Step = 12 Time = 1.76715
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.125475
+DEAL:GMRES::Convergence step 11 value 1.09766e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.128030
+DEAL:GMRES::Convergence step 11 value 1.65868e-06
+Verification via H1 error:    0.135082
+Verification via H1 relative error:    0.0257179
+Verification via L2 error:    0.00576227
+Verification via L2 relative error:    0.00190017
+Verification via Linfty error:    0.00238702
+Verification via Linfty relative error:    0.00247396
+Plotting Solution final
+Step = 13 Time = 1.91441
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.127315
+DEAL:GMRES::Convergence step 11 value 1.10726e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.129686
+DEAL:GMRES::Convergence step 11 value 1.66799e-06
+Verification via H1 error:    0.134363
+Verification via H1 relative error:    0.0256565
+Verification via L2 error:    0.00559221
+Verification via L2 relative error:    0.00184953
+Verification via Linfty error:    0.00233049
+Verification via Linfty relative error:    0.0024225
+Plotting Solution final
+Step = 14 Time = 2.06167
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.128729
+DEAL:GMRES::Convergence step 11 value 1.11792e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.130875
+DEAL:GMRES::Convergence step 11 value 1.66626e-06
+Verification via H1 error:    0.133704
+Verification via H1 relative error:    0.025606
+Verification via L2 error:    0.00537672
+Verification via L2 relative error:    0.00178351
+Verification via Linfty error:    0.00222266
+Verification via Linfty relative error:    0.00231722
+Plotting Solution final
+Step = 15 Time = 2.20893
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.129619
+DEAL:GMRES::Convergence step 11 value 1.12821e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.131523
+DEAL:GMRES::Convergence step 11 value 1.65270e-06
+Verification via H1 error:    0.133119
+Verification via H1 relative error:    0.0255692
+Verification via L2 error:    0.00512791
+Verification via L2 relative error:    0.00170599
+Verification via Linfty error:    0.00216439
+Verification via Linfty relative error:    0.00226313
+Plotting Solution final
+Step = 16 Time = 2.35619
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.129945
+DEAL:GMRES::Convergence step 11 value 1.13595e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.131612
+DEAL:GMRES::Convergence step 11 value 1.62842e-06
+Verification via H1 error:    0.132615
+Verification via H1 relative error:    0.0255475
+Verification via L2 error:    0.00486031
+Verification via L2 relative error:    0.00162173
+Verification via Linfty error:    0.00218419
+Verification via Linfty relative error:    0.00229057
+Plotting Solution final
+Step = 17 Time = 2.50346
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.129719
+DEAL:GMRES::Convergence step 11 value 1.14181e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.131171
+DEAL:GMRES::Convergence step 11 value 1.59472e-06
+Verification via H1 error:    0.132191
+Verification via H1 relative error:    0.0255409
+Verification via L2 error:    0.00458963
+Verification via L2 relative error:    0.00153593
+Verification via Linfty error:    0.0021962
+Verification via Linfty relative error:    0.00230996
+Plotting Solution final
+Step = 18 Time = 2.65072
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.128998
+DEAL:GMRES::Convergence step 11 value 1.14498e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.130271
+DEAL:GMRES::Convergence step 11 value 1.55247e-06
+Verification via H1 error:    0.131838
+Verification via H1 relative error:    0.0255479
+Verification via L2 error:    0.00433116
+Verification via L2 relative error:    0.00145371
+Verification via Linfty error:    0.00221707
+Verification via Linfty relative error:    0.00233878
+Plotting Solution final
+Step = 19 Time = 2.79798
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.127870
+DEAL:GMRES::Convergence step 11 value 1.14454e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.129014
+DEAL:GMRES::Convergence step 11 value 1.50437e-06
+Verification via H1 error:    0.131544
+Verification via H1 relative error:    0.025566
+Verification via L2 error:    0.00409813
+Verification via L2 relative error:    0.00137955
+Verification via Linfty error:    0.00222694
+Verification via Linfty relative error:    0.00235613
+Plotting Solution final
+Step = 20 Time = 2.94524
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.126454
+DEAL:GMRES::Convergence step 11 value 1.13958e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.127521
+DEAL:GMRES::Convergence step 11 value 1.45639e-06
+Verification via H1 error:    0.13129
+Verification via H1 relative error:    0.025592
+Verification via L2 error:    0.00390015
+Verification via L2 relative error:    0.00131678
+Verification via Linfty error:    0.00224089
+Verification via Linfty relative error:    0.00237788
+Plotting Solution final
+Step = 21 Time = 3.09251
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.124878
+DEAL:GMRES::Convergence step 11 value 1.12935e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.125924
+DEAL:GMRES::Convergence step 11 value 1.41917e-06
+Verification via H1 error:    0.131058
+Verification via H1 relative error:    0.0256221
+Verification via L2 error:    0.00374223
+Verification via L2 relative error:    0.00126719
+Verification via Linfty error:    0.00224426
+Verification via Linfty relative error:    0.00238848
+Plotting Solution final
+Step = 22 Time = 3.23977
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.123274
+DEAL:GMRES::Convergence step 11 value 1.11331e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.124349
+DEAL:GMRES::Convergence step 11 value 1.40172e-06
+Verification via H1 error:    0.130828
+Verification via H1 relative error:    0.0256526
+Verification via L2 error:    0.00362466
+Verification via L2 relative error:    0.001231
+Verification via Linfty error:    0.00222821
+Verification via Linfty relative error:    0.00237839
+Plotting Solution final
+Step = 23 Time = 3.38703
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.121761
+DEAL:GMRES::Convergence step 11 value 1.09260e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.122908
+DEAL:GMRES::Convergence step 11 value 1.38851e-06
+Verification via H1 error:    0.130584
+Verification via H1 relative error:    0.0256802
+Verification via L2 error:    0.00354388
+Verification via L2 relative error:    0.00120711
+Verification via Linfty error:    0.00218087
+Verification via Linfty relative error:    0.00233473
+Plotting Solution final
+Step = 24 Time = 3.53429
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.120437
+DEAL:GMRES::Convergence step 11 value 1.06972e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.121683
+DEAL:GMRES::Convergence step 11 value 1.36262e-06
+Verification via H1 error:    0.130312
+Verification via H1 relative error:    0.0257024
+Verification via L2 error:    0.0034939
+Verification via L2 relative error:    0.0011936
+Verification via Linfty error:    0.00208434
+Verification via Linfty relative error:    0.00223797
+Plotting Solution final
+Step = 25 Time = 3.68155
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.119367
+DEAL:GMRES::Convergence step 11 value 1.04575e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.120728
+DEAL:GMRES::Convergence step 11 value 1.32551e-06
+Verification via H1 error:    0.130006
+Verification via H1 relative error:    0.0257176
+Verification via L2 error:    0.00346771
+Verification via L2 relative error:    0.00118815
+Verification via Linfty error:    0.00197304
+Verification via Linfty relative error:    0.00212471
+Plotting Solution final
+Step = 26 Time = 3.82882
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.118584
+DEAL:GMRES::Convergence step 11 value 1.02332e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.120057
+DEAL:GMRES::Convergence step 11 value 1.29682e-06
+Verification via H1 error:    0.129663
+Verification via H1 relative error:    0.0257253
+Verification via L2 error:    0.00345824
+Verification via L2 relative error:    0.0011884
+Verification via Linfty error:    0.00194075
+Verification via Linfty relative error:    0.0020961
+Plotting Solution final
+Step = 27 Time = 3.97608
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.118082
+DEAL:GMRES::Convergence step 11 value 1.00471e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.119656
+DEAL:GMRES::Convergence step 11 value 1.30026e-06
+Verification via H1 error:    0.129285
+Verification via H1 relative error:    0.0257261
+Verification via L2 error:    0.0034587
+Verification via L2 relative error:    0.00119206
+Verification via Linfty error:    0.00191404
+Verification via Linfty relative error:    0.00207336
+Plotting Solution final
+Step = 28 Time = 4.12334
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.117828
+DEAL:GMRES::Convergence step 11 value 9.91111e-07
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.119480
+DEAL:GMRES::Convergence step 11 value 1.33268e-06
+Verification via H1 error:    0.12888
+Verification via H1 relative error:    0.0257211
+Verification via L2 error:    0.00346261
+Verification via L2 relative error:    0.00119693
+Verification via Linfty error:    0.00188143
+Verification via Linfty relative error:    0.00204404
+Plotting Solution final
+Step = 29 Time = 4.2706
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.117766
+DEAL:GMRES::Convergence step 11 value 9.84906e-07
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.119469
+DEAL:GMRES::Convergence step 11 value 1.37909e-06
+Verification via H1 error:    0.128456
+Verification via H1 relative error:    0.0257121
+Verification via L2 error:    0.0034638
+Verification via L2 relative error:    0.00120087
+Verification via Linfty error:    0.00185758
+Verification via Linfty relative error:    0.00202408
+Plotting Solution final
+Step = 30 Time = 4.41786
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.117832
+DEAL:GMRES::Convergence step 11 value 9.85633e-07
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.119558
+DEAL:GMRES::Convergence step 11 value 1.42776e-06
+Verification via H1 error:    0.128023
+Verification via H1 relative error:    0.025701
+Verification via L2 error:    0.00345658
+Verification via L2 relative error:    0.0012019
+Verification via Linfty error:    0.00186143
+Verification via Linfty relative error:    0.00203426
+Plotting Solution final
+Step = 31 Time = 4.56513
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.117957
+DEAL:GMRES::Convergence step 11 value 9.90927e-07
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.119680
+DEAL:GMRES::Convergence step 11 value 1.47088e-06
+Verification via H1 error:    0.127588
+Verification via H1 relative error:    0.0256893
+Verification via L2 error:    0.00343624
+Verification via L2 relative error:    0.00119836
+Verification via Linfty error:    0.00196099
+Verification via Linfty relative error:    0.00214938
+Plotting Solution final
+Step = 32 Time = 4.71239
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.118081
+DEAL:GMRES::Convergence step 11 value 9.98648e-07
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.119781
+DEAL:GMRES::Convergence step 11 value 1.50368e-06
+Verification via H1 error:    0.12716
+Verification via H1 relative error:    0.0256785
+Verification via L2 error:    0.00339971
+Verification via L2 relative error:    0.00118911
+Verification via Linfty error:    0.00201816
+Verification via Linfty relative error:    0.00221858
+Plotting Solution final
+Step = 33 Time = 4.85965
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.118157
+DEAL:GMRES::Convergence step 11 value 1.00686e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.119819
+DEAL:GMRES::Convergence step 11 value 1.52374e-06
+Verification via H1 error:    0.12674
+Verification via H1 relative error:    0.0256693
+Verification via L2 error:    0.00334616
+Verification via L2 relative error:    0.00117384
+Verification via Linfty error:    0.00203865
+Verification via Linfty relative error:    0.00224771
+Plotting Solution final
+Step = 34 Time = 5
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.118532
+DEAL:GMRES::Convergence step 10 value 1.78168e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.117667
+DEAL:GMRES::Convergence step 10 value 2.48814e-06
+Verification via H1 error:    0.126384
+Verification via H1 relative error:    0.0256691
+Verification via L2 error:    0.00327716
+Verification via L2 relative error:    0.00115286
+Verification via Linfty error:    0.00201321
+Verification via Linfty relative error:    0.0022259
+Plotting Solution final
+----------------------------------------------------
+Apparently everything went fine!
+Don't forget to brush your teeth :-)
+

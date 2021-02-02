@@ -1213,7 +1213,7 @@ namespace Step35 {
       phi.reinit(cell);
       phi.gather_evaluate(src, false, true);
       for(unsigned int q = 0; q < phi.n_q_points; ++q)
-        phi.submit_gradient(phi.get_gradient(q), q);
+        phi.submit_gradient(phi.get_gradient(q) + dt*phi.get_value(q), q);
       phi.integrate_scatter(false, true, dst);
     }
   }
@@ -1265,7 +1265,7 @@ namespace Step35 {
       phi.reinit(face);
       phi.gather_evaluate(src, true, false);
       const auto coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
-      if(data.get_boundary_id(face) == 1) {
+      /*if(data.get_boundary_id(face) == 1) {
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& pres   = phi.get_value(q);
           const auto& grad_p = phi.get_gradient(q);
@@ -1279,6 +1279,10 @@ namespace Step35 {
           phi.submit_normal_derivative(0.0, q);
           phi.submit_value(0.0, q);
         }
+      }*/
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        phi.submit_normal_derivative(0.0, q);
+        phi.submit_value(0.0, q);
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -2006,10 +2010,14 @@ namespace Step35 {
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_p.l2_norm());
     SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
-    if(TR_BDF2_stage == 1)
+    if(TR_BDF2_stage == 1) {
+      pres_int = pres_p;
       cg.solve(navier_stokes_matrix, pres_int, rhs_p, PreconditionIdentity());
-    else
+    }
+    else {
+      pres_n = pres_p;
       cg.solve(navier_stokes_matrix, pres_n, rhs_p, PreconditionIdentity());
+    }
   }
 
 

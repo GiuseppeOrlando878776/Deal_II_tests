@@ -1,0 +1,71 @@
+Number of refines = 3
+Number of active cells: 64
+dim (X_h) = 256
+Re        = 100
+
+Verification via H1 error:    1.04312
+Verification via H1 relative error:    0.196271
+Verification via L2 error:    0.30139
+Verification via L2 relative error:    0.0982227
+Verification via Linfty error:    0.0905069
+Verification via Linfty relative error:    0.0952651
+Step = 2 Time = 2.35619
+  Solution stage 1 
+DEAL:GMRES::Starting value 7.99991
+DEAL:GMRES::Convergence step 21 value 1.55103e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 1.03323
+DEAL:GMRES::Convergence step 18 value 2.47307e-06
+Verification via H1 error:    1.37245
+Verification via H1 relative error:    0.264393
+Verification via L2 error:    0.327857
+Verification via L2 relative error:    0.109396
+Verification via Linfty error:    0.126095
+Verification via Linfty relative error:    0.135889
+Plotting Solution final
+Step = 3 Time = 3.53429
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.883049
+DEAL:GMRES::Convergence step 19 value 1.42177e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.761710
+DEAL:GMRES::Convergence step 17 value 2.85311e-06
+Verification via H1 error:    1.18311
+Verification via H1 relative error:    0.233352
+Verification via L2 error:    0.280628
+Verification via L2 relative error:    0.0958694
+Verification via Linfty error:    0.108989
+Verification via Linfty relative error:    0.120254
+Plotting Solution final
+Step = 4 Time = 4.71239
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.787086
+DEAL:GMRES::Convergence step 17 value 1.77427e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.725684
+DEAL:GMRES::Convergence step 16 value 2.73621e-06
+Verification via H1 error:    1.14811
+Verification via H1 relative error:    0.231849
+Verification via L2 error:    0.239838
+Verification via L2 relative error:    0.0838878
+Verification via Linfty error:    0.145404
+Verification via Linfty relative error:    0.164258
+Plotting Solution final
+Step = 5 Time = 5
+  Solution stage 1 
+DEAL:GMRES::Starting value 0.579838
+DEAL:GMRES::Convergence step 14 value 4.87477e-06
+  Solution stage 2 
+DEAL:GMRES::Starting value 0.245330
+DEAL:GMRES::Convergence step 13 value 5.79780e-06
+Verification via H1 error:    1.17176
+Verification via H1 relative error:    0.23799
+Verification via L2 error:    0.236788
+Verification via L2 relative error:    0.0832989
+Verification via Linfty error:    0.140863
+Verification via Linfty relative error:    0.160046
+Plotting Solution final
+----------------------------------------------------
+Apparently everything went fine!
+Don't forget to brush your teeth :-)
+
