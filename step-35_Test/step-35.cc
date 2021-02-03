@@ -376,6 +376,8 @@ namespace Step35 {
 
     void set_time(const double curr_time);
 
+    void advance_p_time(const double time_adv);
+
     void vmult_rhs_velocity(Vec& dst, const std::vector<Vec>& src) const;
 
     void vmult_rhs_pressure(Vec& dst, const Vec& src) const;
@@ -404,14 +406,16 @@ namespace Step35 {
     const double a21 = 0.5;
     const double a22 = 0.5;
 
-    const double theta_v = 1.0;
+    const double theta_v = 0.0;
     const double theta_p = 1.0;
-    const double C_p = 1.0*1e1*(fe_degree_p + 1)*(fe_degree_p + 1);
+    const double C_p = 1.0*(fe_degree_p + 1)*(fe_degree_p + 1);
     const double C_u = 1.0*(fe_degree_v + 1)*(fe_degree_v + 1);
 
     Vec                         u_extr;
+
     EquationData::Velocity<dim> vel_exact;
     EquationData::Pressure<dim> pres_exact;
+
     void assemble_rhs_cell_term_velocity(const MatrixFree<dim, Number>&               data,
                                          Vec&                                         dst,
                                          const std::vector<Vec>&                      src,
@@ -503,14 +507,24 @@ namespace Step35 {
     MatrixFreeOperators::Base<dim, Vec>(), eq_data(data), Re(data.Reynolds), dt(5e-4),
                                            gamma(2.0 - std::sqrt(2.0)), a31((1.0 - gamma)/(2.0*(2.0 - gamma))),
                                            a32(a31), a33(1.0/(2.0 - gamma)), TR_BDF2_stage(1), NS_stage(1), u_extr(),
-                                           vel_exact(data.Reynolds, data.initial_time), pres_exact(data.Reynolds, data.initial_time) {}
+                                           vel_exact(data.Reynolds, data.initial_time),
+                                           pres_exact(data.Reynolds, data.initial_time) {}
 
-  // Setter oftime-step
+  // Setter of time-step
   //
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   set_dt(const double time_step) {
     dt = time_step;
+  }
+
+
+  // Advance time for gradient of pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  advance_p_time(const double time_adv) {
+    pres_exact.advance_time(time_adv);
   }
 
 
@@ -552,7 +566,6 @@ namespace Step35 {
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::set_time(const double curr_time) {
     vel_exact.set_time(curr_time);
-    pres_exact.set_time(curr_time);
   }
 
 
@@ -699,11 +712,9 @@ namespace Step35 {
                                                           outer_product(phi_int_m.get_value(q), phi_int_m.get_value(q)));
           const auto& avg_p_old                    = 0.5*(phi_old_press_p.get_value(q) + phi_old_press_m.get_value(q));
           phi_p.submit_value((a31/Re*avg_grad_u_old + a32/Re*avg_grad_u_int -
-                              a31*avg_tensor_product_u_n - a32*avg_tensor_product_u_n_gamma)*n_plus -
-                              avg_p_old*n_plus, q);
+                              a31*avg_tensor_product_u_n - a32*avg_tensor_product_u_n_gamma)*n_plus - avg_p_old*n_plus, q);
           phi_m.submit_value(-(a31/Re*avg_grad_u_old + a32/Re*avg_grad_u_int -
-                               a31*avg_tensor_product_u_n - a32*avg_tensor_product_u_n_gamma)*n_plus +
-                               avg_p_old*n_plus, q);
+                               a31*avg_tensor_product_u_n - a32*avg_tensor_product_u_n_gamma)*n_plus + avg_p_old*n_plus, q);
         }
         phi_p.integrate_scatter(true, false, dst);
         phi_m.integrate_scatter(true, false, dst);
@@ -754,7 +765,7 @@ namespace Step35 {
           phi.submit_value((a21/Re*grad_u_old - a21*tensor_product_u_n)*n_plus - p_old*n_plus +
                            a22/Re*2.0*coef_jump*u_int_m -
                            a22*tensor_product_u_int_m*n_plus + a22*lambda*u_int_m, q);
-          phi.submit_gradient(-theta_v*a22/Re*outer_product(u_int_m, n_plus), q);
+          phi.submit_normal_derivative(-theta_v*a22/Re*u_int_m, q);
         }
         phi.integrate_scatter(true, true, dst);
       }
@@ -799,7 +810,7 @@ namespace Step35 {
                            a31*tensor_product_u_n - a32*tensor_product_u_n_gamma)*n_plus - p_old*n_plus +
                            a33/Re*2.0*coef_jump*u_m -
                            a33*tensor_product_u_m*n_plus + a33*lambda*u_m, q);
-          phi.submit_gradient(-theta_v*a33/Re*outer_product(u_m, n_plus), q);
+          phi.submit_normal_derivative(-theta_v*a33/Re*u_m, q);
         }
         phi.integrate_scatter(true, true, dst);
       }
@@ -819,80 +830,6 @@ namespace Step35 {
                      MatrixFree<dim, Number>::DataAccessOnFaces::unspecified,
                      MatrixFree<dim, Number>::DataAccessOnFaces::unspecified);
   }
-
-
-  // Assemble rhs cell term for the pressure
-  //
-  /*template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  assemble_rhs_cell_term_pressure(const MatrixFree<dim, Number>&               data,
-                                  Vec&                                         dst,
-                                  const Vec&                                   src,
-                                  const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, 1, 1);
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, 0, 1);
-
-    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
-
-    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-      phi_proj.reinit(cell);
-      phi_proj.gather_evaluate(src, false, true);
-      phi.reinit(cell);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        const auto& u_star_star = phi_proj.get_divergence(q);
-        phi.submit_value(-coeff*u_star_star, q);
-      }
-      phi.integrate_scatter(true, false, dst);
-    }
-  }
-
-
-  // Assemble rhs face term for the pressure
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  assemble_rhs_face_term_pressure(const MatrixFree<dim, Number>&               data,
-                                  Vec&                                         dst,
-                                  const Vec&                                   src,
-                                  const std::pair<unsigned int, unsigned int>& face_range) const {}
-
-
-  // Assemble rhs boundary term for the pressure
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  assemble_rhs_boundary_term_pressure(const MatrixFree<dim, Number>&               data,
-                                      Vec&                                         dst,
-                                      const Vec&                                   src,
-                                      const std::pair<unsigned int, unsigned int>& face_range) const {
-    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi(data, true, 1, 1);
-
-    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-      phi.reinit(face);
-      const auto coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
-      if(data.get_boundary_id(face) == 1) {
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          auto boundary_value          = VectorizedArray<Number>();
-          const auto& point_vectorized = phi.quadrature_point(q);
-          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-            Point<dim> point;
-            for(unsigned int d = 0; d < dim; ++d)
-              point[d] = point_vectorized[d][v];
-            boundary_value[v] = pres_exact.value(point);
-          }
-          phi.submit_value(2.0*coef_jump*boundary_value, q);
-          phi.submit_normal_derivative(-theta_p*boundary_value, q);
-        }
-      }
-      else {
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          phi.submit_value(0.0, q);
-          phi.submit_normal_derivative(0.0, q);
-        }
-      }
-      phi.integrate_scatter(true, true, dst);
-    }
-  }*/
 
 
   // Assemble rhs cell term for the pressure
@@ -970,28 +907,10 @@ namespace Step35 {
       phi_proj.reinit(face);
       phi_proj.gather_evaluate(src, true, false);
       phi.reinit(face);
-      const auto coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
-      if(data.get_boundary_id(face) == 1) {
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          auto boundary_value          = VectorizedArray<Number>();
-          const auto& point_vectorized = phi.quadrature_point(q);
-          const auto& n_plus           = phi.get_normal_vector(q);
-          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-            Point<dim> point;
-            for(unsigned int d = 0; d < dim; ++d)
-              point[d] = point_vectorized[d][v];
-            boundary_value[v] = pres_exact.value(point);
-          }
-          phi.submit_value(-coeff*scalar_product(phi_proj.get_value(q), n_plus) + 2.0*coef_jump*boundary_value, q);
-          phi.submit_normal_derivative(-theta_p*boundary_value, q);
-        }
-      }
-      else {
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          const auto& n_plus = phi.get_normal_vector(q);
-          phi.submit_value(-coeff*scalar_product(phi_proj.get_value(q), n_plus), q);
-          phi.submit_normal_derivative(0.0, q);
-        }
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        const auto& n_plus = phi.get_normal_vector(q);
+        phi.submit_value(-coeff*scalar_product(phi_proj.get_value(q), n_plus), q);
+        phi.submit_normal_derivative(0.0, q);
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -1209,12 +1128,16 @@ namespace Step35 {
                               const std::pair<unsigned int, unsigned int>& cell_range) const {
     FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi(data, 1, 1);
 
+    const double coeff = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
+
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
-      phi.gather_evaluate(src, false, true);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q)
-        phi.submit_gradient(phi.get_gradient(q) + dt*phi.get_value(q), q);
-      phi.integrate_scatter(false, true, dst);
+      phi.gather_evaluate(src, true, true);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        phi.submit_gradient(phi.get_gradient(q), q);
+        phi.submit_value(coeff*phi.get_value(q), q);
+      }
+      phi.integrate_scatter(true, true, dst);
     }
   }
 
@@ -1264,22 +1187,6 @@ namespace Step35 {
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi.reinit(face);
       phi.gather_evaluate(src, true, false);
-      const auto coef_jump = C_p*std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
-      /*if(data.get_boundary_id(face) == 1) {
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          const auto& pres   = phi.get_value(q);
-          const auto& grad_p = phi.get_gradient(q);
-          const auto& n_plus = phi.get_normal_vector(q);
-          phi.submit_value(2.0*coef_jump*pres - scalar_product(grad_p, n_plus), q);
-          phi.submit_gradient(-theta_p*pres*n_plus, q);
-        }
-      }
-      else {
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          phi.submit_normal_derivative(0.0, q);
-          phi.submit_value(0.0, q);
-        }
-      }*/
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         phi.submit_normal_derivative(0.0, q);
         phi.submit_value(0.0, q);
@@ -1729,6 +1636,9 @@ namespace Step35 {
     LinearAlgebra::distributed::Vector<double> u_tmp;
     LinearAlgebra::distributed::Vector<double> rhs_u;
 
+    LinearAlgebra::distributed::Vector<double> u_n_k;
+    LinearAlgebra::distributed::Vector<double> u_n_gamma_k;
+
     DeclException2(ExcInvalidTimeStep,
                    double,
                    double,
@@ -1749,6 +1659,8 @@ namespace Step35 {
     void project_grad(const unsigned int flag);
 
     void analyze_results();
+
+    void analyze_results_2();
 
     void output_results(const unsigned int step);
 
@@ -1910,6 +1822,8 @@ namespace Step35 {
     matrix_free_storage->initialize_dof_vector(u_n_minus_1, 0);
     matrix_free_storage->initialize_dof_vector(u_n_gamma, 0);
     matrix_free_storage->initialize_dof_vector(u_tmp, 0);
+    matrix_free_storage->initialize_dof_vector(u_n_k, 0);
+    matrix_free_storage->initialize_dof_vector(u_n_gamma_k, 0);
     matrix_free_storage->initialize_dof_vector(pres_int, 1);
     matrix_free_storage->initialize_dof_vector(pres_n, 1);
     matrix_free_storage->initialize_dof_vector(rhs_p, 1);
@@ -1946,7 +1860,7 @@ namespace Step35 {
     }
     //--- TR-BDF2 second step
     else {
-      u_extr.equ(1.0 + (1.0 - gamma)/gamma, u_star);
+      u_extr.equ(1.0 + (1.0 - gamma)/gamma, u_n_gamma);
       u_tmp.equ((1.0 - gamma)/gamma, u_n);
       u_extr -= u_tmp;
     }
@@ -1970,28 +1884,73 @@ namespace Step35 {
   void NavierStokesProjection<dim>::diffusion_step() {
     const std::vector<unsigned int> tmp = {0};
     navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
+    if(TR_BDF2_stage == 1) {
+      vel_exact.advance_time(0.5*gamma*dt);
+      //VectorTools::interpolate(dof_handler_velocity, vel_exact, u_extr);
+      vel_exact.advance_time(0.5*gamma*dt);
+      pres_exact.advance_time(gamma*dt);
+    }
+    else {
+      vel_exact.advance_time(0.5*(1.0 - gamma)*dt);
+      //VectorTools::interpolate(dof_handler_velocity, vel_exact, u_extr);
+      vel_exact.advance_time(0.5*(1.0 - gamma)*dt);
+      pres_exact.advance_time((1.0 - gamma)*dt);
+    }
     navier_stokes_matrix.set_time(vel_exact.get_time());
-    if(TR_BDF2_stage == 1)
-      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_extr, pres_n});
-    else
-      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_extr});
 
     navier_stokes_matrix.set_NS_stage(1);
-    navier_stokes_matrix.set_u_extr(u_extr);
-    u_star = u_extr; //--- Use as initial guess of GMRES
 
-    SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
-    SolverGMRES<LinearAlgebra::distributed::Vector<double>>
-    gmres(solver_control, SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData(vel_Krylov_size));
-    PreconditionJacobi<NavierStokesProjectionOperator<dim,
-                                                      EquationData::degree_p,
-                                                      EquationData::degree_p + 1,
-                                                      EquationData::degree_p + 2,
-                                                      LinearAlgebra::distributed::Vector<double>,
-                                                      double>> preconditioner;
-    navier_stokes_matrix.compute_diagonal();
-    preconditioner.initialize(navier_stokes_matrix);
-    gmres.solve(navier_stokes_matrix, u_star, rhs_u, preconditioner);
+    if(TR_BDF2_stage == 1)
+      u_n_k = u_extr;
+    else
+      u_n_gamma_k = u_extr;
+
+    for(unsigned int iter = 0; iter < 100; ++iter) {
+      if(TR_BDF2_stage == 1) {
+        navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_extr, pres_n});
+        navier_stokes_matrix.set_u_extr(u_n_k);
+        u_star = u_n_k;
+      }
+      else {
+        navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_extr});
+        navier_stokes_matrix.set_u_extr(u_n_gamma_k);
+        u_star = u_n_gamma_k;
+      }
+
+      //u_star = u_extr; //--- Use as initial guess of GMRES
+
+      SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
+      SolverGMRES<LinearAlgebra::distributed::Vector<double>>
+      gmres(solver_control, SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData(vel_Krylov_size));
+      PreconditionJacobi<NavierStokesProjectionOperator<dim,
+                                                        EquationData::degree_p,
+                                                        EquationData::degree_p + 1,
+                                                        EquationData::degree_p + 2,
+                                                        LinearAlgebra::distributed::Vector<double>,
+                                                        double>> preconditioner;
+      navier_stokes_matrix.compute_diagonal();
+      preconditioner.initialize(navier_stokes_matrix);
+      gmres.solve(navier_stokes_matrix, u_star, rhs_u, preconditioner);
+      double error = 0.0;
+      u_tmp = u_star;
+      if(TR_BDF2_stage == 1) {
+        u_tmp -= u_n_k;
+        VectorTools::integrate_difference(dof_handler_velocity, u_tmp, ZeroFunction<dim>(dim),
+                                          H1_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
+        error = VectorTools::compute_global_error(triangulation, H1_error_per_cell_vel, VectorTools::H1_norm);
+        u_n_k = u_star;
+      }
+      else {
+        u_tmp -= u_n_gamma_k;
+        VectorTools::integrate_difference(dof_handler_velocity, u_tmp, ZeroFunction<dim>(dim),
+                                          H1_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
+        error = VectorTools::compute_global_error(triangulation, H1_error_per_cell_vel, VectorTools::H1_norm);
+        u_n_gamma_k = u_star;
+      }
+      if(error < 1e-6)
+        break;
+    }
+
   }
 
 
@@ -2003,7 +1962,6 @@ namespace Step35 {
   void NavierStokesProjection<dim>::projection_step() {
     const std::vector<unsigned int> tmp = {1};
     navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
-    navier_stokes_matrix.set_time(pres_exact.get_time());
     navier_stokes_matrix.vmult_rhs_pressure(rhs_p, u_star);
 
     navier_stokes_matrix.set_NS_stage(2);
@@ -2011,11 +1969,11 @@ namespace Step35 {
     SolverControl solver_control(vel_max_its, vel_eps*rhs_p.l2_norm());
     SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
     if(TR_BDF2_stage == 1) {
-      pres_int = pres_p;
+      pres_int = pres_n;
       cg.solve(navier_stokes_matrix, pres_int, rhs_p, PreconditionIdentity());
     }
     else {
-      pres_n = pres_p;
+      pres_n = pres_int;
       cg.solve(navier_stokes_matrix, pres_n, rhs_p, PreconditionIdentity());
     }
   }
@@ -2123,6 +2081,24 @@ namespace Step35 {
     output_error_pres << error_rel_pres_L2 << std::endl;
     output_error_pres << error_pres_Linfty << std::endl;
     output_error_pres << error_rel_pres_Linfty << std::endl;
+  }
+
+
+  // Since we have solved a problem with analytic solution, we want to verify
+  // the correctness of our implementation by computing the errors of the
+  // numerical result against the analytic solution.
+  //
+  template <int dim>
+  void NavierStokesProjection<dim>::analyze_results_2() {
+    VectorTools::integrate_difference(dof_handler_velocity, u_n_gamma, vel_exact,
+                                      H1_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
+    const double error_vel_H1 = VectorTools::compute_global_error(triangulation, H1_error_per_cell_vel, VectorTools::H1_norm);
+    std::cout << "Verification via H1 error velocity:    "<< error_vel_H1 << std::endl;
+
+    VectorTools::integrate_difference(dof_handler_pressure, pres_int, pres_exact,
+                                      L2_error_per_cell_pres, quadrature_pressure, VectorTools::L2_norm);
+    const double error_pres_L2 = VectorTools::compute_global_error(triangulation, L2_error_per_cell_pres, VectorTools::L2_norm);
+    std::cout << "Verification via L2 error pressure:    "<< error_pres_L2 << std::endl;
   }
 
 
@@ -2242,6 +2218,7 @@ namespace Step35 {
     analyze_results();
     output_results(1);
     output_errors(1);
+    navier_stokes_matrix.advance_p_time(dt);
     double time = t_0 + dt;
     unsigned int n = 1;
     while(std::abs(T - time) > 1e-10) {
@@ -2252,10 +2229,9 @@ namespace Step35 {
       verbose_cout << "  Interpolating the velocity stage 1" << std::endl;
       interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 1 " << std::endl;
-      vel_exact.advance_time(gamma*dt);
-      pres_exact.advance_time(gamma*dt);
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
       diffusion_step();
+      navier_stokes_matrix.advance_p_time(gamma*dt);
       verbose_cout << "  Projection Step stage 1" << std::endl;
       project_grad(1);
       u_tmp.equ(gamma*dt, u_tmp);
@@ -2267,15 +2243,15 @@ namespace Step35 {
       u_tmp.equ(-gamma*dt, u_tmp);
       u_n_gamma += u_tmp;
       u_n_minus_1 = u_n;
+      analyze_results_2();
       TR_BDF2_stage = 2; //--- Flag to pass at second stage
       //--- Second stage of TR-BDF2
       verbose_cout << "  Interpolating the velocity stage 2" << std::endl;
       interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 2 " << std::endl;
-      vel_exact.advance_time((1.0 - gamma)*dt);
-      pres_exact.advance_time((1.0 - gamma)*dt);
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
       diffusion_step();
+      navier_stokes_matrix.advance_p_time((1.0 - gamma)*dt);
       verbose_cout << "  Projection Step stage 2" << std::endl;
       project_grad(2);
       u_tmp.equ((1.0 - gamma)*dt, u_tmp);
