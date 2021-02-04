@@ -241,7 +241,7 @@ namespace Step35 {
   // In the next namespace, we declare the initial and boundary conditions
   //
   namespace EquationData {
-    static const unsigned int degree_p = 1;
+    static const unsigned int degree_p = 2;
 
     // With this class defined, we declare class that describes the boundary
     // conditions for velocity:
@@ -380,7 +380,7 @@ namespace Step35 {
 
     void vmult_rhs_velocity(Vec& dst, const std::vector<Vec>& src) const;
 
-    void vmult_rhs_pressure(Vec& dst, const Vec& src) const;
+    void vmult_rhs_pressure(Vec& dst, const std::vector<Vec>& src) const;
 
     void vmult_grad_p_projection(Vec& dst, const Vec& src) const;
 
@@ -431,15 +431,15 @@ namespace Step35 {
 
     void assemble_rhs_cell_term_pressure(const MatrixFree<dim, Number>&               data,
                                          Vec&                                         dst,
-                                         const Vec&                                   src,
+                                         const std::vector<Vec>&                      src,
                                          const std::pair<unsigned int, unsigned int>& cell_range) const;
     void assemble_rhs_face_term_pressure(const MatrixFree<dim, Number>&               data,
                                          Vec&                                         dst,
-                                         const Vec&                                   src,
+                                         const std::vector<Vec>&                      src,
                                          const std::pair<unsigned int, unsigned int>& face_range) const;
     void assemble_rhs_boundary_term_pressure(const MatrixFree<dim, Number>&               data,
                                              Vec&                                         dst,
-                                             const Vec&                                   src,
+                                             const std::vector<Vec>&                      src,
                                              const std::pair<unsigned int, unsigned int>& face_range) const;
 
     void assemble_cell_term_velocity(const MatrixFree<dim, Number>&               data,
@@ -838,22 +838,26 @@ namespace Step35 {
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   assemble_rhs_cell_term_pressure(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
-                                  const Vec&                                   src,
+                                  const std::vector<Vec>&                      src,
                                   const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, 1, 1);
+    FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, 1, 1), phi_old(data, 1, 1);
     FEEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, 0, 1);
 
     const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi_proj.reinit(cell);
-      phi_proj.gather_evaluate(src, true, false);
+      phi_proj.gather_evaluate(src[0], true, false);
+      phi_old.reinit(cell);
+      phi_old.gather_evaluate(src[1], true, false);
       phi.reinit(cell);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& u_star_star = phi_proj.get_value(q);
+        const auto& p_old       = phi_old.get_value(q);
+        phi.submit_value(0.000001*coeff*p_old, q);
         phi.submit_gradient(coeff*u_star_star, q);
       }
-      phi.integrate_scatter(false, true, dst);
+      phi.integrate_scatter(true, true, dst);
     }
   }
 
@@ -864,7 +868,7 @@ namespace Step35 {
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   assemble_rhs_face_term_pressure(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
-                                  const Vec&                                   src,
+                                  const std::vector<Vec>&                      src,
                                   const std::pair<unsigned int, unsigned int>& face_range) const {
     FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
     FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj_p(data, true, 0, 1), phi_proj_m(data, false, 0, 1);
@@ -873,9 +877,9 @@ namespace Step35 {
 
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi_proj_p.reinit(face);
-      phi_proj_p.gather_evaluate(src, true, false);
+      phi_proj_p.gather_evaluate(src[0], true, false);
       phi_proj_m.reinit(face);
-      phi_proj_m.gather_evaluate(src, true, false);
+      phi_proj_m.gather_evaluate(src[0], true, false);
       phi_p.reinit(face);
       phi_m.reinit(face);
       for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
@@ -896,7 +900,7 @@ namespace Step35 {
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   assemble_rhs_boundary_term_pressure(const MatrixFree<dim, Number>&               data,
                                       Vec&                                         dst,
-                                      const Vec&                                   src,
+                                      const std::vector<Vec>&                      src,
                                       const std::pair<unsigned int, unsigned int>& face_range) const {
     FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, true, 1, 1);
     FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, true, 0, 1);
@@ -905,7 +909,7 @@ namespace Step35 {
 
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi_proj.reinit(face);
-      phi_proj.gather_evaluate(src, true, false);
+      phi_proj.gather_evaluate(src[0], true, false);
       phi.reinit(face);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& n_plus = phi.get_normal_vector(q);
@@ -921,7 +925,7 @@ namespace Step35 {
   //
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  vmult_rhs_pressure(Vec& dst, const Vec& src) const {
+  vmult_rhs_pressure(Vec& dst, const std::vector<Vec>& src) const {
     this->data->loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_pressure,
                      &NavierStokesProjectionOperator::assemble_rhs_face_term_pressure,
                      &NavierStokesProjectionOperator::assemble_rhs_boundary_term_pressure,
@@ -1135,7 +1139,7 @@ namespace Step35 {
       phi.gather_evaluate(src, true, true);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         phi.submit_gradient(phi.get_gradient(q), q);
-        phi.submit_value(coeff*phi.get_value(q), q);
+        phi.submit_value(0.000001/coeff*phi.get_value(q), q);
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -1962,7 +1966,10 @@ namespace Step35 {
   void NavierStokesProjection<dim>::projection_step() {
     const std::vector<unsigned int> tmp = {1};
     navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
-    navier_stokes_matrix.vmult_rhs_pressure(rhs_p, u_star);
+    if(TR_BDF2_stage == 1)
+      navier_stokes_matrix.vmult_rhs_pressure(rhs_p, {u_star, pres_n});
+    else
+      navier_stokes_matrix.vmult_rhs_pressure(rhs_p, {u_star, pres_int});
 
     navier_stokes_matrix.set_NS_stage(2);
 
