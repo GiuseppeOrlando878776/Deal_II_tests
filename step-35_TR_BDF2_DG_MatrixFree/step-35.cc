@@ -323,6 +323,8 @@ namespace Step35 {
 
     void vmult_rhs_pressure(Vec& dst, const Vec& src) const;
 
+    void vmult_grad_p_projection(Vec& dst, const Vec& src) const;
+
     virtual void compute_diagonal() override;
 
   protected:
@@ -342,13 +344,13 @@ namespace Step35 {
     virtual void apply_add(Vec& dst, const Vec& src) const override;
 
   private:
-    const double theta_v = 0.0;
-    const double theta_p = 0.0;
+    const double theta_v = 1.0;
+    const double theta_p = 1.0;
 
     const double a21 = 0.5;
     const double a22 = 0.5;
-    const double C_p = 5.0;
-    const double C_u = 0.0;
+    const double C_p = 4.0;
+    const double C_u = 9.0;
 
     Vec                         u_extr;
     EquationData::Velocity<dim> vel_exact;
@@ -418,6 +420,16 @@ namespace Step35 {
                                                   const Vec&                                   src,
                                                   const std::pair<unsigned int, unsigned int>& face_range) const;
 
+
+    void assemble_cell_term_projection_grad_p(const MatrixFree<dim, Number>&               data,
+                                              Vec&                                         dst,
+                                              const Vec&                                   src,
+                                              const std::pair<unsigned int, unsigned int>& cell_range) const;
+    void assemble_rhs_cell_term_projection_grad_p(const MatrixFree<dim, Number>&               data,
+                                                  Vec&                                         dst,
+                                                  const Vec&                                   src,
+                                                  const std::pair<unsigned int, unsigned int>& cell_range) const;
+
     void assemble_diagonal_cell_term_pressure(const MatrixFree<dim, Number>&               data,
                                               Vec&                                         dst,
                                               const Vec&                                   src,
@@ -467,7 +479,7 @@ namespace Step35 {
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   set_NS_stage(const unsigned int stage) {
-    Assert(stage == 1 || stage == 2, ExcInternalError());
+    Assert(stage <= 3, ExcInternalError());
     NS_stage = stage;
   }
 
@@ -1236,16 +1248,28 @@ namespace Step35 {
     FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number> phi(data, true, 1);
 
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      const auto   boundary_id   = data.get_boundary_id(face);
       const auto&  face_iterator = data.get_face_iterator(face, 0);
       const double measure       = face_iterator.first->face(face_iterator.second)->measure();
       const double coef_jump     = C_p/measure;
       phi.reinit(face);
       phi.gather_evaluate(src, true, false);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        const auto& pres = phi.get_value(q);
-        phi.submit_value(-coef_jump*pres, q);
+      if(boundary_id == 3) {
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& pres   = phi.get_value(q);
+          const auto& grad_p = phi.get_gradient(q);
+          const auto& n_plus = phi.get_normal_vector(q);
+          phi.submit_value(-2.0*coef_jump*pres + scalar_product(grad_p, n_plus), q);
+          phi.submit_gradient(theta_p*pres*n_plus, q);
+        }
       }
-      phi.integrate_scatter(true, false, dst);
+      else {
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          phi.submit_value(0.0, q);
+          phi.submit_gradient(Tensor<1, 2, VectorizedArray<double, 2>>(), q);
+        }
+      }
+      phi.integrate_scatter(true, true, dst);
     }
   }
 
@@ -1289,6 +1313,10 @@ namespace Step35 {
                        this, dst, src, false,
                        MatrixFree<dim, Number>::DataAccessOnFaces::unspecified,
                        MatrixFree<dim, Number>::DataAccessOnFaces::unspecified);
+    }
+    else if(NS_stage == 3) {
+      this->data->cell_loop(&NavierStokesProjectionOperator::assemble_cell_term_projection_grad_p,
+                            this, dst, src, false);
     }
     else
       Assert(false, ExcNotImplemented());
@@ -1822,6 +1850,58 @@ namespace Step35 {
   }
 
 
+  // Assemble rhs cell term for the projection of gradient of pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_cell_term_projection_grad_p(const MatrixFree<dim, Number>&               data,
+                                       Vec&                                         dst,
+                                       const Vec&                                   src,
+                                       const std::pair<unsigned int, unsigned int>& cell_range) const {
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0);
+
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi.reinit(cell);
+      phi.gather_evaluate(src, true, false);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q)
+        phi.submit_value(phi.get_value(q), q);
+      phi.integrate_scatter(true, false, dst);
+    }
+  }
+
+
+  // Assemble rhs cell term for the projection of gradient of pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_rhs_cell_term_projection_grad_p(const MatrixFree<dim, Number>&               data,
+                                           Vec&                                         dst,
+                                           const Vec&                                   src,
+                                           const std::pair<unsigned int, unsigned int>& cell_range) const {
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0);
+    FEEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi_pres(data, 1);
+
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi_pres.reinit(cell);
+      phi_pres.gather_evaluate(src, false, true);
+      phi.reinit(cell);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q)
+        phi.submit_value(phi_pres.get_gradient(q), q);
+      phi.integrate_scatter(true, false, dst);
+    }
+  }
+
+
+  // Put together all the previous steps for pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  vmult_grad_p_projection(Vec& dst, const Vec& src) const {
+    this->data->cell_loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_projection_grad_p,
+                          this, dst, src, true);
+  }
+
+
 
   // @sect3{The <code>NavierStokesProjection</code> class}
 
@@ -1888,6 +1968,8 @@ namespace Step35 {
     void diffusion_step();
 
     void projection_step();
+
+    void project_grad(const unsigned int flag);
 
   private:
     std::shared_ptr<MatrixFree<dim, double>> matrix_free_storage;
@@ -2056,8 +2138,6 @@ namespace Step35 {
     dof_handler_pressure.distribute_dofs(fe_pressure);
 
     boundary_ids = triangulation.get_boundary_ids();
-
-    initialize_gradient_operator();
 
     std::cout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
               << std::endl
@@ -2295,11 +2375,32 @@ namespace Step35 {
     navier_stokes_matrix.set_NS_stage(2);
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_p.l2_norm());
-    SolverGMRES<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
+    SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
     if(TR_BDF2_stage == 1)
       cg.solve(navier_stokes_matrix, pres_int, rhs_p, PreconditionIdentity());
     else
       cg.solve(navier_stokes_matrix, pres_n, rhs_p, PreconditionIdentity());
+  }
+
+
+  // This implements the projection step for the gradient of pressure
+  //
+  template<int dim>
+  void NavierStokesProjection<dim>::project_grad(const unsigned int flag) {
+    const std::vector<unsigned int> tmp = {0};
+    navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
+    if(flag == 1)
+      navier_stokes_matrix.vmult_grad_p_projection(rhs_u, pres_n);
+    else if(flag == 2)
+      navier_stokes_matrix.vmult_grad_p_projection(rhs_u, pres_int);
+    else
+      Assert(false, ExcNotImplemented());
+
+    navier_stokes_matrix.set_NS_stage(3);
+
+    SolverControl solver_control(vel_max_its, 1e-6*vel_eps*rhs_u.l2_norm());
+    SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
+    cg.solve(navier_stokes_matrix, u_tmp, rhs_u, PreconditionIdentity());
   }
 
 
@@ -2523,13 +2624,15 @@ namespace Step35 {
       diffusion_step();
       u_extr = u_star;
       verbose_cout << "  Projection Step stage 1" << std::endl;
-      pres_Diff.vmult(u_tmp, pres_n);
+      //pres_Diff.vmult(u_tmp, pres_n);
+      project_grad(1);
       u_tmp.equ(gamma*dt, u_tmp);
       u_star += u_tmp;
       projection_step();
       verbose_cout << "  Updating the Velocity stage 1" << std::endl;
       u_n_gamma.equ(1.0, u_star);
-      pres_Diff.vmult(u_tmp, pres_int);
+      //pres_Diff.vmult(u_tmp, pres_int);
+      project_grad(2);
       u_tmp.equ(-gamma*dt, u_tmp);
       u_n_gamma += u_tmp;
       TR_BDF2_stage = 2; //--- Flag to pass at second stage
@@ -2547,13 +2650,15 @@ namespace Step35 {
       u_star = u_extr;
       diffusion_step();
       verbose_cout << "  Projection Step stage 2" << std::endl;
-      pres_Diff.vmult(u_tmp, pres_int);
+      //pres_Diff.vmult(u_tmp, pres_int);
+      project_grad(2);
       u_tmp.equ((1.0 - gamma)*dt, u_tmp);
       u_star += u_tmp;
       projection_step();
       verbose_cout << "  Updating the Velocity stage 2" << std::endl;
       u_n.equ(1.0, u_star);
-      pres_Diff.vmult(u_tmp, pres_n);
+      //pres_Diff.vmult(u_tmp, pres_n);
+      project_grad(1);
       u_tmp.equ((gamma - 1.0)*dt, u_tmp);
       u_n += u_tmp;
       TR_BDF2_stage = 1; //--- Flag to pass at first stage at next step

@@ -65,8 +65,6 @@
 #include <deal.II/lac/generic_linear_algebra.h>
 #include <deal.II/base/parsed_convergence_table.h>
 #include <deal.II/lac/solver_gmres.h>
-#include <deal.II/lac/solver_bicgstab.h>
-#include <deal.II/lac/diagonal_matrix.h>
 #include <deal.II/lac/petsc_matrix_free.h>
 #include <deal.II/lac/petsc_solver.h>
 #include <deal.II/lac/linear_operator.h>
@@ -76,8 +74,8 @@
 namespace Step33 {
   using namespace dealii;
   namespace LA {
-     //using namespace dealii::LinearAlgebraPETSc;
-     using namespace dealii::LinearAlgebraTrilinos;
+     using namespace dealii::LinearAlgebraPETSc;
+     //using namespace dealii::LinearAlgebraTrilinos;
   }
 
   // @sect3{Euler equation specifics}
@@ -1235,7 +1233,7 @@ namespace Step33 {
   // sofisticated like matrix-free but a good alternative, especially in approaches
   // that employ the automatic differentiation)
   template<int dim>
-  class ConservationLawOperator {
+  class ConservationLawOperator: public PETScWrappers::MatrixFree {
   public:
     ConservationLawOperator(const DoFHandler<dim>& dof_handler,
                             const MappingQ1<dim>&  mapping,
@@ -1243,7 +1241,9 @@ namespace Step33 {
                             const QGauss<dim - 1>& face_quadrature,
                             TimerOutput&           time_table,
                             ParameterHandler&      prm,
-                            LA::MPI::Vector&       locally_relevant_solution);
+                            LA::MPI::Vector&       locally_relevant_solution,
+                            IndexSet&              locally_owned_dofs,
+                            IndexSet&              locally_relevant_dofs);
 
     void set_TR_BDF2_stage(const unsigned int stage);
 
@@ -1251,25 +1251,30 @@ namespace Step33 {
 
     void set_lambda_old(const double lambda_old);
 
-    void assemble_cell_term(const FEValues<dim>&                              fe_v,
-                            const Vector<double>&                             local_current_solution,
-                            const std::vector<types::global_dof_index>&       dof_indices,
-                            LinearAlgebra::distributed::Vector<double>&       dst,
-                            const LinearAlgebra::distributed::Vector<double>& src) const;
-    void assemble_face_term(const unsigned int                                face_no,
-                            const FEFaceValuesBase<dim>&                      fe_v,
-                            const FEFaceValuesBase<dim>&                      fe_v_neighbor,
-                            const bool                                        external_face,
-                            const unsigned int                                boundary_id,
-                            const Vector<double>&                             local_current_solution,
-                            const Vector<double>&                             local_current_solution_neighbor,
-                            const std::vector<types::global_dof_index>&       dof_indices,
-                            const std::vector<types::global_dof_index>&       dof_indices_neighbor,
-                            LinearAlgebra::distributed::Vector<double>&       dst,
-                            const LinearAlgebra::distributed::Vector<double>& src) const;
+    void assemble_cell_term(const FEValues<dim>&                        fe_v,
+                            const Vector<double>&                       local_current_solution,
+                            const std::vector<types::global_dof_index>& dof_indices,
+                            PETScWrappers::VectorBase&                  dst,
+                            const PETScWrappers::VectorBase&            src) const;
+    void assemble_face_term(const unsigned int                          face_no,
+                            const FEFaceValuesBase<dim>&                fe_v,
+                            const FEFaceValuesBase<dim>&                fe_v_neighbor,
+                            const bool                                  external_face,
+                            const unsigned int                          boundary_id,
+                            const Vector<double>&                       local_current_solution,
+                            const Vector<double>&                       local_current_solution_neighbor,
+                            const std::vector<types::global_dof_index>& dof_indices,
+                            const std::vector<types::global_dof_index>& dof_indices_neighbor,
+                            PETScWrappers::VectorBase&                  dst,
+                            const PETScWrappers::VectorBase&            src) const;
 
-    void vmult(LinearAlgebra::distributed::Vector<double>&       dst,
-               const LinearAlgebra::distributed::Vector<double>& src) const;
+    void vmult(PETScWrappers::VectorBase& dst, const PETScWrappers::VectorBase& src) const override;
+
+    void Tvmult(PETScWrappers::VectorBase&, const PETScWrappers::VectorBase&) const override {}
+
+    void vmult_add(PETScWrappers::VectorBase&, const PETScWrappers::VectorBase&) const override {}
+
+    void Tvmult_add(PETScWrappers::VectorBase&, const PETScWrappers::VectorBase&) const override {}
 
   private:
     const DoFHandler<dim>& dof_handler;
@@ -1279,12 +1284,16 @@ namespace Step33 {
     TimerOutput&           time_table;
     Parameters::AllParameters<dim> parameters;  //--- Auxiliary variable to read parameters
 
-    double             lambda_old; //--- Extra parameter to save old Lax-Friedrichs stability (for explicit caching)
-    double             gamma_2; //--- Extra parameter of TR_BDF2
-    double             gamma_3; //--- Extra parameter of TR_BDF2
-    unsigned int       TR_BDF2_stage; //--- Extra parameter for counting stage TR_BDF2
+    double       lambda_old;    //--- Extra parameter to save old Lax-Friedrichs stability (for explicit caching)
+    double       gamma_2;       //--- Extra parameter of TR_BDF2
+    double       gamma_3;       //--- Extra parameter of TR_BDF2
+    unsigned int TR_BDF2_stage; //--- Extra parameter for counting stage TR_BDF2
 
     LA::MPI::Vector&   locally_relevant_solution;
+    IndexSet&          locally_owned_dofs;
+    IndexSet&          locally_relevant_dofs;
+
+    AffineConstraints<double> constraints;
   };
 
   // Class constructor
@@ -1295,9 +1304,13 @@ namespace Step33 {
                                                         const QGauss<dim - 1>& face_quadrature,
                                                         TimerOutput&           time_table,
                                                         ParameterHandler&      prm,
-                                                        LA::MPI::Vector&       locally_relevant_solution):
-    dof_handler(dof_handler), mapping(mapping), quadrature(quadrature), face_quadrature(face_quadrature), time_table(time_table),
-    parameters(prm), locally_relevant_solution(locally_relevant_solution) {
+                                                        LA::MPI::Vector&       locally_relevant_solution,
+                                                        IndexSet&              locally_owned_dofs,
+                                                        IndexSet&              locally_relevant_dofs):
+    PETScWrappers::MatrixFree(), dof_handler(dof_handler), mapping(mapping), quadrature(quadrature),
+    face_quadrature(face_quadrature), time_table(time_table), parameters(prm),
+    locally_relevant_solution(locally_relevant_solution), locally_owned_dofs(locally_owned_dofs),
+    locally_relevant_dofs(locally_relevant_dofs) {
       //--- Compute the other two parameters of TR_BDF2 scheme
       if(parameters.time_integration_scheme == "TR_BDF2") {
         parameters.theta = 1.0 - std::sqrt(2)/2.0;
@@ -1332,11 +1345,11 @@ namespace Step33 {
 
   // Assemble cell term
   template<int dim>
-  void ConservationLawOperator<dim>::assemble_cell_term(const FEValues<dim>&                              fe_v,
-                                                        const Vector<double>&                             local_current_solution,
-                                                        const std::vector<types::global_dof_index>&       dof_indices,
-                                                        LinearAlgebra::distributed::Vector<double>&       dst,
-                                                        const LinearAlgebra::distributed::Vector<double>& src) const {
+  void ConservationLawOperator<dim>::assemble_cell_term(const FEValues<dim>&                        fe_v,
+                                                        const Vector<double>&                       local_current_solution,
+                                                        const std::vector<types::global_dof_index>& dof_indices,
+                                                        PETScWrappers::VectorBase&                  dst,
+                                                        const PETScWrappers::VectorBase&            src) const {
     TimerOutput::Scope t(time_table, "Assemble cell term");
 
     const unsigned int dofs_per_cell = fe_v.dofs_per_cell;
@@ -1345,8 +1358,6 @@ namespace Step33 {
     FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
     Vector<double>     cell_src(dofs_per_cell), cell_dst(dofs_per_cell);
     cell_matrix = 0;
-
-    AffineConstraints<double> constraints;
 
     Table<2, Sacado::Fad::DFad<double>> W(n_q_points, EulerEquations<dim>::n_components);
 
@@ -1451,17 +1462,17 @@ namespace Step33 {
 
   // Assemble face term
   template<int dim>
-  void ConservationLawOperator<dim>::assemble_face_term(const unsigned int           face_no,
-                                                        const FEFaceValuesBase<dim>& fe_v,
-                                                        const FEFaceValuesBase<dim>& fe_v_neighbor,
-                                                        const bool                   external_face,
-                                                        const unsigned int           boundary_id,
-                                                        const Vector<double>&        local_current_solution,
-                                                        const Vector<double>&        local_current_solution_neighbor,
-                                                        const std::vector<types::global_dof_index>&       dof_indices,
-                                                        const std::vector<types::global_dof_index>&       dof_indices_neighbor,
-                                                        LinearAlgebra::distributed::Vector<double>&       dst,
-                                                        const LinearAlgebra::distributed::Vector<double>& src) const {
+  void ConservationLawOperator<dim>::assemble_face_term(const unsigned int                          face_no,
+                                                        const FEFaceValuesBase<dim>&                fe_v,
+                                                        const FEFaceValuesBase<dim>&                fe_v_neighbor,
+                                                        const bool                                  external_face,
+                                                        const unsigned int                          boundary_id,
+                                                        const Vector<double>&                       local_current_solution,
+                                                        const Vector<double>&                       local_current_solution_neighbor,
+                                                        const std::vector<types::global_dof_index>& dof_indices,
+                                                        const std::vector<types::global_dof_index>& dof_indices_neighbor,
+                                                        PETScWrappers::VectorBase&                  dst,
+                                                        const PETScWrappers::VectorBase&            src) const {
     TimerOutput::Scope t(time_table, "Assemble face term");
 
     const unsigned int n_q_points    = fe_v.n_quadrature_points;
@@ -1472,8 +1483,6 @@ namespace Step33 {
     Vector<double>     cell_src(dofs_per_cell), cell_dst(dofs_per_cell);
     cell_matrix = 0;
     aux_cell_matrix = 0;
-
-    AffineConstraints<double> constraints;
 
     std::vector<Sacado::Fad::DFad<double>> independent_local_dof_values(dofs_per_cell),
                                            independent_neighbor_dof_values(external_face == false ?
@@ -1594,16 +1603,16 @@ namespace Step33 {
 
   // Now we compute the action of the operator, namely the matrix-vector operator
   template<int dim>
-  void ConservationLawOperator<dim>::vmult(LinearAlgebra::distributed::Vector<double>& dst,
-                                           const LinearAlgebra::distributed::Vector<double>& src) const {
+  void ConservationLawOperator<dim>::vmult(PETScWrappers::VectorBase&       dst,
+                                           const PETScWrappers::VectorBase& src) const {
     TimerOutput::Scope t(time_table, "Action of linear operator");
+
+    dst = 0;
 
     const unsigned int dofs_per_cell = dof_handler.get_fe().dofs_per_cell;
 
     std::vector<types::global_dof_index> dof_indices(dofs_per_cell);
     std::vector<types::global_dof_index> dof_indices_neighbor(dofs_per_cell);
-
-    dst = 0;
 
     const UpdateFlags update_flags = update_values | update_gradients |
                                      update_quadrature_points | update_JxW_values,
@@ -1624,14 +1633,17 @@ namespace Step33 {
     // Then loop over all cells, initialize the FEValues object for the
     // current cell and call the function that assembles the problem on this
     // cell.
-    src.update_ghost_values();
+    PETScWrappers::MPI::Vector tmp_src(MPI_COMM_WORLD, src, locally_owned_dofs.n_elements());
+    PETScWrappers::MPI::Vector tmp1_src;
+    tmp1_src.reinit(locally_owned_dofs, locally_relevant_dofs, MPI_COMM_WORLD);
+    tmp1_src = tmp_src;
     for(const auto& cell: dof_handler.active_cell_iterators()) {
       if(cell->is_locally_owned()) {
         fe_v.reinit(cell);
         cell->get_dof_values(locally_relevant_solution, local_current_solution);
         cell->get_dof_indices(dof_indices);
 
-        assemble_cell_term(fe_v, local_current_solution, dof_indices, dst, src);
+        assemble_cell_term(fe_v, local_current_solution, dof_indices, dst, tmp1_src);
 
         // Then loop over all the faces of this cell.  If a face is part of
         // the external boundary, then assemble boundary conditions there:
@@ -1664,7 +1676,7 @@ namespace Step33 {
                 assemble_face_term(face_no, fe_v_subface, fe_v_face_neighbor,
                                    false, numbers::invalid_unsigned_int,
                                    local_current_solution, local_current_solution_neighbor,
-                                   dof_indices, dof_indices_neighbor, dst, src);
+                                   dof_indices, dof_indices_neighbor, dst, tmp1_src);
               }
             }
 
@@ -1682,14 +1694,15 @@ namespace Step33 {
                      ExcInternalError());
 
               fe_v_face.reinit(cell, face_no);
-              fe_v_subface_neighbor.reinit(neighbor, neighbor_face_no, neighbor_subface_no);
+              fe_v_subface_neighbor.reinit(neighbor, neighbor_face_no,
+                                           neighbor_subface_no);
               neighbor->get_dof_values(locally_relevant_solution, local_current_solution_neighbor);
               neighbor->get_dof_indices(dof_indices_neighbor);
 
               assemble_face_term(face_no, fe_v_face, fe_v_subface_neighbor,
                                  false, numbers::invalid_unsigned_int,
                                  local_current_solution, local_current_solution_neighbor,
-                                 dof_indices, dof_indices_neighbor, dst, src);
+                                 dof_indices, dof_indices_neighbor, dst, tmp1_src);
             }
             // Same refinement level
             else {
@@ -1703,457 +1716,12 @@ namespace Step33 {
               assemble_face_term(face_no, fe_v_face, fe_v_face_neighbor,
                                  false, numbers::invalid_unsigned_int,
                                  local_current_solution, local_current_solution_neighbor,
-                                 dof_indices, dof_indices_neighbor, dst, src);
+                                 dof_indices, dof_indices_neighbor, dst, tmp1_src);
             }
           }
         }
       }
     }
-  }
-
-
-  // @sect3{Conservation law operator class}
-
-  // Here we create an operator that will implement the matrix-vector effect.
-  // In this way we shuold be able to avoid the storing of the Jacobian matrix (not so
-  // sofisticated like matrix-free but a good alternative, especially in approaches
-  // that employ the automatic differentiation)
-  template<int dim>
-  class ConservationLawPreconditioner {
-  public:
-    ConservationLawPreconditioner(const DoFHandler<dim>& dof_handler,
-                                  const MappingQ1<dim>&  mapping,
-                                  const QGauss<dim>&     quadrature,
-                                  const QGauss<dim - 1>& face_quadrature,
-                                  TimerOutput&           time_table,
-                                  ParameterHandler&      prm,
-                                  LA::MPI::Vector&       locally_relevant_solution);
-
-    void set_TR_BDF2_stage(const unsigned int stage);
-
-    void set_current_time(const double current_time);
-
-    void set_lambda_old(const double lambda_old);
-
-    void assemble_cell_term(const FEValues<dim>&                              fe_v,
-                            const Vector<double>&                             local_current_solution,
-                            const std::vector<types::global_dof_index>&       dof_indices) const;
-    void assemble_face_term(const unsigned int                                face_no,
-                            const FEFaceValuesBase<dim>&                      fe_v,
-                            const FEFaceValuesBase<dim>&                      fe_v_neighbor,
-                            const bool                                        external_face,
-                            const unsigned int                                boundary_id,
-                            const Vector<double>&                             local_current_solution,
-                            const Vector<double>&                             local_current_solution_neighbor,
-                            const std::vector<types::global_dof_index>&       dof_indices,
-                            const std::vector<types::global_dof_index>&       dof_indices_neighbor) const;
-
-    void vmult(LinearAlgebra::distributed::Vector<double>&       dst,
-               const LinearAlgebra::distributed::Vector<double>& src) const;
-
-  private:
-    const DoFHandler<dim>& dof_handler;
-    const MappingQ1<dim>&  mapping;
-    const QGauss<dim>&     quadrature;
-    const QGauss<dim - 1>& face_quadrature;
-    TimerOutput&           time_table;
-    Parameters::AllParameters<dim> parameters;  //--- Auxiliary variable to read parameters
-
-    double             lambda_old; //--- Extra parameter to save old Lax-Friedrichs stability (for explicit caching)
-    double             gamma_2; //--- Extra parameter of TR_BDF2
-    double             gamma_3; //--- Extra parameter of TR_BDF2
-    unsigned int       TR_BDF2_stage; //--- Extra parameter for counting stage TR_BDF2
-
-    LA::MPI::Vector&   locally_relevant_solution;
-
-    mutable DiagonalMatrix<LinearAlgebra::distributed::Vector<double>> inverse_diagonal_entries;
-  };
-
-  // Class constructor
-  template<int dim>
-  ConservationLawPreconditioner<dim>::ConservationLawPreconditioner(const DoFHandler<dim>& dof_handler,
-                                                                    const MappingQ1<dim>&  mapping,
-                                                                    const QGauss<dim>&     quadrature,
-                                                                    const QGauss<dim - 1>& face_quadrature,
-                                                                    TimerOutput&           time_table,
-                                                                    ParameterHandler&      prm,
-                                                                    LA::MPI::Vector&       locally_relevant_solution):
-    dof_handler(dof_handler), mapping(mapping), quadrature(quadrature), face_quadrature(face_quadrature), time_table(time_table),
-    parameters(prm), locally_relevant_solution(locally_relevant_solution) {
-      //--- Compute the other two parameters of TR_BDF2 scheme
-      if(parameters.time_integration_scheme == "TR_BDF2") {
-        parameters.theta = 1.0 - std::sqrt(2)/2.0;
-        gamma_2 = (1.0 - 2.0*parameters.theta)/(2.0*(1.0 - parameters.theta));
-        gamma_3 = (1.0 - gamma_2)/(2.0*parameters.theta);
-        TR_BDF2_stage = 1;
-      }
-  }
-
-  // Set stage for TR_BDF2 (fundamental because the effectvve value is known only at
-  // runtime and so has to be called by ConservationLaw class)
-  template<int dim>
-  void ConservationLawPreconditioner<dim>::set_TR_BDF2_stage(const unsigned int stage) {
-    Assert(stage == 1 || stage == 2, ExcInternalError());
-    TR_BDF2_stage = stage;
-  }
-
-  // Set time for boundary conditions (fundamental because the effectvve value is known only at
-  // runtime and so has to be called by ConservationLaw class)
-  template<int dim>
-  void ConservationLawPreconditioner<dim>::set_current_time(const double current_time) {
-    if(parameters.testcase == 1)
-      parameters.exact_solution.set_time(current_time);
-  }
-
-  // Set lambda_old for LF (fundamental because the effectvve value is known only at
-  // runtime and so has to be called by ConservationLaw class)
-  template<int dim>
-  void ConservationLawPreconditioner<dim>::set_lambda_old(const double lambda_old) {
-    this->lambda_old = lambda_old;
-  }
-
-  // Assemble cell term
-  template<int dim>
-  void ConservationLawPreconditioner<dim>::assemble_cell_term(const FEValues<dim>&                        fe_v,
-                                                              const Vector<double>&                       local_current_solution,
-                                                              const std::vector<types::global_dof_index>& dof_indices) const {
-    TimerOutput::Scope t(time_table, "Assemble preconditioner cell term");
-
-    const unsigned int dofs_per_cell = fe_v.dofs_per_cell;
-    const unsigned int n_q_points    = fe_v.n_quadrature_points;
-
-    FullMatrix<double> cell_matrix(dofs_per_cell, dofs_per_cell);
-    cell_matrix = 0;
-
-    Table<2, Sacado::Fad::DFad<double>> W(n_q_points, EulerEquations<dim>::n_components);
-
-    std::vector<Sacado::Fad::DFad<double>> independent_local_dof_values(dofs_per_cell);
-    for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-      independent_local_dof_values[i] = local_current_solution[i];
-      independent_local_dof_values[i].diff(i, dofs_per_cell);
-    }
-
-    for(unsigned int q = 0; q < n_q_points; ++q)
-      for(unsigned int c = 0; c < EulerEquations<dim>::n_components; ++c)
-        W[q][c] = 0;
-
-    for(unsigned int q = 0; q < n_q_points; ++q) {
-      for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-        const unsigned int c = fe_v.get_fe().system_to_component_index(i).first;
-        W[q][c] += independent_local_dof_values[i]*fe_v.shape_value_component(i, q, c);
-      }
-    }
-
-    std::vector<std::array<std::array<Sacado::Fad::DFad<double>, dim>,
-                           EulerEquations<dim>::n_components>>          flux(n_q_points);
-
-    std::vector<std::array<Sacado::Fad::DFad<double>, EulerEquations<dim>::n_components>> forcing(n_q_points);
-
-    for(unsigned int q = 0; q < n_q_points; ++q) {
-      EulerEquations<dim>::compute_flux_matrix(W[q], flux[q]);
-      EulerEquations<dim>::compute_forcing_vector(W[q], forcing[q], parameters.testcase);
-    }
-
-
-    for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-      Sacado::Fad::DFad<double> R_i = 0;
-
-      const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
-
-      for(unsigned int point = 0; point < fe_v.n_quadrature_points; ++point) {
-        //--- Reorganize residual computation
-        if(parameters.time_integration_scheme == "Theta_Method") {
-          if(parameters.is_stationary == false)
-            R_i += 1.0/parameters.time_step *
-                   W[point][component_i] *
-                   fe_v.shape_value_component(i, point, component_i) *
-                   fe_v.JxW(point);
-
-          for(unsigned int d = 0; d < dim; d++)
-            R_i -= parameters.theta*flux[point][component_i][d]*
-                   fe_v.shape_grad_component(i, point, component_i)[d] *
-                   fe_v.JxW(point);
-
-          R_i -= parameters.theta*forcing[point][component_i]*
-                 fe_v.shape_value_component(i, point, component_i) *
-                 fe_v.JxW(point);
-        }
-        //--- Stages of TR-BDF2
-        else {
-          //--- First stage of TR_BDF2
-          if(TR_BDF2_stage == 1) {
-            if(parameters.is_stationary == false)
-              R_i += 1.0/parameters.time_step *
-                     W[point][component_i] *
-                     fe_v.shape_value_component(i, point, component_i) *
-                     fe_v.JxW(point);
-
-            for(unsigned int d = 0; d < dim; d++)
-              R_i -= parameters.theta*flux[point][component_i][d] *
-                     fe_v.shape_grad_component(i, point, component_i)[d] *
-                     fe_v.JxW(point);
-
-            R_i -= parameters.theta*forcing[point][component_i] *
-                   fe_v.shape_value_component(i, point, component_i) *
-                   fe_v.JxW(point);
-          }
-          //--- Second stage of TR_BDF2
-          else if(TR_BDF2_stage == 2) {
-            if(parameters.is_stationary == false)
-              R_i += 1.0/parameters.time_step *
-                     W[point][component_i] *
-                     fe_v.shape_value_component(i, point, component_i) *
-                     fe_v.JxW(point);
-
-            for(unsigned int d = 0; d < dim; d++)
-              R_i -= gamma_2*flux[point][component_i][d] *
-                     fe_v.shape_grad_component(i, point, component_i)[d] *
-                     fe_v.JxW(point);
-
-            R_i -=  gamma_2*forcing[point][component_i] *
-                    fe_v.shape_value_component(i, point, component_i) *
-                    fe_v.JxW(point);
-          }
-        }
-      }
-      inverse_diagonal_entries.add(dof_indices[i], dof_indices[i], 1.0/(R_i.fastAccessDx(0)));
-    }
-  }
-
-  // Assemble face term
-  template<int dim>
-  void ConservationLawPreconditioner<dim>::assemble_face_term(const unsigned int                          face_no,
-                                                              const FEFaceValuesBase<dim>&                fe_v,
-                                                              const FEFaceValuesBase<dim>&                fe_v_neighbor,
-                                                              const bool                                  external_face,
-                                                              const unsigned int                          boundary_id,
-                                                              const Vector<double>&                       local_current_solution,
-                                                              const Vector<double>&                       local_current_solution_neighbor,
-                                                              const std::vector<types::global_dof_index>& dof_indices,
-                                                              const std::vector<types::global_dof_index>& dof_indices_neighbor) const {
-    TimerOutput::Scope t(time_table, "Assemble preconditioner face term");
-
-    const unsigned int n_q_points    = fe_v.n_quadrature_points;
-    const unsigned int dofs_per_cell = fe_v.dofs_per_cell;
-
-    std::vector<Sacado::Fad::DFad<double>> independent_local_dof_values(dofs_per_cell),
-                                           independent_neighbor_dof_values(external_face == false ?
-                                                                           dofs_per_cell : 0);
-
-    const unsigned int n_independent_variables = (external_face == false ? dofs_per_cell + dofs_per_cell : dofs_per_cell);
-
-    for(unsigned int i = 0; i < dofs_per_cell; i++) {
-      independent_local_dof_values[i] = local_current_solution[i];
-      independent_local_dof_values[i].diff(i, n_independent_variables);
-    }
-
-    if(external_face == false) {
-      for(unsigned int i = 0; i < dofs_per_cell; i++) {
-        independent_neighbor_dof_values[i] = local_current_solution_neighbor[i];
-        independent_neighbor_dof_values[i].diff(i + dofs_per_cell, n_independent_variables);
-      }
-    }
-
-    Table<2, Sacado::Fad::DFad<double>> Wplus(n_q_points, EulerEquations<dim>::n_components),
-                                        Wminus(n_q_points, EulerEquations<dim>::n_components);
-
-    for(unsigned int q = 0; q < n_q_points; ++q) {
-      for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-        const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
-        Wplus[q][component_i] += independent_local_dof_values[i] *
-                                 fe_v.shape_value_component(i, q, component_i);
-      }
-    }
-
-    // Computing "opposite side" is a bit more complicated. If this is
-    // an internal face, we can compute it as above by simply using the
-    // independent variables from the neighbor:
-    if(external_face == false) {
-      for(unsigned int q = 0; q < n_q_points; ++q) {
-        for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-          const unsigned int component_i = fe_v_neighbor.get_fe().system_to_component_index(i).first;
-          Wminus[q][component_i] += independent_neighbor_dof_values[i] *
-                                    fe_v_neighbor.shape_value_component(i, q, component_i);
-        }
-      }
-    }
-    else {
-      Assert(boundary_id < Parameters::AllParameters<dim>::max_n_boundaries,
-             ExcIndexRange(boundary_id, 0, Parameters::AllParameters<dim>::max_n_boundaries));
-
-      std::vector<Vector<double>> boundary_values(n_q_points, Vector<double>(EulerEquations<dim>::n_components));
-      if(parameters.testcase == 0)
-        parameters.boundary_conditions[boundary_id].values.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
-      else
-        parameters.exact_solution.vector_value_list(fe_v.get_quadrature_points(), boundary_values);
-
-      for(unsigned int q = 0; q < n_q_points; q++) {
-        // Here we assume that boundary type, boundary normal vector and
-        // boundary data values maintain the same during time advancing.
-        EulerEquations<dim>::compute_Wminus(parameters.boundary_conditions[boundary_id].kind,
-                                            fe_v.normal_vector(q), Wplus[q], boundary_values[q], Wminus[q]);
-      }
-    }
-
-    std::vector<std::array<Sacado::Fad::DFad<double>, EulerEquations<dim>::n_components>> normal_fluxes(n_q_points);
-
-    for(unsigned int q = 0; q < n_q_points; ++q)
-      EulerEquations<dim>::numerical_normal_flux(fe_v.normal_vector(q), Wplus[q], Wminus[q], lambda_old, normal_fluxes[q]);
-
-    for(unsigned int i = 0; i < dofs_per_cell; ++i) {
-      if(fe_v.get_fe().has_support_on_face(i, face_no) == true) {
-        Sacado::Fad::DFad<double> R_i = 0;
-
-        for(unsigned int point = 0; point < n_q_points; ++point) {
-          const unsigned int component_i = fe_v.get_fe().system_to_component_index(i).first;
-
-          //--- Reorganizing contributions
-          if(parameters.time_integration_scheme == "Theta_Method") {
-            R_i += parameters.theta*normal_fluxes[point][component_i]*
-                   fe_v.shape_value_component(i, point, component_i) *
-                   fe_v.JxW(point);
-          }
-          //--- TR_BDF2 assembling
-          else {
-            //--- First stage of TR_BDF2
-            if(TR_BDF2_stage == 1) {
-              R_i += parameters.theta*normal_fluxes[point][component_i] *
-                     fe_v.shape_value_component(i, point, component_i) *
-                     fe_v.JxW(point);
-            }
-            //--- Second stage of TR_BDF2
-            else if(TR_BDF2_stage == 2) {
-              R_i += gamma_2*normal_fluxes[point][component_i]*
-                     fe_v.shape_value_component(i, point, component_i) *
-                     fe_v.JxW(point);
-            }
-          }
-        }
-        inverse_diagonal_entries.add(dof_indices[i], dof_indices[i], 1.0/(R_i.fastAccessDx(0)));
-        if(external_face == false)
-          inverse_diagonal_entries.add(dof_indices_neighbor[i], dof_indices_neighbor[i], 1.0/(R_i.fastAccessDx(dofs_per_cell)));
-      }
-    }
-  }
-
-  // Now we compute the action of the operator, namely the matrix-vector operator
-  template<int dim>
-  void ConservationLawPreconditioner<dim>::vmult(LinearAlgebra::distributed::Vector<double>&       dst,
-                                                 const LinearAlgebra::distributed::Vector<double>& src) const {
-    TimerOutput::Scope t(time_table, "Action of linear operator preconditioner");
-
-    const unsigned int dofs_per_cell = dof_handler.get_fe().dofs_per_cell;
-
-    std::vector<types::global_dof_index> dof_indices(dofs_per_cell);
-    std::vector<types::global_dof_index> dof_indices_neighbor(dofs_per_cell);
-
-    dst = 0;
-    inverse_diagonal_entries.reinit(dst);
-    src.update_ghost_values();
-
-    const UpdateFlags update_flags = update_values | update_gradients |
-                                     update_quadrature_points | update_JxW_values,
-                      face_update_flags = update_values | update_quadrature_points |
-                                          update_JxW_values |
-                                          update_normal_vectors,
-                      neighbor_face_update_flags = update_values;
-
-    FEValues<dim>        fe_v(mapping, dof_handler.get_fe(), quadrature, update_flags);
-    FEFaceValues<dim>    fe_v_face(mapping, dof_handler.get_fe(), face_quadrature, face_update_flags);
-    FESubfaceValues<dim> fe_v_subface(mapping, dof_handler.get_fe(), face_quadrature, face_update_flags);
-    FEFaceValues<dim>    fe_v_face_neighbor(mapping, dof_handler.get_fe(), face_quadrature, neighbor_face_update_flags);
-    FESubfaceValues<dim> fe_v_subface_neighbor(mapping, dof_handler.get_fe(), face_quadrature, neighbor_face_update_flags);
-
-    Vector<double> local_current_solution(dofs_per_cell),
-                   local_current_solution_neighbor(dofs_per_cell);
-
-    // Then loop over all cells, initialize the FEValues object for the
-    // current cell and call the function that assembles the problem on this
-    // cell.
-    for(const auto& cell: dof_handler.active_cell_iterators()) {
-      if(cell->is_locally_owned()) {
-        fe_v.reinit(cell);
-        cell->get_dof_values(locally_relevant_solution, local_current_solution);
-        cell->get_dof_indices(dof_indices);
-        assemble_cell_term(fe_v, local_current_solution, dof_indices);
-
-        // Then loop over all the faces of this cell.  If a face is part of
-        // the external boundary, then assemble boundary conditions there:
-        for(unsigned int face_no = 0; face_no < GeometryInfo<dim>::faces_per_cell; ++face_no) {
-          if(cell->at_boundary(face_no)) {
-            fe_v_face.reinit(cell, face_no);
-            assemble_face_term(face_no, fe_v_face, fe_v_face,
-                               true, cell->face(face_no)->boundary_id(),
-                               local_current_solution, local_current_solution,
-                               dof_indices, dof_indices);
-          }
-
-          // The alternative is that we are dealing with an internal face.
-          else {
-            if(cell->neighbor(face_no)->has_children()) {
-              const unsigned int neighbor2 = cell->neighbor_of_neighbor(face_no);
-
-              for(unsigned int subface_no = 0; subface_no < cell->face(face_no)->n_children(); ++subface_no) {
-                const typename DoFHandler<dim>::active_cell_iterator
-                neighbor_child = cell->neighbor_child_on_subface(face_no, subface_no);
-
-                Assert(neighbor_child->face(neighbor2) == cell->face(face_no)->child(subface_no), ExcInternalError());
-                Assert(neighbor_child->has_children() == false, ExcInternalError());
-
-                fe_v_subface.reinit(cell, face_no, subface_no);
-                fe_v_face_neighbor.reinit(neighbor_child, neighbor2);
-                neighbor_child->get_dof_values(locally_relevant_solution, local_current_solution_neighbor);
-                neighbor_child->get_dof_indices(dof_indices_neighbor);
-
-                assemble_face_term(face_no, fe_v_subface, fe_v_face_neighbor,
-                                   false, numbers::invalid_unsigned_int,
-                                   local_current_solution, local_current_solution_neighbor,
-                                   dof_indices, dof_indices_neighbor);
-              }
-            }
-
-            // The other possibility we have to care for is if the neighbor
-            // is coarser than the current cell:
-            else if(cell->neighbor(face_no)->level() != cell->level()) {
-              const typename DoFHandler<dim>::cell_iterator neighbor = cell->neighbor(face_no);
-              Assert(neighbor->level() == cell->level() - 1, ExcInternalError());
-
-              const std::pair<unsigned int, unsigned int> faceno_subfaceno = cell->neighbor_of_coarser_neighbor(face_no);
-              const unsigned int neighbor_face_no = faceno_subfaceno.first,
-                                 neighbor_subface_no = faceno_subfaceno.second;
-
-              Assert(neighbor->neighbor_child_on_subface(neighbor_face_no, neighbor_subface_no) == cell,
-                     ExcInternalError());
-
-              fe_v_face.reinit(cell, face_no);
-              fe_v_subface_neighbor.reinit(neighbor, neighbor_face_no, neighbor_subface_no);
-              neighbor->get_dof_values(locally_relevant_solution, local_current_solution_neighbor);
-              neighbor->get_dof_indices(dof_indices_neighbor);
-
-              assemble_face_term(face_no, fe_v_face, fe_v_subface_neighbor,
-                                 false, numbers::invalid_unsigned_int,
-                                 local_current_solution, local_current_solution_neighbor,
-                                 dof_indices, dof_indices_neighbor);
-            }
-            // Same refinement level
-            else {
-              fe_v_face.reinit(cell, face_no);
-              const typename DoFHandler<dim>::cell_iterator neighbor = cell->neighbor(face_no);
-              const unsigned int other_face_no = cell->neighbor_of_neighbor(face_no);
-              fe_v_face_neighbor.reinit(neighbor, other_face_no);
-              neighbor->get_dof_values(locally_relevant_solution, local_current_solution_neighbor);
-              neighbor->get_dof_indices(dof_indices_neighbor);
-              assemble_face_term(face_no, fe_v_face, fe_v_face_neighbor,
-                                 false, numbers::invalid_unsigned_int,
-                                 local_current_solution, local_current_solution_neighbor,
-                                 dof_indices, dof_indices_neighbor);
-            }
-          }
-        }
-      }
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
-    inverse_diagonal_entries.vmult(dst, src);
   }
 
 
@@ -2198,7 +1766,7 @@ namespace Step33 {
     void copy_local_to_global(const std::vector<types::global_dof_index>& dof_indices);
     void assemble_rhs();
 
-    std::pair<unsigned int, double> solve(LinearAlgebra::distributed::Vector<double>& newton_update);
+    std::pair<unsigned int, double> solve(PETScWrappers::MPI::Vector& newton_update);
 
     void compute_refinement_indicators(Vector<double>& indicator) const;
     void refine_grid(const Vector<double>& indicator);
@@ -2256,9 +1824,6 @@ namespace Step33 {
     LA::MPI::Vector locally_relevant_solution,
                     locally_relevant_old_solution;  //--- Extra variables for parallel purposes (read-only)
 
-    LinearAlgebra::distributed::Vector<double> right_hand_side_mf;
-    LinearAlgebra::ReadWriteVector<double>     right_hand_side_exchanger;
-
     // This final set of member variables (except for the object holding all
     // run-time parameters at the very bottom and a screen output stream that
     // only prints something if verbose output has been requested) deals with
@@ -2290,8 +1855,7 @@ namespace Step33 {
     ConditionalOStream ptime_out;    //--- Auxiliary conditional stream for time output
     TimerOutput        time_table;   //--- Auxiliary Table for time
 
-    ConservationLawOperator<dim>       matrix_free;
-    ConservationLawPreconditioner<dim> preconditioner;
+    ConservationLawOperator<dim> matrix_free;
   };
 
 
@@ -2324,8 +1888,8 @@ namespace Step33 {
                Utilities::int_to_string(Utilities::MPI::n_mpi_processes(communicator)) + "proc.dat"),
       ptime_out(time_out, Utilities::MPI::this_mpi_process(communicator) == 0),
       time_table(ptime_out, TimerOutput::never, TimerOutput::wall_times),
-      matrix_free(dof_handler, mapping, quadrature, face_quadrature, time_table, prm, locally_relevant_solution),
-      preconditioner(dof_handler, mapping, quadrature, face_quadrature, time_table, prm, locally_relevant_solution) {
+      matrix_free(dof_handler, mapping, quadrature, face_quadrature, time_table,
+                  prm, locally_relevant_solution, locally_owned_dofs, locally_relevant_dofs) {
     //--- Compute the other two parameters of TR_BDF2 scheme
     if(parameters.time_integration_scheme == "TR_BDF2") {
       parameters.theta = 1.0 - std::sqrt(2)/2.0;
@@ -2391,9 +1955,6 @@ namespace Step33 {
   template<int dim>
   void ConservationLaw<dim>::setup_system() {
     TimerOutput::Scope t(time_table, "Setup system");
-
-    right_hand_side_mf.reinit(locally_owned_dofs, communicator);
-    right_hand_side_exchanger.reinit(locally_owned_dofs, communicator);
 
     //--- Read-only variant of the solution that must be set after the solution
     locally_relevant_solution.reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
@@ -3043,17 +2604,17 @@ namespace Step33 {
   // pair of number of iterations and the final linear residual.
 
   template<int dim>
-  std::pair<unsigned int, double> ConservationLaw<dim>::solve(LinearAlgebra::distributed::Vector<double>& newton_update) {
+  std::pair<unsigned int, double> ConservationLaw<dim>::solve(PETScWrappers::MPI::Vector& newton_update) {
     TimerOutput::Scope t(time_table, "Solve");
 
     switch(parameters.solver) {
       case Parameters::Solver::direct:
       {
         SolverControl  solver_control(1, 0);
-        TrilinosWrappers::SolverDirect::AdditionalData data(parameters.output == Parameters::Solver::verbose);
-        TrilinosWrappers::SolverDirect direct(solver_control, data);
+        //PETScWrappers::SparseDirectMUMPS::AdditionalData data(parameters.output == Parameters::Solver::verbose);
+        PETScWrappers::SparseDirectMUMPS direct(solver_control, communicator);
 
-        direct.solve(newton_update, right_hand_side_mf);
+        direct.solve(matrix_free, newton_update, right_hand_side);
 
         return {solver_control.last_step(), solver_control.last_value()};
       }
@@ -3061,8 +2622,10 @@ namespace Step33 {
       case Parameters::Solver::gmres:
       {
         SolverControl solver_control(parameters.max_iterations, parameters.linear_residual);
-        SolverGMRES<LinearAlgebra::distributed::Vector<double>> gmres(solver_control);
-        gmres.solve(matrix_free, newton_update, right_hand_side_mf, PreconditionIdentity());
+        SolverGMRES<PETScWrappers::MPI::Vector> gmres(solver_control);
+        //PETScWrappers::PreconditionJacobi preconditioner;
+        //preconditioner.initialize(matrix_free);
+        gmres.solve(matrix_free, newton_update, right_hand_side, PreconditionIdentity());
 
         return {solver_control.last_step(), solver_control.last_value()};
       }
@@ -3281,6 +2844,8 @@ namespace Step33 {
   template<int dim>
   void ConservationLaw<dim>::run() {
     make_grid_and_dofs();
+    const unsigned int n_dofs = dof_handler.n_dofs();
+    matrix_free.reinit(communicator, n_dofs, n_dofs, n_dofs, n_dofs);
 
     setup_system();
 
@@ -3322,11 +2887,7 @@ namespace Step33 {
     // computation is, as well as the header for a table that indicates
     // progress of the nonlinear inner iteration:
     LA::MPI::Vector newton_update;
-    LinearAlgebra::distributed::Vector<double> newton_update_mf;
-    LinearAlgebra::ReadWriteVector<double> newton_update_exchanger;
     newton_update.reinit(locally_owned_dofs, communicator);
-    newton_update_mf.reinit(locally_owned_dofs, locally_relevant_dofs, communicator);
-    newton_update_exchanger.reinit(locally_owned_dofs, communicator);
 
     double time = 0.0;
     double next_output = time + parameters.output_step;
@@ -3377,13 +2938,9 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          right_hand_side_exchanger.import(right_hand_side, VectorOperation::insert);
-          right_hand_side_mf.import(right_hand_side_exchanger, VectorOperation::insert);
           if(nonlin_iter == 0) {
             matrix_free.set_current_time(time + parameters.time_step);
             matrix_free.set_lambda_old(lambda_old);
-            preconditioner.set_current_time(time + parameters.time_step);
-            preconditioner.set_lambda_old(lambda_old);
           }
 
           const double res_norm = right_hand_side.l2_norm();
@@ -3393,11 +2950,9 @@ namespace Step33 {
             break;
           }
           else {
-            newton_update_mf = 0;
+            newton_update = 0;
 
-            std::pair<unsigned int, double> convergence = solve(newton_update_mf);
-            newton_update_exchanger.import(newton_update_mf, VectorOperation::insert);
-            newton_update.import(newton_update_exchanger, VectorOperation::insert);
+            std::pair<unsigned int, double> convergence = solve(newton_update);
 
             current_solution += newton_update;
 
@@ -3422,15 +2977,10 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          right_hand_side_exchanger.import(right_hand_side, VectorOperation::insert);
-          right_hand_side_mf.import(right_hand_side_exchanger, VectorOperation::insert);
           if(nonlin_iter == 0) {
             matrix_free.set_current_time(time + 2.0*parameters.theta*parameters.time_step);
             matrix_free.set_lambda_old(lambda_old);
             matrix_free.set_TR_BDF2_stage(TR_BDF2_stage);
-            preconditioner.set_current_time(time + 2.0*parameters.theta*parameters.time_step);
-            preconditioner.set_lambda_old(lambda_old);
-            preconditioner.set_TR_BDF2_stage(TR_BDF2_stage);
           }
 
           const double res_norm = right_hand_side.l2_norm();
@@ -3440,11 +2990,9 @@ namespace Step33 {
             break;
           }
           else {
-            newton_update_mf = 0;
+            newton_update = 0;
 
-            std::pair<unsigned int, double> convergence = solve(newton_update_mf);
-            newton_update_exchanger.import(newton_update_mf, VectorOperation::insert);
-            newton_update.import(newton_update_exchanger, VectorOperation::insert);
+            std::pair<unsigned int, double> convergence = solve(newton_update);
 
             current_solution += newton_update;
 
@@ -3472,15 +3020,10 @@ namespace Step33 {
           locally_relevant_solution = current_solution;
           right_hand_side = right_hand_side_explicit;
           assemble_rhs();
-          right_hand_side_exchanger.import(right_hand_side, VectorOperation::insert);
-          right_hand_side_mf.import(right_hand_side_exchanger, VectorOperation::insert);
           if(nonlin_iter == 0) {
             matrix_free.set_current_time(time + parameters.time_step);
             matrix_free.set_lambda_old(lambda_old);
             matrix_free.set_TR_BDF2_stage(TR_BDF2_stage);
-            preconditioner.set_current_time(time + parameters.time_step);
-            preconditioner.set_lambda_old(lambda_old);
-            preconditioner.set_TR_BDF2_stage(TR_BDF2_stage);
           }
 
           const double res_norm = right_hand_side.l2_norm();
@@ -3490,11 +3033,7 @@ namespace Step33 {
             break;
           }
           else {
-            newton_update_mf = 0;
-
-            std::pair<unsigned int, double> convergence = solve(newton_update_mf);
-            newton_update_exchanger.import(newton_update_mf, VectorOperation::insert);
-            newton_update.import(newton_update_exchanger, VectorOperation::insert);
+            std::pair<unsigned int, double> convergence = solve(newton_update);
 
             current_solution += newton_update;
 
@@ -3580,7 +3119,7 @@ int main(int argc, char *argv[]) {
     Parameters::AllParameters<2>::declare_parameters(prm);
     prm.parse_input(argv[1]);
 
-    Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, dealii::numbers::invalid_unsigned_int);
+    Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv, 1);
 
     ConservationLaw<2> cons(prm);
     cons.run();
