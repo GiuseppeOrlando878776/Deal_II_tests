@@ -309,6 +309,65 @@ namespace Step35 {
 
 
 
+  // Class for post-processing vorticity
+  //
+  template<int dim>
+  class PostprocessorVorticity: public DataPostprocessor<dim> {
+  public:
+    virtual void evaluate_vector_field(const DataPostprocessorInputs::Vector<dim>& inputs,
+                                       std::vector<Vector<double>>&                computed_quantities) const override;
+
+    virtual std::vector<std::string> get_names() const override;
+
+    virtual std::vector<DataComponentInterpretation::DataComponentInterpretation> get_data_component_interpretation() const override;
+
+    virtual UpdateFlags get_needed_update_flags() const override;
+  };
+
+
+  template <int dim>
+  void PostprocessorVorticity<dim>::evaluate_vector_field(const DataPostprocessorInputs::Vector<dim>& inputs,
+                                                          std::vector<Vector<double>>&                computed_quantities) const {
+  const unsigned int n_quadrature_points = inputs.solution_values.size();
+
+  Assert(inputs.solution_gradients.size() == n_quadrature_points, ExcInternalError());
+  Assert(computed_quantities.size() == n_quadrature_points, ExcInternalError());
+
+  Assert(inputs.solution_values[0].size() == dim, ExcInternalError());
+
+  Assert(computed_quantities[0].size() == 1, ExcInternalError());
+
+  for(unsigned int q = 0; q < n_quadrature_points; ++q)
+    computed_quantities[q](0) = inputs.solution_gradients[q][1][0] - inputs.solution_gradients[q][0][1];
+  }
+
+
+  template<int dim>
+  std::vector<std::string> PostprocessorVorticity<dim>::get_names() const {
+    std::vector<std::string> names;
+    names.emplace_back("vorticity");
+
+    return names;
+  }
+
+
+  template<int dim>
+  std::vector<DataComponentInterpretation::DataComponentInterpretation>
+  PostprocessorVorticity<dim>::get_data_component_interpretation() const {
+    std::vector<DataComponentInterpretation::DataComponentInterpretation> interpretation;
+    interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+
+    return interpretation;
+  }
+
+
+  template<int dim>
+  UpdateFlags PostprocessorVorticity<dim>::get_needed_update_flags() const {
+    return update_gradients;
+  }
+
+
+
   // @sect3{ <code>NavierStokesProjectionOperator::NavierStokesProjectionOperator</code> }
   //
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
@@ -331,8 +390,6 @@ namespace Step35 {
     void vmult_rhs_pressure(Vec& dst, const std::vector<Vec>& src) const;
 
     void vmult_grad_p_projection(Vec& dst, const Vec& src) const;
-
-    void vmult_vorticity_projection(Vec& dst, const Vec& src) const;
 
     virtual void compute_diagonal() override;
 
@@ -425,15 +482,6 @@ namespace Step35 {
                                                   Vec&                                         dst,
                                                   const Vec&                                   src,
                                                   const std::pair<unsigned int, unsigned int>& cell_range) const;
-
-    void assemble_cell_term_projection_vorticity(const MatrixFree<dim, Number>&               data,
-                                                 Vec&                                         dst,
-                                                 const Vec&                                   src,
-                                                 const std::pair<unsigned int, unsigned int>& cell_range) const;
-    void assemble_rhs_cell_term_projection_vorticity(const MatrixFree<dim, Number>&               data,
-                                                     Vec&                                         dst,
-                                                     const Vec&                                   src,
-                                                     const std::pair<unsigned int, unsigned int>& cell_range) const;
 
     void assemble_diagonal_cell_term_velocity(const MatrixFree<dim, Number>&               data,
                                               Vec&                                         dst,
@@ -1172,10 +1220,6 @@ namespace Step35 {
       this->data->cell_loop(&NavierStokesProjectionOperator::assemble_cell_term_projection_grad_p,
                             this, dst, src, false);
     }
-    else if(NS_stage == 4) {
-      this->data->cell_loop(&NavierStokesProjectionOperator::assemble_cell_term_projection_vorticity,
-                            this, dst, src, false);
-    }
     else
       Assert(false, ExcNotImplemented());
   }
@@ -1229,62 +1273,6 @@ namespace Step35 {
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   vmult_grad_p_projection(Vec& dst, const Vec& src) const {
     this->data->cell_loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_projection_grad_p,
-                          this, dst, src, true);
-  }
-
-
-  // Assemble cell term for the projection of vorticity
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  assemble_cell_term_projection_vorticity(const MatrixFree<dim, Number>&               data,
-                                          Vec&                                         dst,
-                                          const Vec&                                   src,
-                                          const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi(data, 1, 1);
-
-    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-      phi.reinit(cell);
-      phi.gather_evaluate(src, true, false);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q)
-        phi.submit_value(phi.get_value(q), q);
-      phi.integrate_scatter(true, false, dst);
-    }
-  }
-
-
-  // Assemble rhs cell term for the projection of vorticity
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  assemble_rhs_cell_term_projection_vorticity(const MatrixFree<dim, Number>&               data,
-                                              Vec&                                         dst,
-                                              const Vec&                                   src,
-                                              const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi(data, 1, 1);
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_vel(data, 0, 1);
-
-    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-      phi_vel.reinit(cell);
-      phi_vel.gather_evaluate(src, false, true);
-      phi.reinit(cell);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        VectorizedArray<Number> rot_u;
-        const auto& grad_u = phi_vel.get_gradient(q);
-        rot_u = grad_u[1][0] - grad_u[0][1];
-        phi.submit_value(rot_u, q);
-      }
-      phi.integrate_scatter(true, false, dst);
-    }
-  }
-
-
-  // Put together all the previous steps for vorticity
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
-  vmult_vorticity_projection(Vec& dst, const Vec& src) const {
-    this->data->cell_loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_projection_vorticity,
                           this, dst, src, true);
   }
 
@@ -1638,7 +1626,6 @@ namespace Step35 {
     LinearAlgebra::distributed::Vector<double> pres_n;
     LinearAlgebra::distributed::Vector<double> pres_int;
     LinearAlgebra::distributed::Vector<double> rhs_p;
-    LinearAlgebra::distributed::Vector<double> pres_tmp;
 
     LinearAlgebra::distributed::Vector<double> u_n;
     LinearAlgebra::distributed::Vector<double> u_n_minus_1;
@@ -1669,8 +1656,6 @@ namespace Step35 {
     void projection_step();
 
     void project_grad(const unsigned int flag);
-
-    void project_vorticity();
 
     void output_results(const unsigned int step);
 
@@ -1809,7 +1794,6 @@ namespace Step35 {
     matrix_free_storage->initialize_dof_vector(pres_int, 1);
     matrix_free_storage->initialize_dof_vector(pres_n, 1);
     matrix_free_storage->initialize_dof_vector(rhs_p, 1);
-    matrix_free_storage->initialize_dof_vector(pres_tmp, 1);
   }
 
 
@@ -1970,23 +1954,6 @@ namespace Step35 {
   }
 
 
-  // This implements the projection step for the vorticity
-  //
-  template<int dim>
-  void NavierStokesProjection<dim>::project_vorticity() {
-    Assert(dim == 2, ExcNotImplemented());
-    const std::vector<unsigned int> tmp = {1};
-    navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
-    navier_stokes_matrix.vmult_vorticity_projection(rhs_p, u_n);
-
-    navier_stokes_matrix.set_NS_stage(4);
-
-    SolverControl solver_control(vel_max_its, 1e-12*rhs_p.l2_norm());
-    SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
-    cg.solve(navier_stokes_matrix, pres_tmp, rhs_p, PreconditionIdentity());
-  }
-
-
   // @sect4{ <code>NavierStokesProjection::output_results</code> }
 
   // This method plots the current solution. The main difficulty is that we want
@@ -2000,11 +1967,10 @@ namespace Step35 {
   //
   template<int dim>
   void NavierStokesProjection<dim>::output_results(const unsigned int step) {
-    project_vorticity();
-    const FESystem<dim> joint_fe(fe_velocity, 1, fe_pressure, 1, fe_pressure, 1);
+    const FESystem<dim> joint_fe(fe_velocity, 1, fe_pressure, 1);
     DoFHandler<dim>     joint_dof_handler(triangulation);
     joint_dof_handler.distribute_dofs(joint_fe);
-    Assert(joint_dof_handler.n_dofs() == (dof_handler_velocity.n_dofs() + 2*dof_handler_pressure.n_dofs()),
+    Assert(joint_dof_handler.n_dofs() == (dof_handler_velocity.n_dofs() + dof_handler_pressure.n_dofs()),
            ExcInternalError());
     Vector<double> joint_solution(joint_dof_handler.n_dofs());
     std::vector<types::global_dof_index> loc_joint_dof_indices(joint_fe.n_dofs_per_cell()),
@@ -2030,11 +1996,6 @@ namespace Step35 {
                    ExcInternalError());
             joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
             break;
-          case 2:
-            Assert(joint_fe.system_to_base_index(i).first.second < dim,
-                   ExcInternalError());
-            joint_solution(loc_joint_dof_indices[i]) = pres_tmp(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
-            break;
           default:
             Assert(false, ExcInternalError());
         }
@@ -2042,15 +2003,15 @@ namespace Step35 {
     }
     std::vector<std::string> joint_solution_names(dim, "v");
     joint_solution_names.emplace_back("p");
-    joint_solution_names.emplace_back("rot_u");
     DataOut<dim> data_out;
     data_out.attach_dof_handler(joint_dof_handler);
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
-    component_interpretation(dim + 2, DataComponentInterpretation::component_is_part_of_vector);
+    component_interpretation(dim + 1, DataComponentInterpretation::component_is_part_of_vector);
     component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
-    component_interpretation[dim + 1] = DataComponentInterpretation::component_is_scalar;
     data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
-    data_out.build_patches(EquationData::degree_p + 1);
+    PostprocessorVorticity<dim> postprocessor;
+    data_out.add_data_vector(dof_handler_velocity, u_n, postprocessor);
+    data_out.build_patches();
     std::ofstream output("./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtk");
     data_out.write_vtk(output);
   }
@@ -2117,7 +2078,6 @@ namespace Step35 {
       TR_BDF2_stage = 1; //--- Flag to pass at first stage at next step
       if(n % output_interval == 0) {
         verbose_cout << "Plotting Solution final" << std::endl;
-        project_vorticity();
         output_results(n);
       }
       if(T - time < dt && T - time > 1e-10) {
