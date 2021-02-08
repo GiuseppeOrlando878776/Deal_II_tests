@@ -241,7 +241,7 @@ namespace Step35 {
   // In the next namespace, we declare the initial and boundary conditions
   //
   namespace EquationData {
-    static const unsigned int degree_p = 2;
+    static const unsigned int degree_p = 1;
 
     // With this class defined, we declare class that describes the boundary
     // conditions for velocity:
@@ -1640,9 +1640,6 @@ namespace Step35 {
     LinearAlgebra::distributed::Vector<double> u_tmp;
     LinearAlgebra::distributed::Vector<double> rhs_u;
 
-    LinearAlgebra::distributed::Vector<double> u_n_k;
-    LinearAlgebra::distributed::Vector<double> u_n_gamma_k;
-
     DeclException2(ExcInvalidTimeStep,
                    double,
                    double,
@@ -1663,8 +1660,6 @@ namespace Step35 {
     void project_grad(const unsigned int flag);
 
     void analyze_results();
-
-    void analyze_results_2();
 
     void output_results(const unsigned int step);
 
@@ -1826,8 +1821,6 @@ namespace Step35 {
     matrix_free_storage->initialize_dof_vector(u_n_minus_1, 0);
     matrix_free_storage->initialize_dof_vector(u_n_gamma, 0);
     matrix_free_storage->initialize_dof_vector(u_tmp, 0);
-    matrix_free_storage->initialize_dof_vector(u_n_k, 0);
-    matrix_free_storage->initialize_dof_vector(u_n_gamma_k, 0);
     matrix_free_storage->initialize_dof_vector(pres_int, 1);
     matrix_free_storage->initialize_dof_vector(pres_n, 1);
     matrix_free_storage->initialize_dof_vector(rhs_p, 1);
@@ -1888,75 +1881,34 @@ namespace Step35 {
   void NavierStokesProjection<dim>::diffusion_step() {
     const std::vector<unsigned int> tmp = {0};
     navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
-    if(TR_BDF2_stage == 1) {
-      vel_exact.advance_time(0.5*gamma*dt);
-      //VectorTools::interpolate(dof_handler_velocity, vel_exact, u_extr);
-      vel_exact.advance_time(0.5*gamma*dt);
-      pres_exact.advance_time(gamma*dt);
-    }
-    else {
-      vel_exact.advance_time(0.5*(1.0 - gamma)*dt);
-      //VectorTools::interpolate(dof_handler_velocity, vel_exact, u_extr);
-      vel_exact.advance_time(0.5*(1.0 - gamma)*dt);
-      pres_exact.advance_time((1.0 - gamma)*dt);
-    }
+
     navier_stokes_matrix.set_time(vel_exact.get_time());
 
     navier_stokes_matrix.set_NS_stage(1);
 
     if(TR_BDF2_stage == 1) {
-      u_n_k = u_extr;
-      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_extr, pres_n});
+      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n, pres_n});
+      navier_stokes_matrix.set_u_extr(u_n);
+      u_star = u_n;
     }
     else {
-      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_extr});
-      u_n_gamma_k = u_extr;
+      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_n_gamma});
+      navier_stokes_matrix.set_u_extr(u_n_gamma);
+      u_star = u_n_gamma;
     }
 
-    for(unsigned int iter = 0; iter < 100; ++iter) {
-      if(TR_BDF2_stage == 1) {
-        navier_stokes_matrix.set_u_extr(u_n_k);
-        u_star = u_n_k;
-      }
-      else {
-        navier_stokes_matrix.set_u_extr(u_n_gamma_k);
-        u_star = u_n_gamma_k;
-      }
-
-      //u_star = u_extr; //--- Use as initial guess of GMRES
-
-      SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
-      SolverGMRES<LinearAlgebra::distributed::Vector<double>>
-      gmres(solver_control, SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData(vel_Krylov_size));
-      PreconditionJacobi<NavierStokesProjectionOperator<dim,
-                                                        EquationData::degree_p,
-                                                        EquationData::degree_p + 1,
-                                                        EquationData::degree_p + 2,
-                                                        LinearAlgebra::distributed::Vector<double>,
-                                                        double>> preconditioner;
-      navier_stokes_matrix.compute_diagonal();
-      preconditioner.initialize(navier_stokes_matrix);
-      gmres.solve(navier_stokes_matrix, u_star, rhs_u, preconditioner);
-      double error = 0.0;
-      u_tmp = u_star;
-      if(TR_BDF2_stage == 1) {
-        u_tmp -= u_n_k;
-        VectorTools::integrate_difference(dof_handler_velocity, u_tmp, ZeroFunction<dim>(dim),
-                                          H1_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
-        error = VectorTools::compute_global_error(triangulation, H1_error_per_cell_vel, VectorTools::H1_norm);
-        u_n_k = u_star;
-      }
-      else {
-        u_tmp -= u_n_gamma_k;
-        VectorTools::integrate_difference(dof_handler_velocity, u_tmp, ZeroFunction<dim>(dim),
-                                          H1_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
-        error = VectorTools::compute_global_error(triangulation, H1_error_per_cell_vel, VectorTools::H1_norm);
-        u_n_gamma_k = u_star;
-      }
-      if(error < 1e-6)
-        break;
-    }
-
+    SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
+    SolverGMRES<LinearAlgebra::distributed::Vector<double>>
+    gmres(solver_control, SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData(vel_Krylov_size));
+    PreconditionJacobi<NavierStokesProjectionOperator<dim,
+                                                      EquationData::degree_p,
+                                                      EquationData::degree_p + 1,
+                                                      EquationData::degree_p + 2,
+                                                      LinearAlgebra::distributed::Vector<double>,
+                                                      double>> preconditioner;
+    navier_stokes_matrix.compute_diagonal();
+    preconditioner.initialize(navier_stokes_matrix);
+    gmres.solve(navier_stokes_matrix, u_star, rhs_u, preconditioner);
   }
 
 
@@ -2093,24 +2045,6 @@ namespace Step35 {
   }
 
 
-  // Since we have solved a problem with analytic solution, we want to verify
-  // the correctness of our implementation by computing the errors of the
-  // numerical result against the analytic solution.
-  //
-  template <int dim>
-  void NavierStokesProjection<dim>::analyze_results_2() {
-    VectorTools::integrate_difference(dof_handler_velocity, u_n_gamma, vel_exact,
-                                      H1_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
-    const double error_vel_H1 = VectorTools::compute_global_error(triangulation, H1_error_per_cell_vel, VectorTools::H1_norm);
-    std::cout << "Verification via H1 error velocity:    "<< error_vel_H1 << std::endl;
-
-    VectorTools::integrate_difference(dof_handler_pressure, pres_int, pres_exact,
-                                      L2_error_per_cell_pres, quadrature_pressure, VectorTools::L2_norm);
-    const double error_pres_L2 = VectorTools::compute_global_error(triangulation, L2_error_per_cell_pres, VectorTools::L2_norm);
-    std::cout << "Verification via L2 error pressure:    "<< error_pres_L2 << std::endl;
-  }
-
-
   // @sect4{ <code>NavierStokesProjection::output_results</code> }
 
   // This method plots the current solution. The main difficulty is that we want
@@ -2166,7 +2100,7 @@ namespace Step35 {
     component_interpretation(dim + 1, DataComponentInterpretation::component_is_part_of_vector);
     component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
     data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
-    data_out.build_patches(EquationData::degree_p + 1);
+    data_out.build_patches();
     std::ofstream output("./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtk");
     data_out.write_vtk(output);
   }
@@ -2236,9 +2170,9 @@ namespace Step35 {
       std::cout << "Step = " << n << " Time = " << time << std::endl;
       //--- First stage of TR-BDF2
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
-      verbose_cout << "  Interpolating the velocity stage 1" << std::endl;
-      interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 1 " << std::endl;
+      vel_exact.advance_time(gamma*dt);
+      pres_exact.advance_time(gamma*dt);
       diffusion_step();
       navier_stokes_matrix.advance_p_time(gamma*dt);
       verbose_cout << "  Projection Step stage 1" << std::endl;
@@ -2252,13 +2186,12 @@ namespace Step35 {
       u_tmp.equ(-gamma*dt, u_tmp);
       u_n_gamma += u_tmp;
       u_n_minus_1 = u_n;
-      analyze_results_2();
       TR_BDF2_stage = 2; //--- Flag to pass at second stage
       //--- Second stage of TR-BDF2
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
-      verbose_cout << "  Interpolating the velocity stage 2" << std::endl;
-      interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 2 " << std::endl;
+      vel_exact.advance_time((1.0 - gamma)*dt);
+      pres_exact.advance_time((1.0 - gamma)*dt);
       diffusion_step();
       navier_stokes_matrix.advance_p_time((1.0 - gamma)*dt);
       verbose_cout << "  Projection Step stage 2" << std::endl;
