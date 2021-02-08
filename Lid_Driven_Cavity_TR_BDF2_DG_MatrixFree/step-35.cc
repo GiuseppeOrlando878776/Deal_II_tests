@@ -1612,7 +1612,7 @@ namespace Step35 {
     EquationData::Velocity<dim> vel_boundary;
     EquationData::Pressure<dim> pres_init;
 
-    Triangulation<dim> triangulation;
+    parallel::distributed::Triangulation<dim> triangulation;
 
     FESystem<dim> fe_velocity;
     FESystem<dim> fe_pressure;
@@ -1678,6 +1678,8 @@ namespace Step35 {
     Vector<double> H1_error_per_cell_vel;
 
     std::string saving_dir;
+
+    ConditionalOStream pcout;
   };
 
 
@@ -1697,6 +1699,7 @@ namespace Step35 {
     dt(data.dt),
     vel_boundary(data.initial_time),
     pres_init(data.initial_time),
+    triangulation(MPI_COMM_WORLD),
     fe_velocity(FE_DGQ<dim>(EquationData::degree_p + 1), dim),
     fe_pressure(FE_DGQ<dim>(EquationData::degree_p), 1),
     dof_handler_velocity(triangulation),
@@ -1710,9 +1713,10 @@ namespace Step35 {
     vel_update_prec(data.vel_update_prec),
     vel_eps(data.vel_eps),
     vel_diag_strength(data.vel_diag_strength),
-    saving_dir(data.dir) {
+    saving_dir(data.dir),
+    pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0) {
       if(EquationData::degree_p < 1) {
-        std::cout
+        pcout
         << " WARNING: The chosen pair of finite element spaces is not stable."
         << std::endl
         << " The obtained results will be nonsense" << std::endl;
@@ -1742,9 +1746,9 @@ namespace Step35 {
       upper_right[d] = upper_right[0];
     GridGenerator::hyper_rectangle(triangulation, Point<dim>(), upper_right, true);
 
-    std::cout << "Number of refines = " << n_refines << std::endl;
+    pcout << "Number of refines = " << n_refines << std::endl;
     triangulation.refine_global(n_refines);
-    std::cout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
+    pcout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
 
     Vector<double> error_per_cell_tmp(triangulation.n_active_cells());
     H1_error_per_cell_vel.reinit(error_per_cell_tmp);
@@ -1752,12 +1756,12 @@ namespace Step35 {
     dof_handler_velocity.distribute_dofs(fe_velocity);
     dof_handler_pressure.distribute_dofs(fe_pressure);
 
-    std::cout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
-              << std::endl
-              << "dim (M_h) = " << dof_handler_pressure.n_dofs()
-              << std::endl
-              << "Re        = " << Re << std::endl
-              << std::endl;
+    pcout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
+          << std::endl
+          << "dim (M_h) = " << dof_handler_pressure.n_dofs()
+          << std::endl
+          << "Re        = " << Re << std::endl
+          << std::endl;
 
     typename MatrixFree<dim, double>::AdditionalData additional_data;
     additional_data.mapping_update_flags = (update_gradients | update_JxW_values |
@@ -1981,23 +1985,25 @@ namespace Step35 {
                                                    vel_cell     = dof_handler_velocity.begin_active(),
                                                    pres_cell    = dof_handler_pressure.begin_active();
     for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
-      joint_cell->get_dof_indices(loc_joint_dof_indices);
-      vel_cell->get_dof_indices(loc_vel_dof_indices);
-      pres_cell->get_dof_indices(loc_pres_dof_indices);
-      for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
-        switch(joint_fe.system_to_base_index(i).first.first) {
-          case 0:
-            Assert(joint_fe.system_to_base_index(i).first.second < dim,
-                   ExcInternalError());
-            joint_solution(loc_joint_dof_indices[i]) = u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
-            break;
-          case 1:
-            Assert(joint_fe.system_to_base_index(i).first.second == 0,
-                   ExcInternalError());
-            joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
-            break;
-          default:
-            Assert(false, ExcInternalError());
+      if(joint_cell->is_locally_owned()) {
+        joint_cell->get_dof_indices(loc_joint_dof_indices);
+        vel_cell->get_dof_indices(loc_vel_dof_indices);
+        pres_cell->get_dof_indices(loc_pres_dof_indices);
+        for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
+          switch(joint_fe.system_to_base_index(i).first.first) {
+            case 0:
+              Assert(joint_fe.system_to_base_index(i).first.second < dim,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            case 1:
+              Assert(joint_fe.system_to_base_index(i).first.second == 0,
+                    ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            default:
+              Assert(false, ExcInternalError());
+          }
         }
       }
     }
@@ -2012,8 +2018,8 @@ namespace Step35 {
     PostprocessorVorticity<dim> postprocessor;
     data_out.add_data_vector(dof_handler_velocity, u_n, postprocessor);
     data_out.build_patches();
-    std::ofstream output("./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtk");
-    data_out.write_vtk(output);
+    const std::string output = "./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtu";
+    data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
   }
 
 
@@ -2029,7 +2035,7 @@ namespace Step35 {
   //
   template<int dim>
   void NavierStokesProjection<dim>::run(const bool verbose, const unsigned int output_interval) {
-    ConditionalOStream verbose_cout(std::cout, verbose);
+    ConditionalOStream verbose_cout(std::cout, verbose && Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
 
     output_results(1);
     double time = t_0 + dt;
@@ -2037,7 +2043,7 @@ namespace Step35 {
     while(std::abs(T - time) > 1e-10) {
       time += dt;
       n++;
-      std::cout << "Step = " << n << " Time = " << time << std::endl;
+      pcout << "Step = " << n << " Time = " << time << std::endl;
       //--- First stage of TR-BDF2
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
       verbose_cout << "  Interpolating the velocity stage 1" << std::endl;
@@ -2094,17 +2100,29 @@ namespace Step35 {
 
 // The main function looks very much like in all the other tutorial programs, so
 // there is little to comment on here:
-int main() {
+int main(int argc, char *argv[]) {
   try {
     using namespace Step35;
 
     RunTimeParameters::Data_Storage data;
     data.read_data("parameter-file.prm");
 
-    deallog.depth_console(data.verbose ? 2 : 0);
+    Utilities::MPI::MPI_InitFinalize mpi_init(argc, argv, -1);
+
+    const auto& curr_rank = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
+    deallog.depth_console(data.verbose && curr_rank == 0 ? 2 : 0);
 
     NavierStokesProjection<2> test(data);
     test.run(data.verbose, data.output_interval);
+
+    if(curr_rank == 0)
+      std::cout << "----------------------------------------------------"
+                << std::endl
+                << "Apparently everything went fine!" << std::endl
+                << "Don't forget to brush your teeth :-)" << std::endl
+                << std::endl;
+
+    return 0;
   }
   catch(std::exception &exc) {
     std::cerr << std::endl
@@ -2129,10 +2147,5 @@ int main() {
               << std::endl;
     return 1;
   }
-  std::cout << "----------------------------------------------------"
-            << std::endl
-            << "Apparently everything went fine!" << std::endl
-            << "Don't forget to brush your teeth :-)" << std::endl
-            << std::endl;
-  return 0;
+
 }
