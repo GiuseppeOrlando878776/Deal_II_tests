@@ -506,6 +506,19 @@ namespace Step35 {
                                                   Vec&                                         dst,
                                                   const Vec&                                   src,
                                                   const std::pair<unsigned int, unsigned int>& face_range) const;
+
+    void assemble_diagonal_cell_term_streamline(const MatrixFree<dim, Number>&               data,
+                                               Vec&                                         dst,
+                                               const Vec&                                   src,
+                                               const std::pair<unsigned int, unsigned int>& cell_range) const;
+    void assemble_diagonal_face_term_streamline(const MatrixFree<dim, Number>&               data,
+                                                Vec&                                         dst,
+                                                const Vec&                                   src,
+                                                const std::pair<unsigned int, unsigned int>& cell_range) const {}
+    void assemble_diagonal_boundary_term_streamline(const MatrixFree<dim, Number>&               data,
+                                                    Vec&                                         dst,
+                                                    const Vec&                                   src,
+                                                    const std::pair<unsigned int, unsigned int>& cell_range) const {}
   };
 
 
@@ -1635,26 +1648,76 @@ namespace Step35 {
   }
 
 
+  // Assemble diagonal cell term for the velocity
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_diagonal_cell_term_streamline(const MatrixFree<dim, Number>&               data,
+                                         Vec&                                         dst,
+                                         const Vec&                                   src,
+                                         const std::pair<unsigned int, unsigned int>& cell_range) const {
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d, 1, Number> phi(data, 2);
+
+    AlignedVector<VectorizedArray<Number>> diagonal(phi.dofs_per_component);
+    VectorizedArray<Number> tmp = make_vectorized_array<Number>(1.0);
+
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi.reinit(cell);
+      for(unsigned int i = 0; i < phi.dofs_per_component; ++i) {
+        for(unsigned int j = 0; j < phi.dofs_per_component; ++j)
+          phi.submit_dof_value(VectorizedArray<Number>(), j);
+        phi.submit_dof_value(tmp, i);
+        phi.evaluate(false, true);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q)
+          phi.submit_gradient(phi.get_gradient(q), q);
+        phi.integrate(false, true);
+        diagonal[i] = phi.get_dof_value(i);
+      }
+      for(unsigned int i = 0; i < phi.dofs_per_component; ++i)
+        phi.submit_dof_value(diagonal[i], i);
+      phi.distribute_local_to_global(dst);
+    }
+  }
+
+
   // Put together all previous steps
   //
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::compute_diagonal() {
-    Assert(NS_stage == 1, ExcInternalError());
-    this->inverse_diagonal_entries.reset(new DiagonalMatrix<Vec>());
-    auto& inverse_diagonal = this->inverse_diagonal_entries->get_vector();
-    this->data->initialize_dof_vector(inverse_diagonal, 0);
-    Vec dummy;
-    dummy.reinit(inverse_diagonal.local_size());
-    this->data->loop(&NavierStokesProjectionOperator::assemble_diagonal_cell_term_velocity,
-                     &NavierStokesProjectionOperator::assemble_diagonal_face_term_velocity,
-                     &NavierStokesProjectionOperator::assemble_diagonal_boundary_term_velocity,
-                     this, inverse_diagonal, dummy, false,
-                     MatrixFree<dim, Number>::DataAccessOnFaces::unspecified,
-                     MatrixFree<dim, Number>::DataAccessOnFaces::unspecified);
-    for(unsigned int i = 0; i < inverse_diagonal.local_size(); ++i) {
-      Assert(inverse_diagonal.local_element(i) != 0.0,
-             ExcMessage("No diagonal entry in a definite operator should be zero"));
-      inverse_diagonal.local_element(i) = 1.0/inverse_diagonal.local_element(i);
+    Assert(NS_stage == 1 || NS_stage == 4, ExcInternalError());
+    if(NS_stage == 1) {
+      this->inverse_diagonal_entries.reset(new DiagonalMatrix<Vec>());
+      auto& inverse_diagonal = this->inverse_diagonal_entries->get_vector();
+      this->data->initialize_dof_vector(inverse_diagonal, 0);
+      Vec dummy;
+      dummy.reinit(inverse_diagonal.local_size());
+      this->data->loop(&NavierStokesProjectionOperator::assemble_diagonal_cell_term_velocity,
+                       &NavierStokesProjectionOperator::assemble_diagonal_face_term_velocity,
+                       &NavierStokesProjectionOperator::assemble_diagonal_boundary_term_velocity,
+                       this, inverse_diagonal, dummy, false,
+                       MatrixFree<dim, Number>::DataAccessOnFaces::unspecified,
+                       MatrixFree<dim, Number>::DataAccessOnFaces::unspecified);
+      for(unsigned int i = 0; i < inverse_diagonal.local_size(); ++i) {
+        Assert(inverse_diagonal.local_element(i) != 0.0,
+              ExcMessage("No diagonal entry in a definite operator should be zero"));
+        inverse_diagonal.local_element(i) = 1.0/inverse_diagonal.local_element(i);
+      }
+    }
+    else {
+      this->inverse_diagonal_entries.reset(new DiagonalMatrix<Vec>());
+      auto& inverse_diagonal = this->inverse_diagonal_entries->get_vector();
+      this->data->initialize_dof_vector(inverse_diagonal, 2);
+      Vec dummy;
+      dummy.reinit(inverse_diagonal.local_size());
+      this->data->loop(&NavierStokesProjectionOperator::assemble_diagonal_cell_term_streamline,
+                       &NavierStokesProjectionOperator::assemble_diagonal_face_term_streamline,
+                       &NavierStokesProjectionOperator::assemble_diagonal_boundary_term_streamline,
+                       this, inverse_diagonal, dummy, false);
+      for(unsigned int i = 0; i < inverse_diagonal.local_size(); ++i) {
+        Assert(inverse_diagonal.local_element(i) != 0.0,
+              ExcMessage("No diagonal entry in a definite operator should be zero"));
+        inverse_diagonal.local_element(i) = 1.0/inverse_diagonal.local_element(i);
+      }
     }
   }
 
@@ -1837,13 +1900,6 @@ namespace Step35 {
     dof_handler_velocity.distribute_dofs(fe_velocity);
     dof_handler_pressure.distribute_dofs(fe_pressure);
     dof_handler_streamline.distribute_dofs(fe_streamline);
-
-    IndexSet locally_relevant_dofs;
-    DoFTools::extract_locally_relevant_dofs(dof_handler_streamline, locally_relevant_dofs);
-    constraints_streamline.reinit(locally_relevant_dofs);
-    DoFTools::make_hanging_node_constraints(dof_handler_streamline, constraints_streamline);
-    VectorTools::interpolate_boundary_values(dof_handler_streamline, 2, ZeroFunction<dim>(), constraints_streamline);
-    constraints_streamline.close();
 
     pcout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
           << std::endl
@@ -2065,11 +2121,19 @@ namespace Step35 {
 
     navier_stokes_matrix.set_NS_stage(4);
 
-    SolverControl solver_control(vel_max_its, 1e-12*omega.l2_norm());
-    SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
-    cg.solve(navier_stokes_matrix, streamline, omega, PreconditionIdentity());
+    IterationNumberControl solver_control(vel_max_its, 1e-12*omega.l2_norm());
+    SolverGMRES<LinearAlgebra::distributed::Vector<double>> gmres(solver_control);
+    PreconditionJacobi<NavierStokesProjectionOperator<dim,
+                                                      EquationData::degree_p,
+                                                      EquationData::degree_p + 1,
+                                                      EquationData::degree_p + 2,
+                                                      LinearAlgebra::distributed::Vector<double>,
+                                                      double>> preconditioner;
+    navier_stokes_matrix.compute_diagonal();
+    preconditioner.initialize(navier_stokes_matrix);
+    gmres.solve(navier_stokes_matrix, streamline, omega, preconditioner);
 
-    constraints_streamline.distribute(streamline);
+    LinearAlgebra::set_zero_mean_value(streamline);
   }
 
 
