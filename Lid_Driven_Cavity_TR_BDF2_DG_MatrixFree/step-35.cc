@@ -391,6 +391,8 @@ namespace Step35 {
 
     void vmult_grad_p_projection(Vec& dst, const Vec& src) const;
 
+    void vmult_streamline(Vec& dst, const Vec& src) const;
+
     virtual void compute_diagonal() override;
 
   protected:
@@ -482,6 +484,15 @@ namespace Step35 {
                                                   Vec&                                         dst,
                                                   const Vec&                                   src,
                                                   const std::pair<unsigned int, unsigned int>& cell_range) const;
+
+    void assemble_cell_term_streamline(const MatrixFree<dim, Number>&               data,
+                                       Vec&                                         dst,
+                                       const Vec&                                   src,
+                                       const std::pair<unsigned int, unsigned int>& cell_range) const;
+    void assemble_rhs_cell_term_streamline(const MatrixFree<dim, Number>&               data,
+                                           Vec&                                         dst,
+                                           const Vec&                                   src,
+                                           const std::pair<unsigned int, unsigned int>& cell_range) const;
 
     void assemble_diagonal_cell_term_velocity(const MatrixFree<dim, Number>&               data,
                                               Vec&                                         dst,
@@ -1221,6 +1232,10 @@ namespace Step35 {
       this->data->cell_loop(&NavierStokesProjectionOperator::assemble_cell_term_projection_grad_p,
                             this, dst, src, false);
     }
+    else if(NS_stage == 4) {
+      this->data->cell_loop(&NavierStokesProjectionOperator::assemble_cell_term_streamline,
+                            this, dst, src, false);
+    }
     else
       Assert(false, ExcNotImplemented());
   }
@@ -1274,6 +1289,61 @@ namespace Step35 {
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   vmult_grad_p_projection(Vec& dst, const Vec& src) const {
     this->data->cell_loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_projection_grad_p,
+                          this, dst, src, true);
+  }
+
+
+  // Assemble cell term for the streamline
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_cell_term_streamline(const MatrixFree<dim, Number>&               data,
+                                Vec&                                         dst,
+                                const Vec&                                   src,
+                                const std::pair<unsigned int, unsigned int>& cell_range) const {
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d, 1, Number> phi(data, 2);
+
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi.reinit(cell);
+      phi.gather_evaluate(src, false, true);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q)
+        phi.submit_gradient(phi.get_gradient(q), q);
+      phi.integrate_scatter(false, true, dst);
+    }
+  }
+
+
+  // Assemble rhs cell term for the projection of gradient of pressure
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  assemble_rhs_cell_term_streamline(const MatrixFree<dim, Number>&               data,
+                                    Vec&                                         dst,
+                                    const Vec&                                   src,
+                                    const std::pair<unsigned int, unsigned int>& cell_range) const {
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d, 1, Number>   phi(data, 2);
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_vel(data, 0);
+
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi_vel.reinit(cell);
+      phi_vel.gather_evaluate(src, false, true);
+      phi.reinit(cell);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        const auto& grad_u_n = phi_vel.get_gradient(q);
+        VectorizedArray<Number> vorticity = grad_u_n[1][0] - grad_u_n[0][1];
+        phi.submit_value(vorticity, q);
+      }
+      phi.integrate_scatter(true, false, dst);
+    }
+  }
+
+
+  // Put together all the previous steps for streamline
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  vmult_streamline(Vec& dst, const Vec& src) const {
+    this->data->cell_loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_streamline,
                           this, dst, src, true);
   }
 
@@ -1617,9 +1687,11 @@ namespace Step35 {
 
     FESystem<dim> fe_velocity;
     FESystem<dim> fe_pressure;
+    FESystem<dim> fe_streamline;
 
     DoFHandler<dim> dof_handler_velocity;
     DoFHandler<dim> dof_handler_pressure;
+    DoFHandler<dim> dof_handler_streamline;
 
     QGauss<dim> quadrature_pressure;
     QGauss<dim> quadrature_velocity;
@@ -1638,6 +1710,9 @@ namespace Step35 {
 
     LinearAlgebra::distributed::Vector<double> u_n_k;
     LinearAlgebra::distributed::Vector<double> u_n_gamma_k;
+
+    LinearAlgebra::distributed::Vector<double> streamline;
+    LinearAlgebra::distributed::Vector<double> omega;
 
     DeclException2(ExcInvalidTimeStep,
                    double,
@@ -1658,6 +1733,8 @@ namespace Step35 {
 
     void project_grad(const unsigned int flag);
 
+    void compute_streamline();
+
     void output_results(const unsigned int step);
 
   private:
@@ -1667,7 +1744,7 @@ namespace Step35 {
                                    EquationData::degree_p + 2,
                                    LinearAlgebra::distributed::Vector<double>, double> navier_stokes_matrix;
 
-    AffineConstraints<double> constraints_velocity, constraints_pressure;
+    AffineConstraints<double> constraints_velocity, constraints_pressure, constraints_streamline;
 
     unsigned int vel_max_its;
     unsigned int vel_Krylov_size;
@@ -1703,8 +1780,10 @@ namespace Step35 {
     triangulation(MPI_COMM_WORLD),
     fe_velocity(FE_DGQ<dim>(EquationData::degree_p + 1), dim),
     fe_pressure(FE_DGQ<dim>(EquationData::degree_p), 1),
+    fe_streamline(FE_Q<dim>(EquationData::degree_p + 1), 1),
     dof_handler_velocity(triangulation),
     dof_handler_pressure(triangulation),
+    dof_handler_streamline(triangulation),
     quadrature_pressure(EquationData::degree_p + 1),
     quadrature_velocity(EquationData::degree_p + 2),
     navier_stokes_matrix(data),
@@ -1727,6 +1806,7 @@ namespace Step35 {
 
       constraints_velocity.clear();
       constraints_pressure.clear();
+      constraints_streamline.clear();
       create_triangulation_and_dofs(data.n_global_refines);
       initialize();
   }
@@ -1756,6 +1836,14 @@ namespace Step35 {
 
     dof_handler_velocity.distribute_dofs(fe_velocity);
     dof_handler_pressure.distribute_dofs(fe_pressure);
+    dof_handler_streamline.distribute_dofs(fe_streamline);
+
+    IndexSet locally_relevant_dofs;
+    DoFTools::extract_locally_relevant_dofs(dof_handler_streamline, locally_relevant_dofs);
+    constraints_streamline.reinit(locally_relevant_dofs);
+    DoFTools::make_hanging_node_constraints(dof_handler_streamline, constraints_streamline);
+    VectorTools::interpolate_boundary_values(dof_handler_streamline, 2, ZeroFunction<dim>(), constraints_streamline);
+    constraints_streamline.close();
 
     pcout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
           << std::endl
@@ -1776,14 +1864,17 @@ namespace Step35 {
     std::vector<const DoFHandler<dim>*> dof_handlers;
     dof_handlers.push_back(&dof_handler_velocity);
     dof_handlers.push_back(&dof_handler_pressure);
+    dof_handlers.push_back(&dof_handler_streamline);
 
     std::vector<const AffineConstraints<double>*> constraints;
     constraints.push_back(&constraints_velocity);
     constraints.push_back(&constraints_pressure);
+    constraints.push_back(&constraints_streamline);
 
     std::vector<QGauss<dim - 1>> quadratures;
     quadratures.push_back(QGauss<dim - 1>(EquationData::degree_p + 2));
     quadratures.push_back(QGauss<dim - 1>(EquationData::degree_p + 1));
+    quadratures.push_back(QGauss<dim - 1>(EquationData::degree_p + 2));
 
     matrix_free_storage = std::make_unique<MatrixFree<dim, double>>();
     matrix_free_storage->reinit(dof_handlers, constraints, quadratures, additional_data);
@@ -1796,9 +1887,13 @@ namespace Step35 {
     matrix_free_storage->initialize_dof_vector(u_tmp, 0);
     matrix_free_storage->initialize_dof_vector(u_n_k, 0);
     matrix_free_storage->initialize_dof_vector(u_n_gamma_k, 0);
+
     matrix_free_storage->initialize_dof_vector(pres_int, 1);
     matrix_free_storage->initialize_dof_vector(pres_n, 1);
     matrix_free_storage->initialize_dof_vector(rhs_p, 1);
+
+    matrix_free_storage->initialize_dof_vector(streamline, 2);
+    matrix_free_storage->initialize_dof_vector(omega, 2);
   }
 
 
@@ -1959,6 +2054,25 @@ namespace Step35 {
   }
 
 
+  // This implements the solution of Poisson problem for streamline
+  //
+  template<int dim>
+  void NavierStokesProjection<dim>::compute_streamline() {
+    const std::vector<unsigned int> tmp = {2};
+    navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
+
+    navier_stokes_matrix.vmult_streamline(omega, u_n);
+
+    navier_stokes_matrix.set_NS_stage(4);
+
+    SolverControl solver_control(vel_max_its, 1e-12*omega.l2_norm());
+    SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
+    cg.solve(navier_stokes_matrix, streamline, omega, PreconditionIdentity());
+
+    constraints_streamline.distribute(streamline);
+  }
+
+
   // @sect4{ <code>NavierStokesProjection::output_results</code> }
 
   // This method plots the current solution. The main difficulty is that we want
@@ -2016,8 +2130,16 @@ namespace Step35 {
     component_interpretation(dim + 1, DataComponentInterpretation::component_is_part_of_vector);
     component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
     data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
+
     PostprocessorVorticity<dim> postprocessor;
     data_out.add_data_vector(dof_handler_velocity, u_n, postprocessor);
+
+    if(step > 1) {
+      compute_streamline();
+      streamline.update_ghost_values();
+      data_out.add_data_vector(dof_handler_streamline, streamline, "streamline", {DataComponentInterpretation::component_is_scalar});
+    }
+
     data_out.build_patches();
     const std::string output = "./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtu";
     data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
