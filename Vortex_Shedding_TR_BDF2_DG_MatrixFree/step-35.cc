@@ -501,6 +501,7 @@ namespace Step35 {
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   set_u_extr(const Vec& src) {
     u_extr = src;
+    u_extr.update_ghost_values();
   }
 
 
@@ -1580,7 +1581,7 @@ namespace Step35 {
     EquationData::Velocity<dim> vel_exact;
     EquationData::Pressure<dim> pres_exact;
 
-    Triangulation<dim> triangulation;
+    parallel::distributed::Triangulation<dim> triangulation;
 
     FESystem<dim> fe_velocity;
     FESystem<dim> fe_pressure;
@@ -1602,9 +1603,6 @@ namespace Step35 {
     LinearAlgebra::distributed::Vector<double> u_star;
     LinearAlgebra::distributed::Vector<double> u_tmp;
     LinearAlgebra::distributed::Vector<double> rhs_u;
-
-    LinearAlgebra::distributed::Vector<double> u_n_k;
-    LinearAlgebra::distributed::Vector<double> u_n_gamma_k;
 
     DeclException2(ExcInvalidTimeStep,
                    double,
@@ -1646,6 +1644,8 @@ namespace Step35 {
     Vector<double> H1_error_per_cell_vel;
 
     std::string saving_dir;
+
+    ConditionalOStream pcout;
   };
 
 
@@ -1665,6 +1665,7 @@ namespace Step35 {
     dt(data.dt),
     vel_exact(data.initial_time),
     pres_exact(data.initial_time),
+    triangulation(MPI_COMM_WORLD, Triangulation<dim>::limit_level_difference_at_vertices),
     fe_velocity(FE_DGQ<dim>(EquationData::degree_p + 1), dim),
     fe_pressure(FE_DGQ<dim>(EquationData::degree_p), 1),
     dof_handler_velocity(triangulation),
@@ -1678,9 +1679,10 @@ namespace Step35 {
     vel_update_prec(data.vel_update_prec),
     vel_eps(data.vel_eps),
     vel_diag_strength(data.vel_diag_strength),
-    saving_dir(data.dir) {
+    saving_dir(data.dir),
+    pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0) {
       if(EquationData::degree_p < 1) {
-        std::cout
+        pcout
         << " WARNING: The chosen pair of finite element spaces is not stable."
         << std::endl
         << " The obtained results will be nonsense" << std::endl;
@@ -1712,9 +1714,9 @@ namespace Step35 {
     Assert(file, ExcFileNotOpen(filename.c_str()));
     grid_in.read_ucd(file);
 
-    std::cout << "Number of refines = " << n_refines << std::endl;
+    pcout << "Number of refines = " << n_refines << std::endl;
     triangulation.refine_global(n_refines);
-    std::cout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
+    pcout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
 
     Vector<double> error_per_cell_tmp(triangulation.n_active_cells());
     H1_error_per_cell_vel.reinit(error_per_cell_tmp);
@@ -1722,12 +1724,12 @@ namespace Step35 {
     dof_handler_velocity.distribute_dofs(fe_velocity);
     dof_handler_pressure.distribute_dofs(fe_pressure);
 
-    std::cout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
-              << std::endl
-              << "dim (M_h) = " << dof_handler_pressure.n_dofs()
-              << std::endl
-              << "Re        = " << Re << std::endl
-              << std::endl;
+    pcout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
+          << std::endl
+          << "dim (M_h) = " << dof_handler_pressure.n_dofs()
+          << std::endl
+          << "Re        = " << Re << std::endl
+          << std::endl;
 
     typename MatrixFree<dim, double>::AdditionalData additional_data;
     additional_data.mapping_update_flags = (update_gradients | update_JxW_values |
@@ -1759,8 +1761,6 @@ namespace Step35 {
     matrix_free_storage->initialize_dof_vector(u_n_minus_1, 0);
     matrix_free_storage->initialize_dof_vector(u_n_gamma, 0);
     matrix_free_storage->initialize_dof_vector(u_tmp, 0);
-    matrix_free_storage->initialize_dof_vector(u_n_k, 0);
-    matrix_free_storage->initialize_dof_vector(u_n_gamma_k, 0);
     matrix_free_storage->initialize_dof_vector(pres_int, 1);
     matrix_free_storage->initialize_dof_vector(pres_n, 1);
     matrix_free_storage->initialize_dof_vector(rhs_p, 1);
@@ -1821,73 +1821,35 @@ namespace Step35 {
   void NavierStokesProjection<dim>::diffusion_step() {
     const std::vector<unsigned int> tmp = {0};
     navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
-    if(TR_BDF2_stage == 1) {
-      vel_exact.advance_time(0.5*gamma*dt);
-      //VectorTools::interpolate(dof_handler_velocity, vel_exact, u_extr);
-      vel_exact.advance_time(0.5*gamma*dt);
-    }
-    else {
-      vel_exact.advance_time(0.5*(1.0 - gamma)*dt);
-      //VectorTools::interpolate(dof_handler_velocity, vel_exact, u_extr);
-      vel_exact.advance_time(0.5*(1.0 - gamma)*dt);
-    }
+
     navier_stokes_matrix.set_time(vel_exact.get_time());
 
     navier_stokes_matrix.set_NS_stage(1);
 
     if(TR_BDF2_stage == 1) {
-      u_n_k = u_extr;
-      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_extr, pres_n});
+      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n, pres_n});
+      navier_stokes_matrix.set_u_extr(u_n);
+      u_star = u_n;
     }
     else {
-      u_n_gamma_k = u_extr;
-      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_extr});
+      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_n_gamma});
+      navier_stokes_matrix.set_u_extr(u_n_gamma);
+      u_star = u_n_gamma;
     }
 
-    for(unsigned int iter = 0; iter < 100; ++iter) {
-      if(TR_BDF2_stage == 1) {
-        navier_stokes_matrix.set_u_extr(u_n_k);
-        u_star = u_n_k;
-      }
-      else {
-        navier_stokes_matrix.set_u_extr(u_n_gamma_k);
-        u_star = u_n_gamma_k;
-      }
 
-      //u_star = u_extr; //--- Use as initial guess of GMRES
-
-      SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
-      SolverGMRES<LinearAlgebra::distributed::Vector<double>>
-      gmres(solver_control, SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData(vel_Krylov_size));
-      PreconditionJacobi<NavierStokesProjectionOperator<dim,
-                                                        EquationData::degree_p,
-                                                        EquationData::degree_p + 1,
-                                                        EquationData::degree_p + 2,
-                                                        LinearAlgebra::distributed::Vector<double>,
-                                                        double>> preconditioner;
-      navier_stokes_matrix.compute_diagonal();
-      preconditioner.initialize(navier_stokes_matrix);
-      gmres.solve(navier_stokes_matrix, u_star, rhs_u, preconditioner);
-      double error = 0.0;
-      u_tmp = u_star;
-      if(TR_BDF2_stage == 1) {
-        u_tmp -= u_n_k;
-        VectorTools::integrate_difference(dof_handler_velocity, u_tmp, ZeroFunction<dim>(dim),
-                                          H1_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
-        error = VectorTools::compute_global_error(triangulation, H1_error_per_cell_vel, VectorTools::H1_norm);
-        u_n_k = u_star;
-      }
-      else {
-        u_tmp -= u_n_gamma_k;
-        VectorTools::integrate_difference(dof_handler_velocity, u_tmp, ZeroFunction<dim>(dim),
-                                          H1_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
-        error = VectorTools::compute_global_error(triangulation, H1_error_per_cell_vel, VectorTools::H1_norm);
-        u_n_gamma_k = u_star;
-      }
-      if(error < 1e-6)
-        break;
-    }
-
+    SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
+    SolverGMRES<LinearAlgebra::distributed::Vector<double>>
+    gmres(solver_control, SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData(vel_Krylov_size));
+    PreconditionJacobi<NavierStokesProjectionOperator<dim,
+                                                      EquationData::degree_p,
+                                                      EquationData::degree_p + 1,
+                                                      EquationData::degree_p + 2,
+                                                      LinearAlgebra::distributed::Vector<double>,
+                                                      double>> preconditioner;
+    navier_stokes_matrix.compute_diagonal();
+    preconditioner.initialize(navier_stokes_matrix);
+    gmres.solve(navier_stokes_matrix, u_star, rhs_u, preconditioner);
   }
 
 
@@ -1967,23 +1929,25 @@ namespace Step35 {
                                                    vel_cell     = dof_handler_velocity.begin_active(),
                                                    pres_cell    = dof_handler_pressure.begin_active();
     for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
-      joint_cell->get_dof_indices(loc_joint_dof_indices);
-      vel_cell->get_dof_indices(loc_vel_dof_indices);
-      pres_cell->get_dof_indices(loc_pres_dof_indices);
-      for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
-        switch(joint_fe.system_to_base_index(i).first.first) {
-          case 0:
-            Assert(joint_fe.system_to_base_index(i).first.second < dim,
-                   ExcInternalError());
-            joint_solution(loc_joint_dof_indices[i]) = u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
-            break;
-          case 1:
-            Assert(joint_fe.system_to_base_index(i).first.second == 0,
-                   ExcInternalError());
-            joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
-            break;
-          default:
-            Assert(false, ExcInternalError());
+      if(joint_cell->is_locally_owned()) {
+        joint_cell->get_dof_indices(loc_joint_dof_indices);
+        vel_cell->get_dof_indices(loc_vel_dof_indices);
+        pres_cell->get_dof_indices(loc_pres_dof_indices);
+        for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
+          switch(joint_fe.system_to_base_index(i).first.first) {
+            case 0:
+              Assert(joint_fe.system_to_base_index(i).first.second < dim,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            case 1:
+              Assert(joint_fe.system_to_base_index(i).first.second == 0,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            default:
+              Assert(false, ExcInternalError());
+          }
         }
       }
     }
@@ -1995,9 +1959,9 @@ namespace Step35 {
     component_interpretation(dim + 1, DataComponentInterpretation::component_is_part_of_vector);
     component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
     data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
-    data_out.build_patches(EquationData::degree_p + 1);
-    std::ofstream output("./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtk");
-    data_out.write_vtk(output);
+    data_out.build_patches();
+    const std::string output = "./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtu";
+    data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
   }
 
 
@@ -2013,7 +1977,7 @@ namespace Step35 {
   //
   template<int dim>
   void NavierStokesProjection<dim>::run(const bool verbose, const unsigned int output_interval) {
-    ConditionalOStream verbose_cout(std::cout, verbose);
+    ConditionalOStream verbose_cout(std::cout, verbose && Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
 
     output_results(1);
     double time = t_0 + dt;
@@ -2021,12 +1985,11 @@ namespace Step35 {
     while(std::abs(T - time) > 1e-10) {
       time += dt;
       n++;
-      std::cout << "Step = " << n << " Time = " << time << std::endl;
+      pcout << "Step = " << n << " Time = " << time << std::endl;
       //--- First stage of TR-BDF2
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
-      verbose_cout << "  Interpolating the velocity stage 1" << std::endl;
-      interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 1 " << std::endl;
+      vel_exact.advance_time(gamma*dt);
       diffusion_step();
       verbose_cout << "  Projection Step stage 1" << std::endl;
       project_grad(1);
@@ -2042,9 +2005,8 @@ namespace Step35 {
       TR_BDF2_stage = 2; //--- Flag to pass at second stage
       //--- Second stage of TR-BDF2
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
-      verbose_cout << "  Interpolating the velocity stage 2" << std::endl;
-      interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 2 " << std::endl;
+      vel_exact.advance_time((1.0 - gamma)*dt);
       diffusion_step();
       verbose_cout << "  Projection Step stage 2" << std::endl;
       project_grad(2);
@@ -2075,17 +2037,30 @@ namespace Step35 {
 
 // The main function looks very much like in all the other tutorial programs, so
 // there is little to comment on here:
-int main() {
+int main(int argc, char *argv[]) {
   try {
     using namespace Step35;
 
     RunTimeParameters::Data_Storage data;
     data.read_data("parameter-file.prm");
 
-    deallog.depth_console(data.verbose ? 2 : 0);
+    Utilities::MPI::MPI_InitFinalize mpi_init(argc, argv, -1);
+
+    const auto& curr_rank = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
+
+    deallog.depth_console(data.verbose && curr_rank == 0 ? 2 : 0);
 
     NavierStokesProjection<2> test(data);
     test.run(data.verbose, data.output_interval);
+
+    if(curr_rank == 0)
+      std::cout << "----------------------------------------------------"
+                << std::endl
+                << "Apparently everything went fine!" << std::endl
+                << "Don't forget to brush your teeth :-)" << std::endl
+                << std::endl;
+    return 0;
+
   }
   catch(std::exception &exc) {
     std::cerr << std::endl
@@ -2110,10 +2085,4 @@ int main() {
               << std::endl;
     return 1;
   }
-  std::cout << "----------------------------------------------------"
-            << std::endl
-            << "Apparently everything went fine!" << std::endl
-            << "Don't forget to brush your teeth :-)" << std::endl
-            << std::endl;
-  return 0;
 }

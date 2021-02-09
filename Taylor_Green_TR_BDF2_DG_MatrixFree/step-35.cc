@@ -558,6 +558,7 @@ namespace Step35 {
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   set_u_extr(const Vec& src) {
     u_extr = src;
+    u_extr.update_ghost_values();
   }
 
 
@@ -1617,7 +1618,7 @@ namespace Step35 {
     EquationData::Velocity<dim> vel_exact;
     EquationData::Pressure<dim> pres_exact;
 
-    Triangulation<dim> triangulation;
+    parallel::distributed::Triangulation<dim> triangulation;
 
     FESystem<dim> fe_velocity;
     FESystem<dim> fe_pressure;
@@ -1693,6 +1694,8 @@ namespace Step35 {
 
     std::ofstream output_error_pres;
     std::ofstream output_error_vel;
+
+    ConditionalOStream pcout;
   };
 
 
@@ -1712,6 +1715,7 @@ namespace Step35 {
     CFL(data.CFL),
     vel_exact(data.Reynolds, data.initial_time),
     pres_exact(data.Reynolds, data.initial_time),
+    triangulation(MPI_COMM_WORLD),
     fe_velocity(FE_DGQ<dim>(EquationData::degree_p + 1), dim),
     fe_pressure(FE_DGQ<dim>(EquationData::degree_p), 1),
     dof_handler_velocity(triangulation),
@@ -1727,9 +1731,10 @@ namespace Step35 {
     vel_diag_strength(data.vel_diag_strength),
     saving_dir(data.dir),
     output_error_pres("./" + data.dir + "/error_analysis_pres.dat", std::ofstream::out),
-    output_error_vel("./" + data.dir + "/error_analysis_vel.dat", std::ofstream::out) {
+    output_error_vel("./" + data.dir + "/error_analysis_vel.dat", std::ofstream::out),
+    pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0) {
       if(EquationData::degree_p < 1) {
-        std::cout
+        pcout
         << " WARNING: The chosen pair of finite element spaces is not stable."
         << std::endl
         << " The obtained results will be nonsense" << std::endl;
@@ -1759,9 +1764,9 @@ namespace Step35 {
       upper_right[d] = upper_right[0];
     GridGenerator::hyper_rectangle(triangulation, Point<dim>(), upper_right, true);
 
-    std::cout << "Number of refines = " << n_refines << std::endl;
+    pcout << "Number of refines = " << n_refines << std::endl;
     triangulation.refine_global(n_refines);
-    std::cout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
+    pcout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
     dt = CFL*2.0*numbers::PI/(std::pow(2, n_refines))/(EquationData::degree_p + 1);
     navier_stokes_matrix.set_dt(dt);
 
@@ -1784,12 +1789,12 @@ namespace Step35 {
     Nodal_error_per_cell_vel.reinit(dof_handler_velocity.n_dofs());
     Nodal_error_per_cell_pres.reinit(dof_handler_pressure.n_dofs());
 
-    std::cout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
-              << std::endl
-              << "dim (M_h) = " << dof_handler_pressure.n_dofs()
-              << std::endl
-              << "Re        = " << Re << std::endl
-              << std::endl;
+    pcout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
+          << std::endl
+          << "dim (M_h) = " << dof_handler_pressure.n_dofs()
+          << std::endl
+          << "Re        = " << Re << std::endl
+          << std::endl;
 
     typename MatrixFree<dim, double>::AdditionalData additional_data;
     additional_data.mapping_update_flags = (update_gradients | update_JxW_values |
@@ -1976,11 +1981,9 @@ namespace Step35 {
     VectorTools::integrate_difference(dof_handler_velocity, u_tmp, vel_exact,
                                       H1_rel_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
     const double H1_vel = VectorTools::compute_global_error(triangulation, H1_rel_error_per_cell_vel, VectorTools::H1_norm);
-    for(unsigned int d = 0; d < triangulation.n_active_cells(); ++d)
-      H1_rel_error_per_cell_vel[d] = H1_error_per_cell_vel[d]/H1_rel_error_per_cell_vel[d];
     const double error_rel_vel_H1 = error_vel_H1/H1_vel;
-    std::cout << "Verification via H1 error velocity:    "<< error_vel_H1 << std::endl;
-    std::cout << "Verification via H1 relative error velocity:    "<< error_rel_vel_H1 << std::endl;
+    pcout << "Verification via H1 error velocity:    "<< error_vel_H1 << std::endl;
+    pcout << "Verification via H1 relative error velocity:    "<< error_rel_vel_H1 << std::endl;
 
     VectorTools::integrate_difference(dof_handler_velocity, u_n, vel_exact,
                                       L2_error_per_cell_vel, quadrature_velocity, VectorTools::L2_norm);
@@ -1988,11 +1991,9 @@ namespace Step35 {
     VectorTools::integrate_difference(dof_handler_velocity, u_tmp, vel_exact,
                                       L2_rel_error_per_cell_vel, quadrature_velocity, VectorTools::L2_norm);
     const double L2_vel = VectorTools::compute_global_error(triangulation, L2_rel_error_per_cell_vel, VectorTools::L2_norm);
-    for(unsigned int d = 0; d < triangulation.n_active_cells(); ++d)
-      L2_rel_error_per_cell_vel[d] = L2_error_per_cell_vel[d]/L2_rel_error_per_cell_vel[d];
     const double error_rel_vel_L2 = error_vel_L2/L2_vel;
-    std::cout << "Verification via L2 error velocity:    "<< error_vel_L2 << std::endl;
-    std::cout << "Verification via L2 relative error velocity:    "<< error_rel_vel_L2 << std::endl;
+    pcout << "Verification via L2 error velocity:    "<< error_vel_L2 << std::endl;
+    pcout << "Verification via L2 relative error velocity:    "<< error_rel_vel_L2 << std::endl;
 
     VectorTools::integrate_difference(dof_handler_velocity, u_n, vel_exact,
                                       Linfty_error_per_cell_vel, quadrature_velocity, VectorTools::Linfty_norm);
@@ -2000,11 +2001,9 @@ namespace Step35 {
     VectorTools::integrate_difference(dof_handler_velocity, u_tmp, vel_exact,
                                       Linfty_rel_error_per_cell_vel, quadrature_velocity, VectorTools::Linfty_norm);
     const double Linfty_vel = VectorTools::compute_global_error(triangulation, Linfty_rel_error_per_cell_vel, VectorTools::Linfty_norm);
-    for(unsigned int d = 0; d < triangulation.n_active_cells(); ++d)
-      Linfty_rel_error_per_cell_vel[d] = Linfty_error_per_cell_vel[d]/Linfty_rel_error_per_cell_vel[d];
     const double error_rel_vel_Linfty = error_vel_Linfty/Linfty_vel;
-    std::cout << "Verification via Linfty error velocity:    "<< error_vel_Linfty << std::endl;
-    std::cout << "Verification via Linfty relative error velocity:    "<< error_rel_vel_Linfty << std::endl;
+    pcout << "Verification via Linfty error velocity:    "<< error_vel_Linfty << std::endl;
+    pcout << "Verification via Linfty relative error velocity:    "<< error_rel_vel_Linfty << std::endl;
 
     VectorTools::integrate_difference(dof_handler_pressure, pres_n, pres_exact,
                                       L2_error_per_cell_pres, quadrature_pressure, VectorTools::L2_norm);
@@ -2012,11 +2011,9 @@ namespace Step35 {
     VectorTools::integrate_difference(dof_handler_pressure, pres_int, pres_exact,
                                       L2_rel_error_per_cell_pres, quadrature_pressure, VectorTools::L2_norm);
     const double pres_L2 = VectorTools::compute_global_error(triangulation, L2_rel_error_per_cell_pres, VectorTools::L2_norm);
-    for(unsigned int d = 0; d < triangulation.n_active_cells(); ++d)
-      L2_rel_error_per_cell_pres[d] = L2_error_per_cell_pres[d]/L2_rel_error_per_cell_pres[d];
     const double error_rel_pres_L2 = error_pres_L2/pres_L2;
-    std::cout << "Verification via L2 error pressure:    "<< error_pres_L2 << std::endl;
-    std::cout << "Verification via L2 relative error pressure:    "<< error_rel_pres_L2 << std::endl;
+    pcout << "Verification via L2 error pressure:    "<< error_pres_L2 << std::endl;
+    pcout << "Verification via L2 relative error pressure:    "<< error_rel_pres_L2 << std::endl;
 
     VectorTools::integrate_difference(dof_handler_pressure, pres_n, pres_exact,
                                       Linfty_error_per_cell_pres, quadrature_pressure, VectorTools::Linfty_norm);
@@ -2025,23 +2022,23 @@ namespace Step35 {
     VectorTools::integrate_difference(dof_handler_pressure, pres_int, pres_exact,
                                       Linfty_rel_error_per_cell_pres, quadrature_pressure, VectorTools::Linfty_norm);
     const double pres_Linfty = VectorTools::compute_global_error(triangulation, Linfty_rel_error_per_cell_pres, VectorTools::Linfty_norm);
-    for(unsigned int d = 0; d < triangulation.n_active_cells(); ++d)
-      Linfty_rel_error_per_cell_pres[d] = Linfty_error_per_cell_pres[d]/Linfty_rel_error_per_cell_pres[d];
     const double error_rel_pres_Linfty = error_pres_Linfty/pres_Linfty;
-    std::cout << "Verification via Linfty error pressure:    "<< error_pres_Linfty << std::endl;
-    std::cout << "Verification via Linfty relative error pressure:    "<< error_rel_pres_Linfty << std::endl;
+    pcout << "Verification via Linfty error pressure:    "<< error_pres_Linfty << std::endl;
+    pcout << "Verification via Linfty relative error pressure:    "<< error_rel_pres_Linfty << std::endl;
 
-    output_error_vel << error_vel_H1 << std::endl;
-    output_error_vel << error_rel_vel_H1 << std::endl;
-    output_error_vel << error_vel_L2 << std::endl;
-    output_error_vel << error_rel_vel_L2 << std::endl;
-    output_error_vel << error_vel_Linfty << std::endl;
-    output_error_vel << error_rel_vel_Linfty << std::endl;
+    if(Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0) {
+      output_error_vel << error_vel_H1 << std::endl;
+      output_error_vel << error_rel_vel_H1 << std::endl;
+      output_error_vel << error_vel_L2 << std::endl;
+      output_error_vel << error_rel_vel_L2 << std::endl;
+      output_error_vel << error_vel_Linfty << std::endl;
+      output_error_vel << error_rel_vel_Linfty << std::endl;
 
-    output_error_pres << error_pres_L2 << std::endl;
-    output_error_pres << error_rel_pres_L2 << std::endl;
-    output_error_pres << error_pres_Linfty << std::endl;
-    output_error_pres << error_rel_pres_Linfty << std::endl;
+      output_error_pres << error_pres_L2 << std::endl;
+      output_error_pres << error_rel_pres_L2 << std::endl;
+      output_error_pres << error_pres_Linfty << std::endl;
+      output_error_pres << error_rel_pres_Linfty << std::endl;
+    }
   }
 
 
@@ -2072,23 +2069,25 @@ namespace Step35 {
                                                    vel_cell     = dof_handler_velocity.begin_active(),
                                                    pres_cell    = dof_handler_pressure.begin_active();
     for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
-      joint_cell->get_dof_indices(loc_joint_dof_indices);
-      vel_cell->get_dof_indices(loc_vel_dof_indices);
-      pres_cell->get_dof_indices(loc_pres_dof_indices);
-      for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
-        switch(joint_fe.system_to_base_index(i).first.first) {
+      if(joint_cell->is_locally_owned()) {
+        joint_cell->get_dof_indices(loc_joint_dof_indices);
+        vel_cell->get_dof_indices(loc_vel_dof_indices);
+        pres_cell->get_dof_indices(loc_pres_dof_indices);
+        for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
+          switch(joint_fe.system_to_base_index(i).first.first) {
           case 0:
-            Assert(joint_fe.system_to_base_index(i).first.second < dim,
-                   ExcInternalError());
-            joint_solution(loc_joint_dof_indices[i]) = u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
-            break;
-          case 1:
-            Assert(joint_fe.system_to_base_index(i).first.second == 0,
-                   ExcInternalError());
-            joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
-            break;
-          default:
-            Assert(false, ExcInternalError());
+              Assert(joint_fe.system_to_base_index(i).first.second < dim,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            case 1:
+              Assert(joint_fe.system_to_base_index(i).first.second == 0,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            default:
+              Assert(false, ExcInternalError());
+          }
         }
       }
     }
@@ -2101,8 +2100,8 @@ namespace Step35 {
     component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
     data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
     data_out.build_patches();
-    std::ofstream output("./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtk");
-    data_out.write_vtk(output);
+    const std::string output = "./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtu";
+    data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
   }
 
 
@@ -2113,34 +2112,42 @@ namespace Step35 {
     data_out.add_data_vector(H1_error_per_cell_vel, "H1_error_velocity");
     data_out.add_data_vector(L2_error_per_cell_vel, "L2_error_velocity");
     data_out.add_data_vector(Linfty_error_per_cell_vel, "Linfty_error_velocity");
-    data_out.add_data_vector(H1_rel_error_per_cell_vel, "H1_relative_error_velocity");
-    data_out.add_data_vector(L2_rel_error_per_cell_vel, "L2_relative_error_velocity");
-    data_out.add_data_vector(Linfty_rel_error_per_cell_vel, "Linfty_relative_error_velocity");
     VectorTools::interpolate(dof_handler_velocity, vel_exact, u_tmp);
-    for(unsigned int i = 0; i < dof_handler_velocity.n_dofs(); ++i)
-      Nodal_error_per_cell_vel[i] = std::abs(u_n[i] - u_tmp[i]);
+    std::vector<types::global_dof_index> loc_vel_dof_indices(fe_velocity.n_dofs_per_cell());
+    for(const auto& cell: dof_handler_velocity.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        cell->get_dof_indices(loc_vel_dof_indices);
+        for(unsigned int i = 0; i < fe_velocity.n_dofs_per_cell(); ++i)
+          Nodal_error_per_cell_vel(loc_vel_dof_indices[i]) = std::abs(u_n(loc_vel_dof_indices[i]) - u_tmp(loc_vel_dof_indices[i]));
+      }
+    }
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
     component_interpretation(dim, DataComponentInterpretation::component_is_part_of_vector);
     std::vector<std::string> names(dim, "Nodal_error_velocity");
     data_out.add_data_vector(Nodal_error_per_cell_vel, names, DataOut<dim>::type_dof_data, component_interpretation);
     data_out.build_patches();
-    std::ofstream output_vel("./" + saving_dir + "/errors_velocity-" + Utilities::int_to_string(step, 5) + ".vtk");
-    data_out.write_vtk(output_vel);
+    const std::string output_vel = "./" + saving_dir + "/errors_velocity-" + Utilities::int_to_string(step, 5) + ".vtu";
+    data_out.write_vtu_in_parallel(output_vel, MPI_COMM_WORLD);
 
     data_out.clear();
 
     data_out.attach_dof_handler(dof_handler_pressure);
     data_out.add_data_vector(L2_error_per_cell_pres, "L2_error_pressure");
     data_out.add_data_vector(Linfty_error_per_cell_pres, "Linfty_error_pressure");
-    data_out.add_data_vector(L2_rel_error_per_cell_pres, "L2_relative_error_pressure");
-    data_out.add_data_vector(Linfty_rel_error_per_cell_pres, "Linfty_relative_error_pressure");
     VectorTools::interpolate(dof_handler_pressure, pres_exact, pres_int);
-    for(unsigned int i = 0; i < dof_handler_pressure.n_dofs(); ++i)
-      Nodal_error_per_cell_pres[i] = std::abs(pres_n[i] - pres_int[i]);
+    std::vector<types::global_dof_index> loc_pres_dof_indices(fe_pressure.n_dofs_per_cell());
+    for(const auto& cell: dof_handler_pressure.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        cell->get_dof_indices(loc_pres_dof_indices);
+        for(unsigned int i = 0; i < fe_pressure.n_dofs_per_cell(); ++i)
+          Nodal_error_per_cell_pres(loc_pres_dof_indices[i]) =
+          std::abs(pres_n(loc_pres_dof_indices[i]) - pres_int(loc_pres_dof_indices[i]));
+      }
+    }
     data_out.add_data_vector(Nodal_error_per_cell_pres, "Nodal_error_pressure");
     data_out.build_patches();
-    std::ofstream output_pres("./" + saving_dir + "/errors_pressure-" + Utilities::int_to_string(step, 5) + ".vtk");
-    data_out.write_vtk(output_pres);
+    const std::string output_pres = "./" + saving_dir + "/errors_pressure-" + Utilities::int_to_string(step, 5) + ".vtu";
+    data_out.write_vtu_in_parallel(output_pres, MPI_COMM_WORLD);
   }
 
 
@@ -2156,7 +2163,7 @@ namespace Step35 {
   //
   template<int dim>
   void NavierStokesProjection<dim>::run(const bool verbose, const unsigned int output_interval) {
-    ConditionalOStream verbose_cout(std::cout, verbose);
+    ConditionalOStream verbose_cout(std::cout, verbose && Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
 
     analyze_results();
     output_results(1);
@@ -2167,7 +2174,7 @@ namespace Step35 {
     while(std::abs(T - time) > 1e-10) {
       time += dt;
       n++;
-      std::cout << "Step = " << n << " Time = " << time << std::endl;
+      pcout << "Step = " << n << " Time = " << time << std::endl;
       //--- First stage of TR-BDF2
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
       verbose_cout << "  Diffusion Step stage 1 " << std::endl;
@@ -2225,17 +2232,30 @@ namespace Step35 {
 
 // The main function looks very much like in all the other tutorial programs, so
 // there is little to comment on here:
-int main() {
+int main(int argc, char *argv[]) {
   try {
     using namespace Step35;
 
     RunTimeParameters::Data_Storage data;
     data.read_data("parameter-file.prm");
 
-    deallog.depth_console(data.verbose ? 2 : 0);
+    Utilities::MPI::MPI_InitFinalize mpi_init(argc, argv, -1);
+
+    const auto& curr_rank = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
+
+    deallog.depth_console(data.verbose && curr_rank == 0 ? 2 : 0);
 
     NavierStokesProjection<2> test(data);
     test.run(data.verbose, data.output_interval);
+
+    if(curr_rank == 0)
+      std::cout << "----------------------------------------------------"
+                << std::endl
+                << "Apparently everything went fine!" << std::endl
+                << "Don't forget to brush your teeth :-)" << std::endl
+                << std::endl;
+    return 0;
+
   }
   catch(std::exception &exc) {
     std::cerr << std::endl
@@ -2260,10 +2280,4 @@ int main() {
               << std::endl;
     return 1;
   }
-  std::cout << "----------------------------------------------------"
-            << std::endl
-            << "Apparently everything went fine!" << std::endl
-            << "Don't forget to brush your teeth :-)" << std::endl
-            << std::endl;
-  return 0;
 }

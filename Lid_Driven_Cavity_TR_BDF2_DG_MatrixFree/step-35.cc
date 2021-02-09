@@ -555,6 +555,7 @@ namespace Step35 {
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   set_u_extr(const Vec& src) {
     u_extr = src;
+    u_extr.update_ghost_values();
   }
 
 
