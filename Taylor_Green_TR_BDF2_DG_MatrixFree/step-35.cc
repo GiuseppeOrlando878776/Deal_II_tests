@@ -54,6 +54,8 @@
 #include <deal.II/matrix_free/fe_evaluation.h>
 #include <deal.II/fe/component_mask.h>
 
+#include <deal.II/base/timer.h>
+
 // Finally this is as in all previous programs:
 namespace Step35 {
   using namespace dealii;
@@ -1696,6 +1698,10 @@ namespace Step35 {
     std::ofstream output_error_vel;
 
     ConditionalOStream pcout;
+
+    std::ofstream      time_out;
+    ConditionalOStream ptime_out;
+    TimerOutput        time_table;
   };
 
 
@@ -1732,7 +1738,11 @@ namespace Step35 {
     saving_dir(data.dir),
     output_error_pres("./" + data.dir + "/error_analysis_pres.dat", std::ofstream::out),
     output_error_vel("./" + data.dir + "/error_analysis_vel.dat", std::ofstream::out),
-    pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0) {
+    pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0),
+    time_out("./" + data.dir + "/time_analysis_" +
+             Utilities::int_to_string(Utilities::MPI::n_mpi_processes(MPI_COMM_WORLD)) + "proc.dat"),
+    ptime_out(time_out, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0),
+    time_table(ptime_out, TimerOutput::summary, TimerOutput::cpu_and_wall_times) {
       if(EquationData::degree_p < 1) {
         pcout
         << " WARNING: The chosen pair of finite element spaces is not stable."
@@ -1758,6 +1768,8 @@ namespace Step35 {
   //
   template<int dim>
   void NavierStokesProjection<dim>::create_triangulation_and_dofs(const unsigned int n_refines) {
+    TimerOutput::Scope t(time_table, "Create triangulation and dofs");
+
     Point<dim> upper_right;
     upper_right[0] = 2.0*numbers::PI;
     for(unsigned int d = 1; d < dim; ++d)
@@ -1826,6 +1838,7 @@ namespace Step35 {
     matrix_free_storage->initialize_dof_vector(u_n_minus_1, 0);
     matrix_free_storage->initialize_dof_vector(u_n_gamma, 0);
     matrix_free_storage->initialize_dof_vector(u_tmp, 0);
+    
     matrix_free_storage->initialize_dof_vector(pres_int, 1);
     matrix_free_storage->initialize_dof_vector(pres_n, 1);
     matrix_free_storage->initialize_dof_vector(rhs_p, 1);
@@ -1838,6 +1851,8 @@ namespace Step35 {
   //
   template<int dim>
   void NavierStokesProjection<dim>::initialize() {
+    TimerOutput::Scope t(time_table, "Initialize pressure and velocity");
+
     pres_exact.set_time(t_0 + dt);
     VectorTools::interpolate(dof_handler_pressure, pres_exact, pres_n);
 
@@ -1854,6 +1869,8 @@ namespace Step35 {
   //
   template<int dim>
   void NavierStokesProjection<dim>::interpolate_velocity() {
+    TimerOutput::Scope t(time_table, "Interpolate velocity");
+
     //--- TR-BDF2 first step
     if(TR_BDF2_stage == 1) {
       u_extr.equ(1.0 + gamma/(2.0*(1.0 - gamma)), u_n);
@@ -1884,6 +1901,8 @@ namespace Step35 {
   // will be executed sequentially.
   template<int dim>
   void NavierStokesProjection<dim>::diffusion_step() {
+    TimerOutput::Scope t(time_table, "Diffusion step");
+
     const std::vector<unsigned int> tmp = {0};
     navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
 
@@ -1923,6 +1942,8 @@ namespace Step35 {
   //
   template<int dim>
   void NavierStokesProjection<dim>::projection_step() {
+    TimerOutput::Scope t(time_table, "Projection step pressure");
+
     const std::vector<unsigned int> tmp = {1};
     navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
     if(TR_BDF2_stage == 1)
@@ -1949,6 +1970,8 @@ namespace Step35 {
   //
   template<int dim>
   void NavierStokesProjection<dim>::project_grad(const unsigned int flag) {
+    TimerOutput::Scope t(time_table, "Gradient of pressure projection");
+
     AssertIndexRange(flag, 3);
     Assert(flag > 0, ExcInternalError());
     const std::vector<unsigned int> tmp = {0};
@@ -1972,6 +1995,8 @@ namespace Step35 {
   //
   template <int dim>
   void NavierStokesProjection<dim>::analyze_results() {
+    TimerOutput::Scope t(time_table, "Analysis results: computing errrors");
+
     u_tmp = 0;
     pres_int = 0;
 
@@ -2055,6 +2080,8 @@ namespace Step35 {
   //
   template<int dim>
   void NavierStokesProjection<dim>::output_results(const unsigned int step) {
+    TimerOutput::Scope t(time_table, "Output results");
+
     const FESystem<dim> joint_fe(fe_velocity, 1, fe_pressure, 1);
     DoFHandler<dim>     joint_dof_handler(triangulation);
     joint_dof_handler.distribute_dofs(joint_fe);
@@ -2107,6 +2134,8 @@ namespace Step35 {
 
   template<int dim>
   void NavierStokesProjection<dim>::output_errors(const unsigned int step) {
+    TimerOutput::Scope t(time_table, "Output errors");
+
     DataOut<dim> data_out;
     data_out.attach_dof_handler(dof_handler_velocity);
     data_out.add_data_vector(H1_error_per_cell_vel, "H1_error_velocity");
