@@ -826,6 +826,8 @@ namespace Step35 {
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   vmult_rhs_velocity(Vec& dst, const std::vector<Vec>& src) const {
+    for(unsigned int d = 0; d < src.size(); ++d)
+      src[d].update_ghost_values();
     this->data->loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_velocity,
                      &NavierStokesProjectionOperator::assemble_rhs_face_term_velocity,
                      &NavierStokesProjectionOperator::assemble_rhs_boundary_term_velocity,
@@ -929,6 +931,8 @@ namespace Step35 {
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   vmult_rhs_pressure(Vec& dst, const std::vector<Vec>& src) const {
+    for(unsigned int d = 0; d < src.size(); ++d)
+      src[d].update_ghost_values();
     this->data->loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_pressure,
                      &NavierStokesProjectionOperator::assemble_rhs_face_term_pressure,
                      &NavierStokesProjectionOperator::assemble_rhs_boundary_term_pressure,
@@ -1838,7 +1842,7 @@ namespace Step35 {
     matrix_free_storage->initialize_dof_vector(u_n_minus_1, 0);
     matrix_free_storage->initialize_dof_vector(u_n_gamma, 0);
     matrix_free_storage->initialize_dof_vector(u_tmp, 0);
-    
+
     matrix_free_storage->initialize_dof_vector(pres_int, 1);
     matrix_free_storage->initialize_dof_vector(pres_n, 1);
     matrix_free_storage->initialize_dof_vector(rhs_p, 1);
@@ -1873,14 +1877,14 @@ namespace Step35 {
 
     //--- TR-BDF2 first step
     if(TR_BDF2_stage == 1) {
-      u_extr.equ(1.0 + gamma/(2.0*(1.0 - gamma)), u_n);
-      u_tmp.equ(gamma/(2.0*(1.0 - gamma)), u_n_minus_1);
+      u_extr.equ(1.0 + 0.0*gamma/(2.0*(1.0 - gamma)), u_n);
+      u_tmp.equ(0.0*gamma/(2.0*(1.0 - gamma)), u_n_minus_1);
       u_extr -= u_tmp;
     }
     //--- TR-BDF2 second step
     else {
-      u_extr.equ(1.0 + (1.0 - gamma)/gamma, u_n_gamma);
-      u_tmp.equ((1.0 - gamma)/gamma, u_n);
+      u_extr.equ(1.0 + 0.0*(1.0 - gamma)/gamma, u_n_gamma);
+      u_tmp.equ(0.0*(1.0 - gamma)/gamma, u_n);
       u_extr -= u_tmp;
     }
   }
@@ -1911,14 +1915,14 @@ namespace Step35 {
     navier_stokes_matrix.set_NS_stage(1);
 
     if(TR_BDF2_stage == 1) {
-      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n, pres_n});
-      navier_stokes_matrix.set_u_extr(u_n);
-      u_star = u_n;
+      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_extr, pres_n});
+      navier_stokes_matrix.set_u_extr(u_extr);
+      u_star = u_extr;
     }
     else {
-      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_n_gamma});
-      navier_stokes_matrix.set_u_extr(u_n_gamma);
-      u_star = u_n_gamma;
+      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_extr});
+      navier_stokes_matrix.set_u_extr(u_extr);
+      u_star = u_extr;
     }
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
@@ -2206,6 +2210,8 @@ namespace Step35 {
       pcout << "Step = " << n << " Time = " << time << std::endl;
       //--- First stage of TR-BDF2
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
+      verbose_cout << "  Interpolating the velocity stage 1" << std::endl;
+      interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 1 " << std::endl;
       vel_exact.advance_time(gamma*dt);
       pres_exact.advance_time(gamma*dt);
@@ -2225,6 +2231,8 @@ namespace Step35 {
       TR_BDF2_stage = 2; //--- Flag to pass at second stage
       //--- Second stage of TR-BDF2
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
+      verbose_cout << "  Interpolating the velocity stage 2" << std::endl;
+      interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 2 " << std::endl;
       vel_exact.advance_time((1.0 - gamma)*dt);
       pres_exact.advance_time((1.0 - gamma)*dt);

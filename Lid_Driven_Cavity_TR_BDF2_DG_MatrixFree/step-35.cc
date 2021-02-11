@@ -845,6 +845,8 @@ namespace Step35 {
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   vmult_rhs_velocity(Vec& dst, const std::vector<Vec>& src) const {
+    for(unsigned int d = 0; d < src.size(); ++d)
+      src[d].update_ghost_values();
     this->data->loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_velocity,
                      &NavierStokesProjectionOperator::assemble_rhs_face_term_velocity,
                      &NavierStokesProjectionOperator::assemble_rhs_boundary_term_velocity,
@@ -948,6 +950,8 @@ namespace Step35 {
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
   vmult_rhs_pressure(Vec& dst, const std::vector<Vec>& src) const {
+    for(unsigned int d = 0; d < src.size(); ++d)
+      src[d].update_ghost_values();
     this->data->loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_pressure,
                      &NavierStokesProjectionOperator::assemble_rhs_face_term_pressure,
                      &NavierStokesProjectionOperator::assemble_rhs_boundary_term_pressure,
@@ -1990,14 +1994,14 @@ namespace Step35 {
 
     //--- TR-BDF2 first step
     if(TR_BDF2_stage == 1) {
-      u_extr.equ(1.0 + gamma/(2.0*(1.0 - gamma)), u_n);
-      u_tmp.equ(gamma/(2.0*(1.0 - gamma)), u_n_minus_1);
+      u_extr.equ(1.0 + 0.0*gamma/(2.0*(1.0 - gamma)), u_n);
+      u_tmp.equ(0.0*gamma/(2.0*(1.0 - gamma)), u_n_minus_1);
       u_extr -= u_tmp;
     }
     //--- TR-BDF2 second step
     else {
-      u_extr.equ(1.0 + (1.0 - gamma)/gamma, u_n_gamma);
-      u_tmp.equ((1.0 - gamma)/gamma, u_n);
+      u_extr.equ(1.0 + 0.0*(1.0 - gamma)/gamma, u_n_gamma);
+      u_tmp.equ(0.0*(1.0 - gamma)/gamma, u_n);
       u_extr -= u_tmp;
     }
   }
@@ -2026,56 +2030,28 @@ namespace Step35 {
     navier_stokes_matrix.set_NS_stage(1);
 
     if(TR_BDF2_stage == 1) {
-      u_n_k = u_extr;
       navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_extr, pres_n});
+      navier_stokes_matrix.set_u_extr(u_extr);
+      u_star = u_extr;
     }
     else {
-      u_n_gamma_k = u_extr;
       navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_extr});
+      navier_stokes_matrix.set_u_extr(u_extr);
+      u_star = u_extr;
     }
 
-    for(unsigned int iter = 0; iter < 100; ++iter) {
-      if(TR_BDF2_stage == 1) {
-        navier_stokes_matrix.set_u_extr(u_n_k);
-        u_star = u_n_k;
-      }
-      else {
-        navier_stokes_matrix.set_u_extr(u_n_gamma_k);
-        u_star = u_n_gamma_k;
-      }
-
-      SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
-      SolverGMRES<LinearAlgebra::distributed::Vector<double>>
-      gmres(solver_control, SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData(vel_Krylov_size));
-      PreconditionJacobi<NavierStokesProjectionOperator<dim,
-                                                        EquationData::degree_p,
-                                                        EquationData::degree_p + 1,
-                                                        EquationData::degree_p + 2,
-                                                        LinearAlgebra::distributed::Vector<double>,
-                                                        double>> preconditioner;
-      navier_stokes_matrix.compute_diagonal();
-      preconditioner.initialize(navier_stokes_matrix);
-      gmres.solve(navier_stokes_matrix, u_star, rhs_u, preconditioner);
-      double error = 0.0;
-      u_tmp = u_star;
-      if(TR_BDF2_stage == 1) {
-        u_tmp -= u_n_k;
-        VectorTools::integrate_difference(dof_handler_velocity, u_tmp, ZeroFunction<dim>(dim),
-                                          H1_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
-        error = VectorTools::compute_global_error(triangulation, H1_error_per_cell_vel, VectorTools::H1_norm);
-        u_n_k = u_star;
-      }
-      else {
-        u_tmp -= u_n_gamma_k;
-        VectorTools::integrate_difference(dof_handler_velocity, u_tmp, ZeroFunction<dim>(dim),
-                                          H1_error_per_cell_vel, quadrature_velocity, VectorTools::H1_norm);
-        error = VectorTools::compute_global_error(triangulation, H1_error_per_cell_vel, VectorTools::H1_norm);
-        u_n_gamma_k = u_star;
-      }
-      if(error < 1e-6)
-        break;
-    }
-
+    SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
+    SolverGMRES<LinearAlgebra::distributed::Vector<double>>
+    gmres(solver_control, SolverGMRES<LinearAlgebra::distributed::Vector<double>>::AdditionalData(vel_Krylov_size));
+    PreconditionJacobi<NavierStokesProjectionOperator<dim,
+                                                      EquationData::degree_p,
+                                                      EquationData::degree_p + 1,
+                                                      EquationData::degree_p + 2,
+                                                      LinearAlgebra::distributed::Vector<double>,
+                                                      double>> preconditioner;
+    navier_stokes_matrix.compute_diagonal();
+    preconditioner.initialize(navier_stokes_matrix);
+    gmres.solve(navier_stokes_matrix, u_star, rhs_u, preconditioner);
   }
 
 
