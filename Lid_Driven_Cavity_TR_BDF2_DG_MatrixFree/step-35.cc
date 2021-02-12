@@ -424,7 +424,7 @@ namespace Step35 {
 
     Vec                         u_extr;
 
-    EquationData::Velocity<dim> vel_exact;
+    EquationData::Velocity<dim> vel_boundary;
 
     void assemble_rhs_cell_term_velocity(const MatrixFree<dim, Number>&               data,
                                          Vec&                                         dst,
@@ -526,7 +526,7 @@ namespace Step35 {
     MatrixFreeOperators::Base<dim, Vec>(), eq_data(data), Re(data.Reynolds), dt(data.dt),
                                            gamma(2.0 - std::sqrt(2.0)), a31((1.0 - gamma)/(2.0*(2.0 - gamma))),
                                            a32(a31), a33(1.0/(2.0 - gamma)), TR_BDF2_stage(1), NS_stage(1), u_extr(),
-                                           vel_exact(data.initial_time) {}
+                                           vel_boundary(data.initial_time) {}
 
 
   // Setter of time-step
@@ -763,7 +763,7 @@ namespace Step35 {
               for(unsigned int d = 0; d < dim; ++d)
                 point[d] = point_vectorized[d][v];
               for(unsigned int d = 0; d < dim; ++d)
-                u_int_m[d][v] = vel_exact.value(point, d);
+                u_int_m[d][v] = vel_boundary.value(point, d);
             }
           }
           const auto tensor_product_u_int_m = outer_product(u_int_m, phi_old_extr.get_value(q));
@@ -810,7 +810,7 @@ namespace Step35 {
               for(unsigned int d = 0; d < dim; ++d)
                 point[d] = point_vectorized[d][v];
               for(unsigned int d = 0; d < dim; ++d)
-                u_m[d][v] = vel_exact.value(point, d);
+                u_m[d][v] = vel_boundary.value(point, d);
             }
           }
           const auto tensor_product_u_m = outer_product(u_m, phi_int_extr.get_value(q));
@@ -1096,7 +1096,6 @@ namespace Step35 {
         phi_old_extr.gather_evaluate(u_extr, true, false);
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& n_plus               = phi.get_normal_vector(q);
-          const auto& tensor_product_n     = outer_product(n_plus, n_plus);
           const auto& grad_u_int           = phi.get_gradient(q);
           const auto& u_int                = phi.get_value(q);
           const auto& tensor_product_u_int = outer_product(phi.get_value(q), phi_old_extr.get_value(q));
@@ -1120,7 +1119,6 @@ namespace Step35 {
         phi_extr.gather_evaluate(u_extr, true, false);
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& n_plus           = phi.get_normal_vector(q);
-          const auto& tensor_product_n = outer_product(n_plus, n_plus);
           const auto& grad_u           = phi.get_gradient(q);
           const auto& u                = phi.get_value(q);
           const auto& tensor_product_u = outer_product(phi.get_value(q), phi_extr.get_value(q));
@@ -1583,7 +1581,6 @@ namespace Step35 {
           phi.evaluate(true, true);
           for(unsigned int q = 0; q < phi.n_q_points; ++q) {
             const auto& n_plus               = phi.get_normal_vector(q);
-            const auto& tensor_product_n     = outer_product(n_plus, n_plus);
             const auto& grad_u_int           = phi.get_gradient(q);
             const auto& u_int                = phi.get_value(q);
             const auto& tensor_product_u_int = outer_product(phi.get_value(q), phi_old_extr.get_value(q));
@@ -1621,7 +1618,6 @@ namespace Step35 {
           phi.evaluate(true, true);
           for(unsigned int q = 0; q < phi.n_q_points; ++q) {
             const auto& n_plus           = phi.get_normal_vector(q);
-            const auto& tensor_product_n = outer_product(n_plus, n_plus);
             const auto& grad_u           = phi.get_gradient(q);
             const auto& u                = phi.get_value(q);
             const auto& tensor_product_u = outer_product(phi.get_value(q), phi_extr.get_value(q));
@@ -1686,7 +1682,6 @@ namespace Step35 {
     const double       Re;
     double             dt;
 
-    EquationData::Velocity<dim> vel_boundary;
     EquationData::Pressure<dim> pres_init;
 
     parallel::distributed::Triangulation<dim> triangulation;
@@ -1738,6 +1733,10 @@ namespace Step35 {
 
     void compute_streamline();
 
+    double get_maximal_velocity() const;
+
+    double get_maximal_difference() const;
+
     void output_results(const unsigned int step);
 
   private:
@@ -1756,7 +1755,7 @@ namespace Step35 {
     double       vel_eps;
     double       vel_diag_strength;
 
-    Vector<double> H1_error_per_cell_vel;
+    unsigned int n_global_refines;
 
     std::string saving_dir;
 
@@ -1782,7 +1781,6 @@ namespace Step35 {
     TR_BDF2_stage(1),             //--- Initialize the flag for the TR_BDF2 stage
     Re(data.Reynolds),
     dt(data.dt),
-    vel_boundary(data.initial_time),
     pres_init(data.initial_time),
     triangulation(MPI_COMM_WORLD),
     fe_velocity(FE_DGQ<dim>(EquationData::degree_p + 1), dim),
@@ -1800,6 +1798,7 @@ namespace Step35 {
     vel_update_prec(data.vel_update_prec),
     vel_eps(data.vel_eps),
     vel_diag_strength(data.vel_diag_strength),
+    n_global_refines(data.n_global_refines),
     saving_dir(data.dir),
     pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0),
     time_out("./" + data.dir + "/time_analysis_" +
@@ -1843,9 +1842,6 @@ namespace Step35 {
     pcout << "Number of refines = " << n_refines << std::endl;
     triangulation.refine_global(n_refines);
     pcout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
-
-    Vector<double> error_per_cell_tmp(triangulation.n_active_cells());
-    H1_error_per_cell_vel.reinit(error_per_cell_tmp);
 
     dof_handler_velocity.distribute_dofs(fe_velocity);
     dof_handler_pressure.distribute_dofs(fe_pressure);
@@ -1933,14 +1929,14 @@ namespace Step35 {
 
     //--- TR-BDF2 first step
     if(TR_BDF2_stage == 1) {
-      u_extr.equ(1.0 + gamma/(2.0*(1.0 - gamma)), u_n);
-      u_tmp.equ(gamma/(2.0*(1.0 - gamma)), u_n_minus_1);
+      u_extr.equ(1.0 + 0.0*gamma/(2.0*(1.0 - gamma)), u_n);
+      u_tmp.equ(0.0*gamma/(2.0*(1.0 - gamma)), u_n_minus_1);
       u_extr -= u_tmp;
     }
     //--- TR-BDF2 second step
     else {
-      u_extr.equ(1.0 + (1.0 - gamma)/gamma, u_n_gamma);
-      u_tmp.equ((1.0 - gamma)/gamma, u_n);
+      u_extr.equ(1.0 + 0.0*(1.0 - gamma)/gamma, u_n_gamma);
+      u_tmp.equ(0.0*(1.0 - gamma)/gamma, u_n);
       u_extr -= u_tmp;
     }
   }
@@ -2065,6 +2061,66 @@ namespace Step35 {
     cg.solve(navier_stokes_matrix, streamline, omega, PreconditionIdentity());
 
     constraints_streamline.distribute(streamline);
+  }
+
+
+  // The following function is used in determining the maximal velocity
+  // in order to compute the CFL
+  //
+  template<int dim>
+  double NavierStokesProjection<dim>::get_maximal_velocity() const {
+    QGauss<dim>        quadrature_formula(EquationData::degree_p + 2);
+    const unsigned int n_q_points = quadrature_formula.size();
+
+    FEValues<dim> fe_values(fe_velocity, quadrature_formula, update_values);
+    std::vector<Vector<double>> solution_values(n_q_points, Vector<double>(dim + 2));
+    double max_local_velocity = 0.0;
+
+    for(const auto& cell : dof_handler_velocity.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        fe_values.reinit(cell);
+        fe_values.get_function_values(u_n, solution_values);
+        for(unsigned int q = 0; q < n_q_points; ++q) {
+          Tensor<1, dim> velocity;
+          for(unsigned int i = 0; i < dim; ++i) {
+            velocity[i] = solution_values[q](i);
+            max_local_velocity = std::max(max_local_velocity, std::abs(velocity[i]));
+          }
+        }
+      }
+    }
+
+    return Utilities::MPI::max(max_local_velocity, MPI_COMM_WORLD);
+  }
+
+
+  // The following function is used in determining the maximal nodal difference
+  // in order to see if we have reched steady-state
+  template<int dim>
+  double NavierStokesProjection<dim>::get_maximal_difference() const {
+    QGauss<dim>        quadrature_formula(EquationData::degree_p + 2);
+    const unsigned int n_q_points = quadrature_formula.size();
+
+    FEValues<dim> fe_values(fe_velocity, quadrature_formula, update_values);
+    std::vector<Vector<double>> solution_values(n_q_points, Vector<double>(dim));
+    std::vector<Vector<double>> solution_old_values(n_q_points, Vector<double>(dim));
+    double max_difference = 0.0;
+
+    for(const auto& cell : dof_handler_velocity.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        fe_values.reinit(cell);
+        fe_values.get_function_values(u_n, solution_values);
+        fe_values.get_function_values(u_n_minus_1, solution_old_values);
+        for(unsigned int q = 0; q < n_q_points; ++q) {
+          Tensor<1, dim> velocity;
+          for(unsigned int i = 0; i < dim; ++i)
+            velocity[i] = solution_values[q](i) - solution_old_values[q](i);
+          max_difference = std::max(max_difference, velocity.norm());
+        }
+      }
+    }
+    
+    return Utilities::MPI::max(max_difference, MPI_COMM_WORLD);
   }
 
 
@@ -2202,15 +2258,22 @@ namespace Step35 {
       u_tmp.equ((gamma - 1.0)*dt, u_tmp);
       u_n += u_tmp;
       TR_BDF2_stage = 1; //--- Flag to pass at first stage at next step
+      const double max_vel = get_maximal_velocity();
+      pcout<< "Maximal velocity = " << max_vel << std::endl;
+      pcout << "CFL = " << dt*max_vel*(EquationData::degree_p + 1)*(std::pow(2, n_global_refines)) << std::endl;
       if(n % output_interval == 0) {
         verbose_cout << "Plotting Solution final" << std::endl;
         output_results(n);
       }
-      if(T - time < dt && T - time > 1e-10) {
+      if(time > 0.1*T && get_maximal_difference() < 1e-7)
+        break;
+      else if(T - time < dt && T - time > 1e-10) {
         dt = T - time;
         navier_stokes_matrix.set_dt(dt);
       }
     }
+    if(n % output_interval != 0)
+      output_results(n);
   }
 
 } // namespace Step35
