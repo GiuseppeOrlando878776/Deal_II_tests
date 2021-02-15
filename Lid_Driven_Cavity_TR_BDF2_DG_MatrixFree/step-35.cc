@@ -2174,7 +2174,7 @@ namespace Step35 {
     const unsigned int n_q_points = quadrature_formula.size();
 
     FEValues<dim> fe_values(fe_velocity, quadrature_formula, update_values);
-    std::vector<Vector<double>> solution_values(n_q_points, Vector<double>(dim + 2));
+    std::vector<Vector<double>> solution_values(n_q_points, Vector<double>(dim));
     double max_local_velocity = 0.0;
 
     for(const auto& cell : dof_handler_velocity.active_cell_iterators()) {
