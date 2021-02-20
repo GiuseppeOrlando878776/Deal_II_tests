@@ -55,6 +55,8 @@
 #include <deal.II/fe/component_mask.h>
 
 #include <deal.II/base/timer.h>
+#include <deal.II/distributed/solution_transfer.h>
+#include <deal.II/numerics/error_estimator.h>
 
 // Finally this is as in all previous programs:
 namespace Step35 {
@@ -79,6 +81,8 @@ namespace Step35 {
       double dt;
 
       unsigned int n_cells;
+      unsigned int max_loc_refinements;
+      unsigned int min_loc_refinements;
 
       unsigned int vel_max_iterations;
       unsigned int vel_Krylov_size;
@@ -92,6 +96,8 @@ namespace Step35 {
 
       std::string dir;
 
+      unsigned int refinement_iterations;
+
     protected:
       ParameterHandler prm;
     };
@@ -102,6 +108,8 @@ namespace Step35 {
                                   Reynolds(1.0),
                                   dt(5e-4),
                                   n_cells(0),
+                                  max_loc_refinements(0),
+                                  min_loc_refinements(0),
                                   vel_max_iterations(1000),
                                   vel_Krylov_size(30),
                                   vel_off_diagonals(60),
@@ -109,7 +117,8 @@ namespace Step35 {
                                   vel_eps(1e-12),
                                   vel_diag_strength(0.01),
                                   verbose(true),
-                                  output_interval(15) {
+                                  output_interval(15),
+                                  refinement_iterations(0) {
       prm.enter_subsection("Physical data");
       {
         prm.declare_entry("initial_time",
@@ -142,6 +151,14 @@ namespace Step35 {
                           "100",
                           Patterns::Integer(1, 1500),
                           " The number of cells we want on each direction of the mesh. ");
+        prm.declare_entry("max_loc_refinements",
+                          "4",
+                           Patterns::Integer(1, 10),
+                           " The number of maximum local refinements. ");
+        prm.declare_entry("min_loc_refinements",
+                          "2",
+                           Patterns::Integer(1, 10),
+                           " The number of minimum local refinements. ");
       }
       prm.leave_subsection();
 
@@ -175,6 +192,12 @@ namespace Step35 {
                           "update the preconditioner");
       }
       prm.leave_subsection();
+
+      prm.declare_entry("refinement_iterations",
+                        "0",
+                        Patterns::Integer(0),
+                        " This number indicates how often we need to "
+                        "refine the mesh");
 
       prm.declare_entry("saving directory", "SimTest");
 
@@ -215,6 +238,8 @@ namespace Step35 {
       prm.enter_subsection("Space discretization");
       {
         n_cells = prm.get_integer("n_of_cells");
+        max_loc_refinements = prm.get_integer("max_loc_refinements");
+        min_loc_refinements = prm.get_integer("min_loc_refinements");
       }
       prm.leave_subsection();
 
@@ -230,6 +255,8 @@ namespace Step35 {
       prm.leave_subsection();
 
       dir = prm.get("saving directory");
+
+      refinement_iterations = prm.get_integer("refinement_iterations");
 
       verbose = prm.get_bool("verbose");
 
@@ -330,17 +357,17 @@ namespace Step35 {
   template <int dim>
   void PostprocessorVorticity<dim>::evaluate_vector_field(const DataPostprocessorInputs::Vector<dim>& inputs,
                                                           std::vector<Vector<double>>&                computed_quantities) const {
-  const unsigned int n_quadrature_points = inputs.solution_values.size();
+    const unsigned int n_quadrature_points = inputs.solution_values.size();
 
-  Assert(inputs.solution_gradients.size() == n_quadrature_points, ExcInternalError());
-  Assert(computed_quantities.size() == n_quadrature_points, ExcInternalError());
+    Assert(inputs.solution_gradients.size() == n_quadrature_points, ExcInternalError());
+    Assert(computed_quantities.size() == n_quadrature_points, ExcInternalError());
 
-  Assert(inputs.solution_values[0].size() == dim, ExcInternalError());
+    Assert(inputs.solution_values[0].size() == dim, ExcInternalError());
 
-  Assert(computed_quantities[0].size() == 1, ExcInternalError());
+    Assert(computed_quantities[0].size() == 1, ExcInternalError());
 
-  for(unsigned int q = 0; q < n_quadrature_points; ++q)
-    computed_quantities[q](0) = inputs.solution_gradients[q][1][0] - inputs.solution_gradients[q][0][1];
+    for(unsigned int q = 0; q < n_quadrature_points; ++q)
+      computed_quantities[q](0) = inputs.solution_gradients[q][1][0] - inputs.solution_gradients[q][0][1];
   }
 
 
@@ -372,7 +399,7 @@ namespace Step35 {
 
   // @sect3{ <code>NavierStokesProjectionOperator::NavierStokesProjectionOperator</code> }
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
   class NavierStokesProjectionOperator: public MatrixFreeOperators::Base<dim, Vec> {
   public:
     NavierStokesProjectionOperator();
@@ -526,15 +553,16 @@ namespace Step35 {
 
   // Default constructor
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::NavierStokesProjectionOperator():
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
+  NavierStokesProjectionOperator():
     MatrixFreeOperators::Base<dim, Vec>(), Re(), dt(), gamma(), a31(), a32(), a33(), TR_BDF2_stage(), NS_stage(1), u_extr() {}
 
 
   // Constructor with runtime parameters storage
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   NavierStokesProjectionOperator(RunTimeParameters::Data_Storage& data):
     MatrixFreeOperators::Base<dim, Vec>(), eq_data(data), Re(data.Reynolds), dt(data.dt),
                                            gamma(2.0 - std::sqrt(2.0)), a31((1.0 - gamma)/(2.0*(2.0 - gamma))),
@@ -544,8 +572,8 @@ namespace Step35 {
 
   // Setter of time-step
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   set_dt(const double time_step) {
     dt = time_step;
   }
@@ -554,8 +582,8 @@ namespace Step35 {
   // Setter of TR-BDF2 stage (this can be known only during the effective execution
   // and so it has to be demanded to the class that really solves the problem)
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   set_TR_BDF2_stage(const unsigned int stage) {
     AssertIndexRange(stage, 3);
     Assert(stage > 0, ExcInternalError());
@@ -566,8 +594,8 @@ namespace Step35 {
   // Setter of NS stage (this can be known only during the effective execution
   // and so it has to be demanded to the class that really solves the problem)
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   set_NS_stage(const unsigned int stage) {
     AssertIndexRange(stage, 5);
     Assert(stage > 0, ExcInternalError());
@@ -577,8 +605,8 @@ namespace Step35 {
 
   // Setter of extrapolated velocity for different stages
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   set_u_extr(const Vec& src) {
     u_extr = src;
     u_extr.update_ghost_values();
@@ -587,15 +615,15 @@ namespace Step35 {
 
   // Assemble rhs cell term for the velocity
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_rhs_cell_term_velocity(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
                                   const std::vector<Vec>&                      src,
                                   const std::pair<unsigned int, unsigned int>& cell_range) const {
     if(TR_BDF2_stage == 1) {
-      FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0), phi_old(data, 0), phi_old_extr(data, 0);
-      FEEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number> phi_old_press(data, 1);
+      FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, 0), phi_old(data, 0), phi_old_extr(data, 0);
+      FEEvaluation<dim, fe_degree_p, n_q_points_1d_v, 1, Number> phi_old_press(data, 1);
 
       for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
         phi_old.reinit(cell);
@@ -622,8 +650,8 @@ namespace Step35 {
       }
     }
     else {
-      FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0), phi_old(data, 0), phi_int(data, 0);
-      FEEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number> phi_old_press(data, 1);
+      FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, 0), phi_old(data, 0), phi_int(data, 0);
+      FEEvaluation<dim, fe_degree_p, n_q_points_1d_v, 1, Number> phi_old_press(data, 1);
 
       for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
         phi_old.reinit(cell);
@@ -657,17 +685,17 @@ namespace Step35 {
 
   // Assemble rhs face term for the velocity
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_rhs_face_term_velocity(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
                                   const std::vector<Vec>&                      src,
                                   const std::pair<unsigned int, unsigned int>& face_range) const {
     if(TR_BDF2_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
-                                                                     phi_old_p(data, true, 0), phi_old_m(data, false, 0),
-                                                                     phi_old_extr_p(data, true, 0), phi_old_extr_m(data, false, 0);
-      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number> phi_old_press_p(data, true, 1), phi_old_press_m(data, false, 1);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
+                                                                       phi_old_p(data, true, 0), phi_old_m(data, false, 0),
+                                                                       phi_old_extr_p(data, true, 0), phi_old_extr_m(data, false, 0);
+      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d_v, 1, Number>   phi_old_press_p(data, true, 1), phi_old_press_m(data, false, 1);
 
       for(unsigned int face = face_range.first; face < face_range.second; ++face) {
         phi_old_p.reinit(face);
@@ -698,10 +726,10 @@ namespace Step35 {
       }
     }
     else {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
-                                                                     phi_old_p(data, true, 0), phi_old_m(data, false, 0),
-                                                                     phi_int_p(data, true, 0), phi_int_m(data, false, 0);
-      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number> phi_old_press_p(data, true, 1), phi_old_press_m(data, false, 1);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
+                                                                       phi_old_p(data, true, 0), phi_old_m(data, false, 0),
+                                                                       phi_int_p(data, true, 0), phi_int_m(data, false, 0);
+      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d_v, 1, Number>   phi_old_press_p(data, true, 1), phi_old_press_m(data, false, 1);
 
       for(unsigned int face = face_range.first; face < face_range.second; ++ face) {
         phi_old_p.reinit(face);
@@ -741,17 +769,17 @@ namespace Step35 {
 
   // Assemble rhs boundary term for the velocity
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_rhs_boundary_term_velocity(const MatrixFree<dim, Number>&               data,
                                       Vec&                                         dst,
                                       const std::vector<Vec>&                      src,
                                       const std::pair<unsigned int, unsigned int>& face_range) const {
     if(TR_BDF2_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, true, 0),
-                                                                     phi_old(data, true, 0),
-                                                                     phi_old_extr(data, true, 0);
-      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number> phi_old_press(data, true, 1);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, true, 0),
+                                                                       phi_old(data, true, 0),
+                                                                       phi_old_extr(data, true, 0);
+      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d_v, 1, Number>   phi_old_press(data, true, 1);
 
       for(unsigned int face = face_range.first; face < face_range.second; ++face) {
         phi_old.reinit(face);
@@ -790,11 +818,11 @@ namespace Step35 {
       }
     }
     else {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, true, 0),
-                                                                     phi_old(data, true, 0),
-                                                                     phi_int(data, true, 0),
-                                                                     phi_int_extr(data, true, 0);
-      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi_old_press(data, true, 1);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, true, 0),
+                                                                       phi_old(data, true, 0),
+                                                                       phi_int(data, true, 0),
+                                                                       phi_int_extr(data, true, 0);
+      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d_v, 1, Number>   phi_old_press(data, true, 1);
 
       for(unsigned int face = face_range.first; face < face_range.second; ++ face) {
         phi_old.reinit(face);
@@ -842,8 +870,8 @@ namespace Step35 {
 
   // Put together all the previous steps for velocity
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   vmult_rhs_velocity(Vec& dst, const std::vector<Vec>& src) const {
     for(unsigned int d = 0; d < src.size(); ++d)
       src[d].update_ghost_values();
@@ -858,14 +886,14 @@ namespace Step35 {
 
   // Assemble rhs cell term for the pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_rhs_cell_term_pressure(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
                                   const std::vector<Vec>&                      src,
                                   const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, 1, 1), phi_old(data, 1, 1);
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, 0, 1);
+    FEEvaluation<dim, fe_degree_p, n_q_points_1d_p, 1, Number>   phi(data, 1, 1), phi_old(data, 1, 1);
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d_p, dim, Number> phi_proj(data, 0, 1);
 
     const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
 
@@ -888,14 +916,14 @@ namespace Step35 {
 
   // Assemble rhs face term for the pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_rhs_face_term_pressure(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
                                   const std::vector<Vec>&                      src,
                                   const std::pair<unsigned int, unsigned int>& face_range) const {
-    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
-    FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj_p(data, true, 0, 1), phi_proj_m(data, false, 0, 1);
+    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d_p, 1, Number>   phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
+    FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_p, dim, Number> phi_proj_p(data, true, 0, 1), phi_proj_m(data, false, 0, 1);
 
     const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
 
@@ -920,14 +948,14 @@ namespace Step35 {
 
   // Assemble rhs boundary term for the pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_rhs_boundary_term_pressure(const MatrixFree<dim, Number>&               data,
                                       Vec&                                         dst,
                                       const std::vector<Vec>&                      src,
                                       const std::pair<unsigned int, unsigned int>& face_range) const {
-    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, true, 1, 1);
-    FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, true, 0, 1);
+    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d_p, 1, Number>   phi(data, true, 1, 1);
+    FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_p, dim, Number> phi_proj(data, true, 0, 1);
 
     const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
 
@@ -947,8 +975,8 @@ namespace Step35 {
 
   // Put together all the previous steps for pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   vmult_rhs_pressure(Vec& dst, const std::vector<Vec>& src) const {
     for(unsigned int d = 0; d < src.size(); ++d)
       src[d].update_ghost_values();
@@ -963,14 +991,14 @@ namespace Step35 {
 
   // Assemble cell term for the velocity
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_cell_term_velocity(const MatrixFree<dim, Number>&               data,
                               Vec&                                         dst,
                               const Vec&                                   src,
                               const std::pair<unsigned int, unsigned int>& cell_range) const {
     if(TR_BDF2_stage == 1) {
-      FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0), phi_old_extr(data, 0);
+      FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, 0), phi_old_extr(data, 0);
 
       for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
         phi.reinit(cell);
@@ -989,7 +1017,7 @@ namespace Step35 {
       }
     }
     else {
-      FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0), phi_int_extr(data, 0);
+      FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, 0), phi_int_extr(data, 0);
 
       for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
         phi.reinit(cell);
@@ -1012,15 +1040,15 @@ namespace Step35 {
 
   // Assemble face term for the velocity
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_face_term_velocity(const MatrixFree<dim, Number>&               data,
                               Vec&                                         dst,
                               const Vec&                                   src,
                               const std::pair<unsigned int, unsigned int>& face_range) const {
     if(TR_BDF2_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
-                                                                     phi_old_extr_p(data, true, 0), phi_old_extr_m(data, false, 0);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
+                                                                       phi_old_extr_p(data, true, 0), phi_old_extr_m(data, false, 0);
 
       for(unsigned int face = face_range.first; face < face_range.second; ++face) {
         phi_p.reinit(face);
@@ -1053,8 +1081,8 @@ namespace Step35 {
       }
     }
     else {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
-                                                                     phi_extr_p(data, true, 0), phi_extr_m(data, false, 0);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
+                                                                       phi_extr_p(data, true, 0), phi_extr_m(data, false, 0);
 
       for(unsigned int face = face_range.first; face < face_range.second; ++face) {
         phi_p.reinit(face);
@@ -1091,14 +1119,14 @@ namespace Step35 {
 
   // Assemble boundary term for the velocity
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_boundary_term_velocity(const MatrixFree<dim, Number>&               data,
                                   Vec&                                         dst,
                                   const Vec&                                   src,
                                   const std::pair<unsigned int, unsigned int>& face_range) const {
     if(TR_BDF2_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, true, 0), phi_old_extr(data, true, 0);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, true, 0), phi_old_extr(data, true, 0);
 
       for(unsigned int face = face_range.first; face < face_range.second; ++face) {
         phi.reinit(face);
@@ -1121,7 +1149,7 @@ namespace Step35 {
       }
     }
     else {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, true, 0), phi_extr(data, true, 0);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, true, 0), phi_extr(data, true, 0);
 
       for(unsigned int face = face_range.first; face < face_range.second; ++face) {
         phi.reinit(face);
@@ -1148,13 +1176,13 @@ namespace Step35 {
 
   // Assemble cell term for the pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_cell_term_pressure(const MatrixFree<dim, Number>&               data,
                               Vec&                                         dst,
                               const Vec&                                   src,
                               const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi(data, 1, 1);
+    FEEvaluation<dim, fe_degree_p, n_q_points_1d_p, 1, Number> phi(data, 1, 1);
 
     const double coeff = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
 
@@ -1172,13 +1200,13 @@ namespace Step35 {
 
   // Assemble face term for the pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_face_term_pressure(const MatrixFree<dim, Number>&               data,
                               Vec&                                         dst,
                               const Vec&                                   src,
                               const std::pair<unsigned int, unsigned int>& face_range) const {
-    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
+    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d_p, 1, Number> phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
 
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi_p.reinit(face);
@@ -1204,8 +1232,8 @@ namespace Step35 {
 
   // Put together all previous steps
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   apply_add(Vec& dst, const Vec& src) const {
     if(NS_stage == 1) {
       this->data->loop(&NavierStokesProjectionOperator::assemble_cell_term_velocity,
@@ -1238,13 +1266,13 @@ namespace Step35 {
 
   // Assemble cell term for the projection of gradient of pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_cell_term_projection_grad_p(const MatrixFree<dim, Number>&               data,
                                        Vec&                                         dst,
                                        const Vec&                                   src,
                                        const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0);
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, 0);
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
@@ -1258,14 +1286,14 @@ namespace Step35 {
 
   // Assemble rhs cell term for the projection of gradient of pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_rhs_cell_term_projection_grad_p(const MatrixFree<dim, Number>&               data,
                                            Vec&                                         dst,
                                            const Vec&                                   src,
                                            const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0);
-    FEEvaluation<dim, fe_degree_p, n_q_points_1d, 1, Number>   phi_pres(data, 1);
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, 0);
+    FEEvaluation<dim, fe_degree_p, n_q_points_1d_v, 1, Number>   phi_pres(data, 1);
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi_pres.reinit(cell);
@@ -1280,8 +1308,8 @@ namespace Step35 {
 
   // Put together all the previous steps for pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   vmult_grad_p_projection(Vec& dst, const Vec& src) const {
     this->data->cell_loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_projection_grad_p,
                           this, dst, src, true);
@@ -1290,13 +1318,13 @@ namespace Step35 {
 
   // Assemble cell term for the streamline
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_cell_term_streamline(const MatrixFree<dim, Number>&               data,
                                 Vec&                                         dst,
                                 const Vec&                                   src,
                                 const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d, 1, Number> phi(data, 2);
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, 1, Number> phi(data, 2);
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
@@ -1310,14 +1338,14 @@ namespace Step35 {
 
   // Assemble rhs cell term for the projection of gradient of pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_rhs_cell_term_streamline(const MatrixFree<dim, Number>&               data,
                                     Vec&                                         dst,
                                     const Vec&                                   src,
                                     const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d, 1, Number>   phi(data, 2);
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_vel(data, 0);
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, 1, Number>   phi(data, 2);
+    FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi_vel(data, 0);
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi_vel.reinit(cell);
@@ -1335,8 +1363,8 @@ namespace Step35 {
 
   // Put together all the previous steps for streamline
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   vmult_streamline(Vec& dst, const Vec& src) const {
     this->data->cell_loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_streamline,
                           this, dst, src, true);
@@ -1345,14 +1373,14 @@ namespace Step35 {
 
   // Assemble diagonal cell term for the velocity
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_diagonal_cell_term_velocity(const MatrixFree<dim, Number>&               data,
                                        Vec&                                         dst,
                                        const Vec&                                   src,
                                        const std::pair<unsigned int, unsigned int>& cell_range) const {
     if(TR_BDF2_stage == 1) {
-      FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0), phi_old_extr(data, 0);
+      FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, 0), phi_old_extr(data, 0);
 
       AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal(phi.dofs_per_component);
       Tensor<1, dim, VectorizedArray<Number>> tmp;
@@ -1385,7 +1413,7 @@ namespace Step35 {
       }
     }
     else {
-      FEEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, 0), phi_int_extr(data, 0);
+      FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, 0), phi_int_extr(data, 0);
 
       AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal(phi.dofs_per_component);
       Tensor<1, dim, VectorizedArray<Number>> tmp;
@@ -1422,15 +1450,15 @@ namespace Step35 {
 
   // Assemble diagonal face term for the velocity
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_diagonal_face_term_velocity(const MatrixFree<dim, Number>&               data,
                                        Vec&                                         dst,
                                        const Vec&                                   src,
                                        const std::pair<unsigned int, unsigned int>& face_range) const {
     if(TR_BDF2_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
-                                                                     phi_old_extr_p(data, true, 0), phi_old_extr_m(data, false, 0);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
+                                                                       phi_old_extr_p(data, true, 0), phi_old_extr_m(data, false, 0);
 
       AssertDimension(phi_p.dofs_per_component, phi_m.dofs_per_component);
       AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal_p(phi_p.dofs_per_component), diagonal_m(phi_m.dofs_per_component);
@@ -1485,8 +1513,8 @@ namespace Step35 {
       }
     }
     else {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
-                                                                     phi_extr_p(data, true, 0), phi_extr_m(data, false, 0);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi_p(data, true, 0), phi_m(data, false, 0),
+                                                                       phi_extr_p(data, true, 0), phi_extr_m(data, false, 0);
 
       AssertDimension(phi_p.dofs_per_component, phi_m.dofs_per_component);
       AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal_p(phi_p.dofs_per_component), diagonal_m(phi_m.dofs_per_component);
@@ -1545,14 +1573,14 @@ namespace Step35 {
 
   // Assemble boundary term for the velocity
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_diagonal_boundary_term_velocity(const MatrixFree<dim, Number>&               data,
                                            Vec&                                         dst,
                                            const Vec&                                   src,
                                            const std::pair<unsigned int, unsigned int>& face_range) const {
     if(TR_BDF2_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, true, 0), phi_old_extr(data, true, 0);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, true, 0), phi_old_extr(data, true, 0);
 
       AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal(phi.dofs_per_component);
       Tensor<1, dim, VectorizedArray<Number>> tmp;
@@ -1589,7 +1617,7 @@ namespace Step35 {
       }
     }
     else {
-      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d, dim, Number> phi(data, true, 0), phi_extr(data, true, 0);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi(data, true, 0), phi_extr(data, true, 0);
 
       AlignedVector<Tensor<1, dim, VectorizedArray<Number>>> diagonal(phi.dofs_per_component);
       Tensor<1, dim, VectorizedArray<Number>> tmp;
@@ -1630,13 +1658,13 @@ namespace Step35 {
 
   // Assemble diagonal cell term for the pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_diagonal_cell_term_pressure(const MatrixFree<dim, Number>&               data,
                                        Vec&                                         dst,
                                        const Vec&                                   src,
                                        const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi(data, 1, 1);
+    FEEvaluation<dim, fe_degree_p, n_q_points_1d_p, 1, Number> phi(data, 1, 1);
 
     AlignedVector<VectorizedArray<Number>> diagonal(phi.dofs_per_component);
 
@@ -1665,13 +1693,13 @@ namespace Step35 {
 
   // Assemble diagonal face term for the pressure
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   assemble_diagonal_face_term_pressure(const MatrixFree<dim, Number>&               data,
                                        Vec&                                         dst,
                                        const Vec&                                   src,
                                        const std::pair<unsigned int, unsigned int>& face_range) const {
-    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
+    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d_p, 1, Number> phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
 
     AssertDimension(phi_p.dofs_per_component, phi_m.dofs_per_component);
     AlignedVector<VectorizedArray<Number>> diagonal_p(phi_p.dofs_per_component),
@@ -1717,8 +1745,8 @@ namespace Step35 {
 
   // Put together all previous steps
   //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::compute_diagonal() {
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::compute_diagonal() {
     Assert(NS_stage == 1 || NS_stage == 2, ExcInternalError());
     if(NS_stage == 1) {
       this->inverse_diagonal_entries.reset(new DiagonalMatrix<Vec>());
@@ -1817,7 +1845,9 @@ namespace Step35 {
                    << std::endl
                    << " The permitted range is (0," << arg2 << "]");
 
-    void create_triangulation_and_dofs(const unsigned int n_cells);
+    void create_triangulation(const unsigned int n_cells);
+
+    void setup_dofs();
 
     void initialize();
 
@@ -1837,11 +1867,15 @@ namespace Step35 {
 
     void output_results(const unsigned int step);
 
+    void refine_mesh();
+
+    void interpolate_max_res();
+
   private:
     std::shared_ptr<MatrixFree<dim, double>> matrix_free_storage;
 
     NavierStokesProjectionOperator<dim, EquationData::degree_p, EquationData::degree_p + 1,
-                                   EquationData::degree_p + 2,
+                                   EquationData::degree_p + 1, EquationData::degree_p + 2,
                                    LinearAlgebra::distributed::Vector<double>, double> navier_stokes_matrix;
 
     AffineConstraints<double> constraints_velocity, constraints_pressure, constraints_streamline;
@@ -1854,6 +1888,9 @@ namespace Step35 {
     double       vel_diag_strength;
 
     unsigned int n_cells;
+    unsigned int max_loc_refinements;
+    unsigned int min_loc_refinements;
+    unsigned int refinement_iterations;
 
     std::string saving_dir;
 
@@ -1862,6 +1899,9 @@ namespace Step35 {
     std::ofstream      time_out;
     ConditionalOStream ptime_out;
     TimerOutput        time_table;
+
+    std::ofstream output_n_dofs_velocity;
+    std::ofstream output_n_dofs_pressure;
   };
 
 
@@ -1897,12 +1937,17 @@ namespace Step35 {
     vel_eps(data.vel_eps),
     vel_diag_strength(data.vel_diag_strength),
     n_cells(data.n_cells),
+    max_loc_refinements(data.max_loc_refinements),
+    min_loc_refinements(data.min_loc_refinements),
+    refinement_iterations(data.refinement_iterations),
     saving_dir(data.dir),
     pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0),
     time_out("./" + data.dir + "/time_analysis_" +
              Utilities::int_to_string(Utilities::MPI::n_mpi_processes(MPI_COMM_WORLD)) + "proc.dat"),
     ptime_out(time_out, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0),
-    time_table(ptime_out, TimerOutput::summary, TimerOutput::cpu_and_wall_times) {
+    time_table(ptime_out, TimerOutput::summary, TimerOutput::cpu_and_wall_times),
+    output_n_dofs_velocity("./" + data.dir + "/n_dofs_velocity.dat", std::ofstream::out),
+    output_n_dofs_pressure("./" + data.dir + "/n_dofs_pressure.dat", std::ofstream::out) {
       if(EquationData::degree_p < 1) {
         pcout
         << " WARNING: The chosen pair of finite element spaces is not stable."
@@ -1912,10 +1957,14 @@ namespace Step35 {
 
       AssertThrow(!((dt <= 0.0) || (dt > 0.5*T)), ExcInvalidTimeStep(dt, 0.5*T));
 
+      matrix_free_storage = std::make_shared<MatrixFree<dim, double>>();
+
       constraints_velocity.clear();
       constraints_pressure.clear();
       constraints_streamline.clear();
-      create_triangulation_and_dofs(data.n_cells);
+
+      create_triangulation(data.n_cells);
+      setup_dofs();
       initialize();
   }
 
@@ -1923,18 +1972,26 @@ namespace Step35 {
   // @sect4{<code>NavierStokesProjection::create_triangulation_and_dofs</code>}
 
   // The method that creates the triangulation and refines it the needed number
-  // of times. After creating the triangulation, it creates the mesh dependent
+  // of times.
+  //
+  template<int dim>
+  void NavierStokesProjection<dim>::create_triangulation(const unsigned int n_cells) {
+    TimerOutput::Scope t(time_table, "Create triangulation");
+
+    GridGenerator::subdivided_hyper_cube(triangulation, n_cells, 0.0, 1.0, true);
+
+    pcout << "Number of initial cells = " << n_cells << std::endl;
+  }
+
+
+  // After creating the triangulation, it creates the mesh dependent
   // data, i.e. it distributes degrees of freedom and renumbers them, and
   // initializes the matrices and vectors that we will use.
   //
   template<int dim>
-  void NavierStokesProjection<dim>::create_triangulation_and_dofs(const unsigned int n_cells) {
-    TimerOutput::Scope t(time_table, "Create triangulation and dofs");
-
-    GridGenerator::subdivided_hyper_cube(triangulation, n_cells, 0.0, 1.0, true);
-
-    pcout << "Number of cells = " << n_cells << std::endl;
-    pcout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
+  void NavierStokesProjection<dim>::setup_dofs() {
+    pcout << "Number of active cells: " << triangulation.n_global_active_cells() << std::endl;
+    pcout << "Number of levels: "       << triangulation.n_global_levels()       << std::endl;
 
     dof_handler_velocity.distribute_dofs(fe_velocity);
     dof_handler_pressure.distribute_dofs(fe_pressure);
@@ -1946,6 +2003,11 @@ namespace Step35 {
           << std::endl
           << "Re        = " << Re << std::endl
           << std::endl;
+
+    if(Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0) {
+      output_n_dofs_velocity << dof_handler_velocity.n_dofs() << std::endl;
+      output_n_dofs_pressure << dof_handler_pressure.n_dofs() << std::endl;
+    }
 
     IndexSet locally_relevant_dofs;
     DoFTools::extract_locally_relevant_dofs(dof_handler_streamline, locally_relevant_dofs);
@@ -1973,12 +2035,10 @@ namespace Step35 {
     constraints.push_back(&constraints_pressure);
     constraints.push_back(&constraints_streamline);
 
-    std::vector<QGauss<dim - 1>> quadratures;
-    quadratures.push_back(QGauss<dim - 1>(EquationData::degree_p + 2));
-    quadratures.push_back(QGauss<dim - 1>(EquationData::degree_p + 1));
-    quadratures.push_back(QGauss<dim - 1>(EquationData::degree_p + 2));
+    std::vector<QGauss<1>> quadratures;
+    quadratures.push_back(QGauss<1>(EquationData::degree_p + 2));
+    quadratures.push_back(QGauss<1>(EquationData::degree_p + 1));
 
-    matrix_free_storage = std::make_unique<MatrixFree<dim, double>>();
     matrix_free_storage->reinit(dof_handlers, constraints, quadratures, additional_data);
     matrix_free_storage->initialize_dof_vector(u_star, 0);
     matrix_free_storage->initialize_dof_vector(rhs_u, 0);
@@ -2022,14 +2082,14 @@ namespace Step35 {
 
     //--- TR-BDF2 first step
     if(TR_BDF2_stage == 1) {
-      u_extr.equ(1.0 + gamma/(2.0*(1.0 - gamma)), u_n);
-      u_tmp.equ(gamma/(2.0*(1.0 - gamma)), u_n_minus_1);
+      u_extr.equ(1.0 + 0.0*gamma/(2.0*(1.0 - gamma)), u_n);
+      u_tmp.equ(0.0*gamma/(2.0*(1.0 - gamma)), u_n_minus_1);
       u_extr -= u_tmp;
     }
     //--- TR-BDF2 second step
     else {
-      u_extr.equ(1.0 + (1.0 - gamma)/gamma, u_n_gamma);
-      u_tmp.equ((1.0 - gamma)/gamma, u_n);
+      u_extr.equ(1.0 + 0.0*(1.0 - gamma)/gamma, u_n_gamma);
+      u_tmp.equ(0.0*(1.0 - gamma)/gamma, u_n);
       u_extr -= u_tmp;
     }
   }
@@ -2074,6 +2134,7 @@ namespace Step35 {
     PreconditionJacobi<NavierStokesProjectionOperator<dim,
                                                       EquationData::degree_p,
                                                       EquationData::degree_p + 1,
+                                                      EquationData::degree_p + 1,
                                                       EquationData::degree_p + 2,
                                                       LinearAlgebra::distributed::Vector<double>,
                                                       double>> preconditioner;
@@ -2104,6 +2165,7 @@ namespace Step35 {
     SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
     PreconditionJacobi<NavierStokesProjectionOperator<dim,
                                                       EquationData::degree_p,
+                                                      EquationData::degree_p + 1,
                                                       EquationData::degree_p + 1,
                                                       EquationData::degree_p + 2,
                                                       LinearAlgebra::distributed::Vector<double>,
@@ -2303,6 +2365,182 @@ namespace Step35 {
   }
 
 
+  // @sect4{ <code>NavierStokesProjection::refine_mesh</code>}
+  //
+  // After finding a good initial guess on the coarse mesh, we hope to
+  // decrease the error through refining the mesh. We also need to transfer the current solution to the
+  // next mesh using the SolutionTransfer class.
+  //
+  template <int dim>
+  void NavierStokesProjection<dim>::refine_mesh() {
+    TimerOutput::Scope t(time_table, "Refine mesh");
+
+    //Save current velocity solution
+    LinearAlgebra::distributed::Vector<double> tmp_velocity;
+    tmp_velocity.reinit(u_n);
+    tmp_velocity = u_n;
+
+    //Build a proper vector for KellyErrorEstimator
+    IndexSet locally_relevant_dofs;
+    DoFTools::extract_locally_relevant_dofs(dof_handler_velocity, locally_relevant_dofs);
+    LinearAlgebra::distributed::Vector<double> copy_vec(tmp_velocity);
+    tmp_velocity.reinit(dof_handler_velocity.locally_owned_dofs(), locally_relevant_dofs, MPI_COMM_WORLD);
+    tmp_velocity.copy_locally_owned_data_from(copy_vec);
+    tmp_velocity.update_ghost_values();
+
+    //Call KellyErrorEstimator
+    Vector<float> estimated_error_per_cell(triangulation.n_active_cells());
+    KellyErrorEstimator<dim>::estimate(dof_handler_velocity,
+                                       QGauss<dim - 1>(EquationData::degree_p + 1),
+                                       std::map<types::boundary_id, const Function<dim>*>(),
+                                       tmp_velocity,
+                                       estimated_error_per_cell);
+
+    //Refine grid
+    GridRefinement::refine_and_coarsen_fixed_number(triangulation, estimated_error_per_cell, 0.3, 0.05);
+    for(const auto& cell: triangulation.active_cell_iterators()) {
+      if(cell->refine_flag_set() && cell->level() == max_loc_refinements)
+        cell->clear_refine_flag();
+      if(cell->refine_flag_set() && cell->level() == min_loc_refinements)
+        cell->clear_coarsen_flag();
+    }
+    triangulation.prepare_coarsening_and_refinement();
+
+    std::vector<const LinearAlgebra::distributed::Vector<double>*> velocities;
+    velocities.push_back(&u_n);
+    velocities.push_back(&u_n_minus_1);
+    parallel::distributed::SolutionTransfer<dim, LinearAlgebra::distributed::Vector<double>>
+    solution_transfer_velocity(dof_handler_velocity);
+    solution_transfer_velocity.prepare_for_coarsening_and_refinement(velocities);
+    parallel::distributed::SolutionTransfer<dim, LinearAlgebra::distributed::Vector<double>>
+    solution_transfer_pressure(dof_handler_pressure);
+    solution_transfer_pressure.prepare_for_coarsening_and_refinement(pres_n);
+
+    triangulation.execute_coarsening_and_refinement();
+
+    // First DoFHandler objects are set up and constraints are generated.
+    setup_dofs();
+
+    // Interpolate current solutions to new mesh
+    LinearAlgebra::distributed::Vector<double> transfer_velocity,
+                                               transfer_velocity_minus_1,
+                                               transfer_pressure;
+    transfer_velocity.reinit(u_n);
+    transfer_velocity.zero_out_ghosts();
+    transfer_velocity_minus_1.reinit(u_n_minus_1);
+    transfer_velocity_minus_1.zero_out_ghosts();
+    transfer_pressure.reinit(pres_n);
+    transfer_pressure.zero_out_ghosts();
+
+    std::vector<LinearAlgebra::distributed::Vector<double>*> transfer_velocities;
+    transfer_velocities.push_back(&transfer_velocity);
+    transfer_velocities.push_back(&transfer_velocity_minus_1);
+    solution_transfer_velocity.interpolate(transfer_velocities);
+    transfer_velocity.update_ghost_values();
+    transfer_velocity_minus_1.update_ghost_values();
+    solution_transfer_pressure.interpolate(transfer_pressure);
+    transfer_pressure.update_ghost_values();
+
+    u_n         = transfer_velocity;
+    u_n_minus_1 = transfer_velocity_minus_1;
+    pres_n      = transfer_pressure;
+  }
+
+
+  // @sect4{ <code>NavierStokesProjection::interpolate_max_res</code>}
+  //
+  // Interpolate the locally refined solution to a mesh with maximal resolution
+  // and trnasfer velocity and pressure. Then compute streamline and vorticity
+  // and let paraview do the difference
+  //
+  template<int dim>
+  void NavierStokesProjection<dim>::interpolate_max_res() {
+    parallel::distributed::Triangulation<dim> triangulation_max_res(MPI_COMM_WORLD);
+    GridGenerator::subdivided_hyper_cube(triangulation_max_res, n_cells*std::pow(2, triangulation.n_global_levels() - 1),
+                                         0.0, 1.0, true);
+    triangulation.copy_triangulation(triangulation_max_res);
+
+    parallel::distributed::SolutionTransfer<dim, LinearAlgebra::distributed::Vector<double>>
+    solution_transfer_velocity(dof_handler_velocity);
+    solution_transfer_velocity.prepare_for_coarsening_and_refinement(u_n);
+    parallel::distributed::SolutionTransfer<dim, LinearAlgebra::distributed::Vector<double>>
+    solution_transfer_pressure(dof_handler_pressure);
+    solution_transfer_pressure.prepare_for_coarsening_and_refinement(pres_n);
+
+    setup_dofs();
+
+    LinearAlgebra::distributed::Vector<double> transfer_velocity, transfer_pressure;
+    transfer_velocity.reinit(u_n);
+    transfer_velocity.zero_out_ghosts();
+    transfer_pressure.reinit(pres_n);
+    transfer_pressure.zero_out_ghosts();
+
+    solution_transfer_velocity.interpolate(transfer_velocity);
+    transfer_velocity.update_ghost_values();
+    solution_transfer_pressure.interpolate(transfer_pressure);
+    transfer_pressure.update_ghost_values();
+
+    u_n    = transfer_velocity;
+    pres_n = transfer_pressure;
+
+    const FESystem<dim> joint_fe(fe_velocity, 1, fe_pressure, 1);
+    DoFHandler<dim>     joint_dof_handler(triangulation);
+    joint_dof_handler.distribute_dofs(joint_fe);
+    Assert(joint_dof_handler.n_dofs() == (dof_handler_velocity.n_dofs() + dof_handler_pressure.n_dofs()),
+           ExcInternalError());
+    Vector<double> joint_solution(joint_dof_handler.n_dofs());
+    std::vector<types::global_dof_index> loc_joint_dof_indices(joint_fe.n_dofs_per_cell()),
+                                         loc_vel_dof_indices(fe_velocity.n_dofs_per_cell()),
+                                         loc_pres_dof_indices(fe_pressure.n_dofs_per_cell());
+    typename DoFHandler<dim>::active_cell_iterator joint_beginc = joint_dof_handler.begin_active(),
+                                                   joint_endc   = joint_dof_handler.end(),
+                                                   vel_cell     = dof_handler_velocity.begin_active(),
+                                                   pres_cell    = dof_handler_pressure.begin_active();
+    for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
+      if(joint_cell->is_locally_owned()) {
+        joint_cell->get_dof_indices(loc_joint_dof_indices);
+        vel_cell->get_dof_indices(loc_vel_dof_indices);
+        pres_cell->get_dof_indices(loc_pres_dof_indices);
+        for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
+          switch(joint_fe.system_to_base_index(i).first.first) {
+            case 0:
+              Assert(joint_fe.system_to_base_index(i).first.second < dim,
+                     ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            case 1:
+              Assert(joint_fe.system_to_base_index(i).first.second == 0,
+                    ExcInternalError());
+              joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
+              break;
+            default:
+              Assert(false, ExcInternalError());
+          }
+        }
+      }
+    }
+    std::vector<std::string> joint_solution_names(dim, "v");
+    joint_solution_names.emplace_back("p");
+    DataOut<dim> data_out;
+    data_out.attach_dof_handler(joint_dof_handler);
+    std::vector<DataComponentInterpretation::DataComponentInterpretation>
+    component_interpretation(dim + 1, DataComponentInterpretation::component_is_part_of_vector);
+    component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
+    data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
+
+    PostprocessorVorticity<dim> postprocessor;
+    data_out.add_data_vector(dof_handler_velocity, u_n, postprocessor);
+
+    compute_streamline();
+    streamline.update_ghost_values();
+    data_out.add_data_vector(dof_handler_streamline, streamline, "streamline", {DataComponentInterpretation::component_is_scalar});
+
+    data_out.build_patches();
+    const std::string output = "./" + saving_dir + "/solution_max_res_end.vtu";
+    data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
+  }
+
+
   // @sect4{ <code>NavierStokesProjection::run</code> }
 
   // This is the time marching function, which starting at <code>t_0</code>
@@ -2364,7 +2602,8 @@ namespace Step35 {
       TR_BDF2_stage = 1; //--- Flag to pass at first stage at next step
       const double max_vel = get_maximal_velocity();
       pcout<< "Maximal velocity = " << max_vel << std::endl;
-      pcout << "CFL = " << dt*max_vel*(EquationData::degree_p + 1)*n_cells << std::endl;
+      pcout << "CFL = " << dt*max_vel*(EquationData::degree_p + 1)*
+                           std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
       if(n % output_interval == 0) {
         verbose_cout << "Plotting Solution final" << std::endl;
         output_results(n);
@@ -2375,9 +2614,14 @@ namespace Step35 {
         dt = T - time;
         navier_stokes_matrix.set_dt(dt);
       }
+      if(refinement_iterations > 0 && n % refinement_iterations == 0) {
+        verbose_cout << "Refining mesh" << std::endl;
+        refine_mesh();
+      }
     }
     if(n % output_interval != 0)
       output_results(n);
+    interpolate_max_res();
   }
 
 } // namespace Step35
