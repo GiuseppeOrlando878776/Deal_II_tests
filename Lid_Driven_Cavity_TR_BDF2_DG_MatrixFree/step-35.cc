@@ -1836,6 +1836,7 @@ namespace Step35 {
     LinearAlgebra::distributed::Vector<double> rhs_u;
 
     LinearAlgebra::distributed::Vector<double> streamline;
+    LinearAlgebra::distributed::Vector<double> streamline_old;
     LinearAlgebra::distributed::Vector<double> omega;
 
     DeclException2(ExcInvalidTimeStep,
@@ -1869,7 +1870,7 @@ namespace Step35 {
 
     void refine_mesh();
 
-    void interpolate_max_res();
+    void interpolate_max_res(const unsigned int level);
 
   private:
     std::shared_ptr<MatrixFree<dim, double>> matrix_free_storage;
@@ -2053,6 +2054,7 @@ namespace Step35 {
     matrix_free_storage->initialize_dof_vector(rhs_p, 1);
 
     matrix_free_storage->initialize_dof_vector(streamline, 2);
+    matrix_free_storage->initialize_dof_vector(streamline_old, 2);
     matrix_free_storage->initialize_dof_vector(omega, 2);
   }
 
@@ -2239,7 +2241,7 @@ namespace Step35 {
     std::vector<Vector<double>> solution_values(n_q_points, Vector<double>(dim));
     double max_local_velocity = 0.0;
 
-    for(const auto& cell : dof_handler_velocity.active_cell_iterators()) {
+    for(const auto& cell: dof_handler_velocity.active_cell_iterators()) {
       if(cell->is_locally_owned()) {
         fe_values.reinit(cell);
         fe_values.get_function_values(u_n, solution_values);
@@ -2269,7 +2271,7 @@ namespace Step35 {
     std::vector<Vector<double>> solution_old_values(n_q_points, Vector<double>(dim));
     double max_difference = 0.0;
 
-    for(const auto& cell : dof_handler_velocity.active_cell_iterators()) {
+    for(const auto& cell: dof_handler_velocity.active_cell_iterators()) {
       if(cell->is_locally_owned()) {
         fe_values.reinit(cell);
         fe_values.get_function_values(u_n, solution_values);
@@ -2454,34 +2456,72 @@ namespace Step35 {
   // and let paraview do the difference
   //
   template<int dim>
-  void NavierStokesProjection<dim>::interpolate_max_res() {
-    parallel::distributed::Triangulation<dim> triangulation_max_res(MPI_COMM_WORLD);
-    GridGenerator::subdivided_hyper_cube(triangulation_max_res, n_cells*std::pow(2, triangulation.n_global_levels() - 1),
-                                         0.0, 1.0, true);
-    triangulation.copy_triangulation(triangulation_max_res);
-
+  void NavierStokesProjection<dim>::interpolate_max_res(const unsigned int level) {
     parallel::distributed::SolutionTransfer<dim, LinearAlgebra::distributed::Vector<double>>
     solution_transfer_velocity(dof_handler_velocity);
-    solution_transfer_velocity.prepare_for_coarsening_and_refinement(u_n);
+    std::vector<const LinearAlgebra::distributed::Vector<double>*> velocities;
+    velocities.push_back(&u_n);
+    velocities.push_back(&u_n_minus_1);
+    solution_transfer_velocity.prepare_for_coarsening_and_refinement(velocities);
+
     parallel::distributed::SolutionTransfer<dim, LinearAlgebra::distributed::Vector<double>>
     solution_transfer_pressure(dof_handler_pressure);
     solution_transfer_pressure.prepare_for_coarsening_and_refinement(pres_n);
 
+    parallel::distributed::SolutionTransfer<dim, LinearAlgebra::distributed::Vector<double>>
+    solution_transfer_streamline(dof_handler_streamline);
+    std::vector<const LinearAlgebra::distributed::Vector<double>*> streamlines;
+    streamlines.push_back(&streamline);
+    streamlines.push_back(&streamline_old);
+    solution_transfer_streamline.prepare_for_coarsening_and_refinement(streamlines);
+
+    for(const auto& cell: triangulation.active_cell_iterators_on_level(level)) {
+      if(cell->is_locally_owned())
+        cell->set_refine_flag();
+    }
+    triangulation.execute_coarsening_and_refinement();
+
     setup_dofs();
 
-    LinearAlgebra::distributed::Vector<double> transfer_velocity, transfer_pressure;
+    LinearAlgebra::distributed::Vector<double> transfer_velocity, transfer_velocity_minus_1,
+                                               transfer_pressure,
+                                               transfer_streamline, transfer_streamline_old;
+
     transfer_velocity.reinit(u_n);
     transfer_velocity.zero_out_ghosts();
+    transfer_velocity_minus_1.reinit(u_n_minus_1);
+    transfer_velocity_minus_1.zero_out_ghosts();
+
     transfer_pressure.reinit(pres_n);
     transfer_pressure.zero_out_ghosts();
 
-    solution_transfer_velocity.interpolate(transfer_velocity);
+    transfer_streamline.reinit(streamline);
+    transfer_streamline.zero_out_ghosts();
+    transfer_streamline_old.reinit(streamline_old);
+    transfer_streamline_old.zero_out_ghosts();
+
+    std::vector<LinearAlgebra::distributed::Vector<double>*> transfer_velocities, transfer_streamlines;
+
+    transfer_velocities.push_back(&transfer_velocity);
+    transfer_velocities.push_back(&transfer_velocity_minus_1);
+    solution_transfer_velocity.interpolate(transfer_velocities);
     transfer_velocity.update_ghost_values();
+    transfer_velocity_minus_1.update_ghost_values();
+
     solution_transfer_pressure.interpolate(transfer_pressure);
     transfer_pressure.update_ghost_values();
 
-    u_n    = transfer_velocity;
-    pres_n = transfer_pressure;
+    transfer_streamlines.push_back(&transfer_streamline);
+    transfer_streamlines.push_back(&transfer_streamline_old);
+    solution_transfer_streamline.interpolate(transfer_streamlines);
+    transfer_streamline.update_ghost_values();
+    transfer_streamline_old.update_ghost_values();
+
+    u_n            = transfer_velocity;
+    u_n_minus_1    = transfer_velocity_minus_1;
+    pres_n         = transfer_pressure;
+    streamline     = transfer_streamline;
+    streamline_old = transfer_streamline_old;
 
     const FESystem<dim> joint_fe(fe_velocity, 1, fe_pressure, 1);
     DoFHandler<dim>     joint_dof_handler(triangulation);
@@ -2527,17 +2567,26 @@ namespace Step35 {
     component_interpretation(dim + 1, DataComponentInterpretation::component_is_part_of_vector);
     component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
     data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
-
     PostprocessorVorticity<dim> postprocessor;
     data_out.add_data_vector(dof_handler_velocity, u_n, postprocessor);
-
-    compute_streamline();
     streamline.update_ghost_values();
     data_out.add_data_vector(dof_handler_streamline, streamline, "streamline", {DataComponentInterpretation::component_is_scalar});
-
     data_out.build_patches();
     const std::string output = "./" + saving_dir + "/solution_max_res_end.vtu";
     data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
+
+    DataOut<dim> data_out_old;
+    std::vector<std::string> solution_names_old(dim, "v");
+    std::vector<DataComponentInterpretation::DataComponentInterpretation>
+    component_interpretation_old(dim, DataComponentInterpretation::component_is_part_of_vector);
+    data_out_old.add_data_vector(dof_handler_velocity, u_n_minus_1, solution_names_old, component_interpretation_old);
+    PostprocessorVorticity<dim> postprocessor_old;
+    data_out_old.add_data_vector(dof_handler_velocity, u_n_minus_1, postprocessor_old);
+    streamline_old.update_ghost_values();
+    data_out_old.add_data_vector(dof_handler_streamline, streamline_old, "streamline", {DataComponentInterpretation::component_is_scalar});
+    data_out_old.build_patches();
+    const std::string output_old = "./" + saving_dir + "/solution_max_res_end_minus_1.vtu";
+    data_out_old.write_vtu_in_parallel(output_old, MPI_COMM_WORLD);
   }
 
 
@@ -2607,6 +2656,7 @@ namespace Step35 {
       if(n % output_interval == 0) {
         verbose_cout << "Plotting Solution final" << std::endl;
         output_results(n);
+        streamline_old = streamline;
       }
       if(time > 0.1*T && get_maximal_difference() < 1e-7)
         break;
@@ -2619,9 +2669,13 @@ namespace Step35 {
         refine_mesh();
       }
     }
-    if(n % output_interval != 0)
+    if(n % output_interval != 0) {
+      verbose_cout << "Plotting Solution final" << std::endl;
       output_results(n);
-    interpolate_max_res();
+      streamline_old = streamline;
+    }
+    for(unsigned int lev = 0; lev < triangulation.n_global_levels() - 1; ++ lev)
+      interpolate_max_res(lev);
   }
 
 } // namespace Step35
