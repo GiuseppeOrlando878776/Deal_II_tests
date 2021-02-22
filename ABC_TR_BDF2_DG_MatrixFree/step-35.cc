@@ -252,6 +252,8 @@ namespace Step35 {
     public:
       Velocity(const double initial_time = 0.0);
 
+      Velocity(const double Re, const double initial_time = 0.0);
+
       virtual double value(const Point<dim>&  p,
                            const unsigned int component = 0) const override;
 
@@ -262,22 +264,30 @@ namespace Step35 {
                                               const unsigned int component = 0) const override;
 
       virtual void vector_gradient(const Point<dim>& p, std::vector<Tensor<1, dim, double>>& gradients) const override;
+
+    private:
+      double Re;
     };
 
 
     template<int dim>
-    Velocity<dim>::Velocity(const double initial_time): Function<dim>(dim, initial_time) {}
+    Velocity<dim>::Velocity(const double initial_time): Function<dim>(dim, initial_time), Re() {}
+
+
+    template<int dim>
+    Velocity<dim>::Velocity(const double Re, const double initial_time): Function<dim>(dim, initial_time), Re(Re) {}
 
 
     template<int dim>
     double Velocity<dim>::value(const Point<dim>& p, const unsigned int component) const {
       AssertIndexRange(component, 3);
+      const double curr_time = this->get_time();
       if(component == 0)
-        return std::sin(p(2)) + std::cos(p(1));
+        return (std::sin(p(2)) + std::cos(p(1)))*std::exp(-curr_time/Re);
       else if(component == 1)
-        return std::sin(p(0)) + std::cos(p(2));
+        return (std::sin(p(0)) + std::cos(p(2)))*std::exp(-curr_time/Re);
       else
-        return std::sin(p(1)) + std::cos(p(0));
+        return (std::sin(p(1)) + std::cos(p(0)))*std::exp(-curr_time/Re);
     }
 
 
@@ -292,20 +302,21 @@ namespace Step35 {
     template<int dim>
     Tensor<1, dim, double> Velocity<dim>::gradient(const Point<dim>& p, const unsigned int component) const {
       AssertIndexRange(component, 3);
+      const double curr_time = this->get_time();
       Tensor<1, dim, double> result;
       if(component == 0) {
         result[0] = 0.0;
-        result[1] = -std::sin(p(1));
-        result[2] = std::cos(p(2));
+        result[1] = -std::sin(p(1))*std::exp(-curr_time/Re);
+        result[2] = std::cos(p(2))*std::exp(-curr_time/Re);
       }
       else if(component == 1){
-        result[0] = std::cos(p(0));
+        result[0] = std::cos(p(0))*std::exp(-curr_time/Re);
         result[1] = 0.0;
-        result[2] = -std::sin(p(2));
+        result[2] = -std::sin(p(2))*std::exp(-curr_time/Re);
       }
       else {
-        result[0] = -std::sin(p(0));
-        result[1] = std::cos(p(1));
+        result[0] = -std::sin(p(0))*std::exp(-curr_time/Re);
+        result[1] = std::cos(p(1))*std::exp(-curr_time/Re);
         result[2] = 0.0;
       }
       return result;
@@ -363,6 +374,8 @@ namespace Step35 {
     void set_NS_stage(const unsigned int stage);
 
     void set_u_extr(const Vec& src);
+
+    void set_time(const double curr_time);
 
     void vmult_rhs_velocity(Vec& dst, const std::vector<Vec>& src) const;
 
@@ -506,7 +519,7 @@ namespace Step35 {
     MatrixFreeOperators::Base<dim, Vec>(), eq_data(data), Re(data.Reynolds), dt(5e-4),
                                            gamma(2.0 - std::sqrt(2.0)), a31((1.0 - gamma)/(2.0*(2.0 - gamma))),
                                            a32(a31), a33(1.0/(2.0 - gamma)), TR_BDF2_stage(1), NS_stage(1), u_extr(),
-                                           vel_exact(data.initial_time),
+                                           vel_exact(data.Reynolds, data.initial_time),
                                            pres_exact(data.initial_time) {}
 
   // Setter of time-step
@@ -552,6 +565,14 @@ namespace Step35 {
   }
 
 
+  // Setter of exact velocity for boundary conditions
+  //
+  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
+  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d, Vec, Number>::set_time(const double curr_time) {
+    vel_exact.set_time(curr_time);
+  }
+
+
   // Assemble rhs cell term for the velocity
   //
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d, typename Vec, typename Number>
@@ -591,7 +612,7 @@ namespace Step35 {
             for(unsigned int d = 0; d < dim; ++d)
               u_ex[d][v] = vel_exact.value(point, d);
           }
-          phi.submit_value(1.0/(gamma*dt)*u_n + 1.0/Re*u_ex, q);
+          phi.submit_value(1.0/(gamma*dt)*u_n + 0.0*1.0/Re*u_ex, q);
           phi.submit_gradient(-a21/Re*grad_u_n + a21*tensor_product_u_n + p_n_times_identity, q);
         }
         phi.integrate_scatter(true, true, dst);
@@ -630,7 +651,7 @@ namespace Step35 {
             for(unsigned int d = 0; d < dim; ++d)
               u_ex[d][v] = vel_exact.value(point, d);
           }
-          phi.submit_value(1.0/((1.0 - gamma)*dt)*u_n_gamma + 1.0/Re*u_ex, q);
+          phi.submit_value(1.0/((1.0 - gamma)*dt)*u_n_gamma + 0.0*1.0/Re*u_ex, q);
           phi.submit_gradient(a32*tensor_product_u_n_gamma + a31*tensor_product_u_n -
                               a32/Re*grad_u_n_gamma - a31/Re*grad_u_n + p_n_times_identity, q);
         }
@@ -1806,7 +1827,7 @@ namespace Step35 {
     TR_BDF2_stage(1),             //--- Initialize the flag for the TR_BDF2 stage
     Re(data.Reynolds),
     CFL(data.CFL),
-    vel_exact(data.initial_time),
+    vel_exact(data.Reynolds, data.initial_time),
     pres_exact(data.initial_time),
     triangulation(MPI_COMM_WORLD),
     fe_velocity(FE_DGQ<dim>(EquationData::degree_p + 1), dim),
@@ -1939,7 +1960,9 @@ namespace Step35 {
 
     VectorTools::interpolate(dof_handler_pressure, pres_exact, pres_n);
 
+    vel_exact.set_time(t_0);
     VectorTools::interpolate(dof_handler_velocity, vel_exact, u_n_minus_1);
+    vel_exact.advance_time(dt);
     VectorTools::interpolate(dof_handler_velocity, vel_exact, u_n);
   }
 
@@ -1986,6 +2009,8 @@ namespace Step35 {
 
     const std::vector<unsigned int> tmp = {0};
     navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
+
+    navier_stokes_matrix.set_time(vel_exact.get_time());
 
     navier_stokes_matrix.set_NS_stage(1);
 
@@ -2295,6 +2320,7 @@ namespace Step35 {
       verbose_cout << "  Interpolating the velocity stage 1" << std::endl;
       interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 1 " << std::endl;
+      vel_exact.advance_time(gamma*dt);
       diffusion_step();
       verbose_cout << "  Projection Step stage 1" << std::endl;
       project_grad(1);
@@ -2313,6 +2339,7 @@ namespace Step35 {
       verbose_cout << "  Interpolating the velocity stage 2" << std::endl;
       interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 2 " << std::endl;
+      vel_exact.advance_time((1.0 - gamma)*dt);
       diffusion_step();
       verbose_cout << "  Projection Step stage 2" << std::endl;
       project_grad(2);
