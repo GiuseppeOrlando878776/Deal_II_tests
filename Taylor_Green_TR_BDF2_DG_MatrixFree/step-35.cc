@@ -858,24 +858,53 @@ namespace Step35 {
                                   Vec&                                         dst,
                                   const std::vector<Vec>&                      src,
                                   const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, 1, 1), phi_old(data, 1, 1);
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, 0, 1);
+    if(TR_BDF2_stage == 1) {
+      FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, 1, 1), phi_old(data, 1, 1);
+      FEEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, 0, 1), phi_old_vel(data, 0, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
-
-    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-      phi_proj.reinit(cell);
-      phi_proj.gather_evaluate(src[0], true, false);
-      phi_old.reinit(cell);
-      phi_old.gather_evaluate(src[1], true, false);
-      phi.reinit(cell);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        const auto& u_star_star = phi_proj.get_value(q);
-        const auto& p_old       = phi_old.get_value(q);
-        phi.submit_value(0.000001*coeff*p_old, q);
-        phi.submit_gradient(coeff*u_star_star, q);
+      for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+        phi_proj.reinit(cell);
+        phi_proj.gather_evaluate(src[0], true, false);
+        phi_old_vel.reinit(cell);
+        phi_old_vel.gather_evaluate(src[1], true, false);
+        phi_old.reinit(cell);
+        phi_old.gather_evaluate(src[2], true, false);
+        phi.reinit(cell);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& u_star = phi_proj.get_value(q);
+          const auto& u_n    = phi_old_vel.get_value(q);
+          const auto& p_old  = phi_old.get_value(q);
+          phi.submit_value(p_old, q);
+          phi.submit_gradient(1e6*gamma*dt*(a22*u_star + a21*u_n), q);
+        }
+        phi.integrate_scatter(true, true, dst);
       }
-      phi.integrate_scatter(true, true, dst);
+    }
+    else {
+      FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, 1, 1), phi_int(data, 1, 1);
+      FEEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, 0, 1),
+                                                                     phi_int_vel(data, 0, 1),
+                                                                     phi_old_vel(data, 0, 1);
+      for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+        phi_proj.reinit(cell);
+        phi_proj.gather_evaluate(src[0], true, false);
+        phi_int_vel.reinit(cell);
+        phi_int_vel.gather_evaluate(src[1], true, false);
+        phi_old_vel.reinit(cell);
+        phi_old_vel.gather_evaluate(src[2], true, false);
+        phi_int.reinit(cell);
+        phi_int.gather_evaluate(src[3], true, false);
+        phi.reinit(cell);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& u_star = phi_proj.get_value(q);
+          const auto& u_int  = phi_int_vel.get_value(q);
+          const auto& u_n    = phi_old_vel.get_value(q);
+          const auto& p_int  = phi_int.get_value(q);
+          phi.submit_value(p_int, q);
+          phi.submit_gradient(1e6*(1.0 - gamma)*dt*(a33*u_star + a32*u_int + a31*u_n), q);
+        }
+        phi.integrate_scatter(true, true, dst);
+      }
     }
   }
 
@@ -888,26 +917,65 @@ namespace Step35 {
                                   Vec&                                         dst,
                                   const std::vector<Vec>&                      src,
                                   const std::pair<unsigned int, unsigned int>& face_range) const {
-    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
-    FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj_p(data, true, 0, 1), phi_proj_m(data, false, 0, 1);
+    if(TR_BDF2_stage == 1) {
+      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj_p(data, true, 0, 1), phi_proj_m(data, false, 0, 1),
+                                                                         phi_old_vel_p(data, true, 0, 1), phi_old_vel_m(data, false, 0, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
-
-    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-      phi_proj_p.reinit(face);
-      phi_proj_p.gather_evaluate(src[0], true, false);
-      phi_proj_m.reinit(face);
-      phi_proj_m.gather_evaluate(src[0], true, false);
-      phi_p.reinit(face);
-      phi_m.reinit(face);
-      for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
-        const auto& n_plus           = phi_p.get_normal_vector(q);
-        const auto& avg_u_star_star  = 0.5*(phi_proj_p.get_value(q) + phi_proj_m.get_value(q));
-        phi_p.submit_value(-coeff*scalar_product(avg_u_star_star, n_plus), q);
-        phi_m.submit_value(coeff*scalar_product(avg_u_star_star, n_plus), q);
+      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+        phi_proj_p.reinit(face);
+        phi_proj_p.gather_evaluate(src[0], true, false);
+        phi_proj_m.reinit(face);
+        phi_proj_m.gather_evaluate(src[0], true, false);
+        phi_old_vel_p.reinit(face);
+        phi_old_vel_p.gather_evaluate(src[1], true, false);
+        phi_old_vel_m.reinit(face);
+        phi_old_vel_m.gather_evaluate(src[1], true, false);
+        phi_p.reinit(face);
+        phi_m.reinit(face);
+        for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
+          const auto& n_plus     = phi_p.get_normal_vector(q);
+          const auto& avg_u_star = 0.5*(phi_proj_p.get_value(q) + phi_proj_m.get_value(q));
+          const auto& avg_u_n    = 0.5*(phi_old_vel_p.get_value(q) + phi_old_vel_m.get_value(q));
+          phi_p.submit_value(-1e6*gamma*dt*scalar_product(a22*avg_u_star + a21*avg_u_n, n_plus), q);
+          phi_m.submit_value(1e6*gamma*dt*scalar_product(a22*avg_u_star + a21*avg_u_n, n_plus), q);
+        }
+        phi_p.integrate_scatter(true, false, dst);
+        phi_m.integrate_scatter(true, false, dst);
       }
-      phi_p.integrate_scatter(true, false, dst);
-      phi_m.integrate_scatter(true, false, dst);
+    }
+    else {
+      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj_p(data, true, 0, 1), phi_proj_m(data, false, 0, 1),
+                                                                         phi_int_vel_p(data, true, 0, 1), phi_int_vel_m(data, false, 0, 1),
+                                                                         phi_old_vel_p(data, true, 0, 1), phi_old_vel_m(data, false, 0, 1);
+
+      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+        phi_proj_p.reinit(face);
+        phi_proj_p.gather_evaluate(src[0], true, false);
+        phi_proj_m.reinit(face);
+        phi_proj_m.gather_evaluate(src[0], true, false);
+        phi_int_vel_p.reinit(face);
+        phi_int_vel_p.gather_evaluate(src[1], true, false);
+        phi_int_vel_m.reinit(face);
+        phi_int_vel_m.gather_evaluate(src[1], true, false);
+        phi_old_vel_p.reinit(face);
+        phi_old_vel_p.gather_evaluate(src[2], true, false);
+        phi_old_vel_m.reinit(face);
+        phi_old_vel_m.gather_evaluate(src[2], true, false);
+        phi_p.reinit(face);
+        phi_m.reinit(face);
+        for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
+          const auto& n_plus     = phi_p.get_normal_vector(q);
+          const auto& avg_u_star = 0.5*(phi_proj_p.get_value(q) + phi_proj_m.get_value(q));
+          const auto& avg_u_int  = 0.5*(phi_int_vel_p.get_value(q) + phi_int_vel_m.get_value(q));
+          const auto& avg_u_n    = 0.5*(phi_old_vel_p.get_value(q) + phi_old_vel_m.get_value(q));
+          phi_p.submit_value(-1e6*(1.0 - gamma)*dt*scalar_product(a33*avg_u_star + a32*avg_u_int + a31*avg_u_n, n_plus), q);
+          phi_m.submit_value(1e6*gamma*dt*scalar_product(a33*avg_u_star + a32*avg_u_int + a31*avg_u_n, n_plus), q);
+        }
+        phi_p.integrate_scatter(true, false, dst);
+        phi_m.integrate_scatter(true, false, dst);
+      }
     }
   }
 
@@ -920,21 +988,45 @@ namespace Step35 {
                                       Vec&                                         dst,
                                       const std::vector<Vec>&                      src,
                                       const std::pair<unsigned int, unsigned int>& face_range) const {
-    FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, true, 1, 1);
-    FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, true, 0, 1);
+    if(TR_BDF2_stage == 1) {
+      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, true, 1, 1);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, true, 0, 1), phi_old(data, true, 0, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
-
-    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-      phi_proj.reinit(face);
-      phi_proj.gather_evaluate(src[0], true, false);
-      phi.reinit(face);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        const auto& n_plus = phi.get_normal_vector(q);
-        phi.submit_value(-coeff*scalar_product(phi_proj.get_value(q), n_plus), q);
-        phi.submit_normal_derivative(0.0, q);
+      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+        phi_proj.reinit(face);
+        phi_proj.gather_evaluate(src[0], true, false);
+        phi_old.reinit(face);
+        phi_old.gather_evaluate(src[1], true, false);
+        phi.reinit(face);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& n_plus = phi.get_normal_vector(q);
+          phi.submit_value(-1e6*gamma*dt*scalar_product(a22*phi_proj.get_value(q) + a21*phi_old.get_value(q), n_plus), q);
+        }
+        phi.integrate_scatter(true, false, dst);
       }
-      phi.integrate_scatter(true, true, dst);
+    }
+    else {
+      FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, true, 1, 1);
+      FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, true, 0, 1),
+                                                                         phi_int(data, true, 0, 1),
+                                                                         phi_old(data, true, 0, 1);
+
+      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+        phi_proj.reinit(face);
+        phi_proj.gather_evaluate(src[0], true, false);
+        phi_int.reinit(face);
+        phi_int.gather_evaluate(src[1], true, false);
+        phi_old.reinit(face);
+        phi_old.gather_evaluate(src[2], true, false);
+        phi.reinit(face);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& n_plus = phi.get_normal_vector(q);
+          phi.submit_value(-1e6*(1.0 - gamma)*dt*scalar_product(a33*phi_proj.get_value(q) +
+                                                                a32*phi_int.get_value(q)  +
+                                                                a31*phi_old.get_value(q), n_plus), q);
+        }
+        phi.integrate_scatter(true, false, dst);
+      }
     }
   }
 
@@ -1152,14 +1244,15 @@ namespace Step35 {
                               const std::pair<unsigned int, unsigned int>& cell_range) const {
     FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi(data, 1, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
+    const double coeff = (TR_BDF2_stage == 1) ? 1e6*a22*gamma*dt*a22*gamma*dt :
+                                                1e6*a33*(1.0 - gamma)*dt*a33*(1.0 - gamma)*dt;
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
       phi.gather_evaluate(src, true, true);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        phi.submit_gradient(phi.get_gradient(q), q);
-        phi.submit_value(0.000001/coeff*phi.get_value(q), q);
+        phi.submit_gradient(coeff*phi.get_gradient(q), q);
+        phi.submit_value(phi.get_value(q), q);
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -1176,6 +1269,9 @@ namespace Step35 {
                               const std::pair<unsigned int, unsigned int>& face_range) const {
     FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
 
+    const double coeff = (TR_BDF2_stage == 1) ? 1e6*a22*gamma*dt*a22*gamma*dt :
+                                                1e6*a33*(1.0 - gamma)*dt*a33*(1.0 - gamma)*dt;
+
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi_p.reinit(face);
       phi_p.gather_evaluate(src, true, true);
@@ -1187,10 +1283,10 @@ namespace Step35 {
         const auto& n_plus        = phi_p.get_normal_vector(q);
         const auto& avg_grad_pres = 0.5*(phi_p.get_gradient(q) + phi_m.get_gradient(q));
         const auto& jump_pres     = phi_p.get_value(q) - phi_m.get_value(q);
-        phi_p.submit_value(-scalar_product(avg_grad_pres, n_plus) + coef_jump*jump_pres, q);
-        phi_m.submit_value(scalar_product(avg_grad_pres, n_plus) - coef_jump*jump_pres, q);
-        phi_p.submit_gradient(-theta_p*0.5*jump_pres*n_plus, q);
-        phi_m.submit_gradient(-theta_p*0.5*jump_pres*n_plus, q);
+        phi_p.submit_value(-coeff*scalar_product(avg_grad_pres, n_plus) + coeff*coef_jump*jump_pres, q);
+        phi_m.submit_value(coeff*scalar_product(avg_grad_pres, n_plus) - coeff*coef_jump*jump_pres, q);
+        phi_p.submit_gradient(-coeff*theta_p*0.5*jump_pres*n_plus, q);
+        phi_m.submit_gradient(-coeff*theta_p*0.5*jump_pres*n_plus, q);
       }
       phi_p.integrate_scatter(true, true, dst);
       phi_m.integrate_scatter(true, true, dst);
@@ -1579,7 +1675,8 @@ namespace Step35 {
 
     AlignedVector<VectorizedArray<Number>> diagonal(phi.dofs_per_component);
 
-    const double coeff = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
+    const double coeff = (TR_BDF2_stage == 1) ? 1e6*a22*gamma*dt*a22*gamma*dt :
+                                                1e6*a33*(1.0 - gamma)*dt*a33*(1.0 - gamma)*dt;
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
@@ -1589,8 +1686,8 @@ namespace Step35 {
         phi.submit_dof_value(make_vectorized_array<Number>(1.0), i);
         phi.evaluate(true, true);
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          phi.submit_value(0.000001/coeff*phi.get_value(q), q);
-          phi.submit_gradient(phi.get_gradient(q), q);
+          phi.submit_value(phi.get_value(q), q);
+          phi.submit_gradient(coeff*phi.get_gradient(q), q);
         }
         phi.integrate(true, true);
         diagonal[i] = phi.get_dof_value(i);
@@ -1616,6 +1713,9 @@ namespace Step35 {
     AlignedVector<VectorizedArray<Number>> diagonal_p(phi_p.dofs_per_component),
                                            diagonal_m(phi_m.dofs_per_component);
 
+    const double coeff = (TR_BDF2_stage == 1) ? 1e6*a22*gamma*dt*a22*gamma*dt :
+                                                1e6*a33*(1.0 - gamma)*dt*a33*(1.0 - gamma)*dt;
+
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi_p.reinit(face);
       phi_m.reinit(face);
@@ -1634,10 +1734,10 @@ namespace Step35 {
           const auto& n_plus        = phi_p.get_normal_vector(q);
           const auto& avg_grad_pres = 0.5*(phi_p.get_gradient(q) + phi_m.get_gradient(q));
           const auto& jump_pres     = phi_p.get_value(q) - phi_m.get_value(q);
-          phi_p.submit_value(-scalar_product(avg_grad_pres, n_plus) + coef_jump*jump_pres, q);
-          phi_m.submit_value(scalar_product(avg_grad_pres, n_plus) - coef_jump*jump_pres, q);
-          phi_p.submit_gradient(-theta_p*0.5*jump_pres*n_plus, q);
-          phi_m.submit_gradient(-theta_p*0.5*jump_pres*n_plus, q);
+          phi_p.submit_value(-coeff*scalar_product(avg_grad_pres, n_plus) + coeff*coef_jump*jump_pres, q);
+          phi_m.submit_value(coeff*scalar_product(avg_grad_pres, n_plus) - coeff*coef_jump*jump_pres, q);
+          phi_p.submit_gradient(-coeff*theta_p*0.5*jump_pres*n_plus, q);
+          phi_m.submit_gradient(-coeff*theta_p*0.5*jump_pres*n_plus, q);
         }
         phi_p.integrate(true, true);
         diagonal_p[i] = phi_p.get_dof_value(i);
@@ -1718,6 +1818,9 @@ namespace Step35 {
     unsigned int       TR_BDF2_stage; //--- Flag to check at which current stage of TR-BDF2 are
     const double       Re;
     const double       CFL;
+
+    const double a22 = 0.5;
+    const double a33;
 
     EquationData::Velocity<dim> vel_exact;
     EquationData::Pressure<dim> pres_exact;
@@ -1821,6 +1924,7 @@ namespace Step35 {
     TR_BDF2_stage(1),             //--- Initialize the flag for the TR_BDF2 stage
     Re(data.Reynolds),
     CFL(data.CFL),
+    a33(1.0/(2.0 - gamma)),
     vel_exact(data.Reynolds, data.initial_time),
     pres_exact(data.Reynolds, data.initial_time),
     triangulation(MPI_COMM_WORLD),
@@ -2046,9 +2150,9 @@ namespace Step35 {
     const std::vector<unsigned int> tmp = {1};
     navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
     if(TR_BDF2_stage == 1)
-      navier_stokes_matrix.vmult_rhs_pressure(rhs_p, {u_star, pres_n});
+      navier_stokes_matrix.vmult_rhs_pressure(rhs_p, {u_star, u_n, pres_n});
     else
-      navier_stokes_matrix.vmult_rhs_pressure(rhs_p, {u_star, pres_int});
+      navier_stokes_matrix.vmult_rhs_pressure(rhs_p, {u_star, u_n_gamma, u_n, pres_int});
 
     navier_stokes_matrix.set_NS_stage(2);
 
@@ -2321,14 +2425,11 @@ namespace Step35 {
       diffusion_step();
       navier_stokes_matrix.advance_p_time(gamma*dt);
       verbose_cout << "  Projection Step stage 1" << std::endl;
-      project_grad(1);
-      u_tmp.equ(gamma*dt, u_tmp);
-      u_star += u_tmp;
       projection_step();
       verbose_cout << "  Updating the Velocity stage 1" << std::endl;
       u_n_gamma.equ(1.0, u_star);
       project_grad(2);
-      u_tmp.equ(-gamma*dt, u_tmp);
+      u_tmp.equ(-a22*gamma*dt, u_tmp);
       u_n_gamma += u_tmp;
       u_n_minus_1 = u_n;
       TR_BDF2_stage = 2; //--- Flag to pass at second stage
@@ -2342,14 +2443,11 @@ namespace Step35 {
       diffusion_step();
       navier_stokes_matrix.advance_p_time((1.0 - gamma)*dt);
       verbose_cout << "  Projection Step stage 2" << std::endl;
-      project_grad(2);
-      u_tmp.equ((1.0 - gamma)*dt, u_tmp);
-      u_star += u_tmp;
       projection_step();
       verbose_cout << "  Updating the Velocity stage 2" << std::endl;
       u_n.equ(1.0, u_star);
       project_grad(1);
-      u_tmp.equ((gamma - 1.0)*dt, u_tmp);
+      u_tmp.equ(a33*(gamma - 1.0)*dt, u_tmp);
       u_n += u_tmp;
       TR_BDF2_stage = 1; //--- Flag to pass at first stage at next step
       analyze_results();
