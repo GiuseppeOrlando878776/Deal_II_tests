@@ -861,7 +861,9 @@ namespace Step35 {
     FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, 1, 1), phi_old(data, 1, 1);
     FEEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, 0, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt : 1e6*(1.0 - gamma)*dt;
+    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt*gamma*dt : 1e6*(1.0 - gamma)*dt*(1.0 - gamma)*dt;
+
+    const double coeff_2 = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi_proj.reinit(cell);
@@ -872,8 +874,8 @@ namespace Step35 {
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& u_star_star = phi_proj.get_value(q);
         const auto& p_old       = phi_old.get_value(q);
-        phi.submit_value(p_old, q);
-        phi.submit_gradient(coeff*u_star_star, q);
+        phi.submit_value(1.0/coeff*p_old, q);
+        phi.submit_gradient(1.0/coeff_2*u_star_star, q);
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -891,7 +893,7 @@ namespace Step35 {
     FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
     FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj_p(data, true, 0, 1), phi_proj_m(data, false, 0, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt : 1e6*(1.0 - gamma)*dt;
+    const double coeff = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
 
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi_proj_p.reinit(face);
@@ -903,8 +905,8 @@ namespace Step35 {
       for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
         const auto& n_plus           = phi_p.get_normal_vector(q);
         const auto& avg_u_star_star  = 0.5*(phi_proj_p.get_value(q) + phi_proj_m.get_value(q));
-        phi_p.submit_value(-coeff*scalar_product(avg_u_star_star, n_plus), q);
-        phi_m.submit_value(coeff*scalar_product(avg_u_star_star, n_plus), q);
+        phi_p.submit_value(-1.0/coeff*scalar_product(avg_u_star_star, n_plus), q);
+        phi_m.submit_value(1.0/coeff*scalar_product(avg_u_star_star, n_plus), q);
       }
       phi_p.integrate_scatter(true, false, dst);
       phi_m.integrate_scatter(true, false, dst);
@@ -923,7 +925,7 @@ namespace Step35 {
     FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, true, 1, 1);
     FEFaceEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, true, 0, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt : 1e6*(1.0 - gamma)*dt;
+    const double coeff = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
 
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi_proj.reinit(face);
@@ -931,7 +933,7 @@ namespace Step35 {
       phi.reinit(face);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& n_plus = phi.get_normal_vector(q);
-        phi.submit_value(-coeff*scalar_product(phi_proj.get_value(q), n_plus), q);
+        phi.submit_value(-1.0/coeff*scalar_product(phi_proj.get_value(q), n_plus), q);
       }
       phi.integrate_scatter(true, false, dst);
     }
@@ -1157,8 +1159,8 @@ namespace Step35 {
       phi.reinit(cell);
       phi.gather_evaluate(src, true, true);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        phi.submit_gradient(coeff*phi.get_gradient(q), q);
-        phi.submit_value(phi.get_value(q), q);
+        phi.submit_gradient(phi.get_gradient(q), q);
+        phi.submit_value(1.0/coeff*phi.get_value(q), q);
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -1175,8 +1177,6 @@ namespace Step35 {
                               const std::pair<unsigned int, unsigned int>& face_range) const {
     FEFaceEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi_p(data, true, 1, 1), phi_m(data, false, 1, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt*gamma*dt : 1e6*(1.0 - gamma)*dt*(1.0 - gamma)*dt;
-
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi_p.reinit(face);
       phi_p.gather_evaluate(src, true, true);
@@ -1188,10 +1188,10 @@ namespace Step35 {
         const auto& n_plus        = phi_p.get_normal_vector(q);
         const auto& avg_grad_pres = 0.5*(phi_p.get_gradient(q) + phi_m.get_gradient(q));
         const auto& jump_pres     = phi_p.get_value(q) - phi_m.get_value(q);
-        phi_p.submit_value(-coeff*scalar_product(avg_grad_pres, n_plus) + coeff*coef_jump*jump_pres, q);
-        phi_m.submit_value(coeff*scalar_product(avg_grad_pres, n_plus) - coeff*coef_jump*jump_pres, q);
-        phi_p.submit_gradient(-coeff*theta_p*0.5*jump_pres*n_plus, q);
-        phi_m.submit_gradient(-coeff*theta_p*0.5*jump_pres*n_plus, q);
+        phi_p.submit_value(-scalar_product(avg_grad_pres, n_plus) + coef_jump*jump_pres, q);
+        phi_m.submit_value(scalar_product(avg_grad_pres, n_plus) - coef_jump*jump_pres, q);
+        phi_p.submit_gradient(-theta_p*0.5*jump_pres*n_plus, q);
+        phi_m.submit_gradient(-theta_p*0.5*jump_pres*n_plus, q);
       }
       phi_p.integrate_scatter(true, true, dst);
       phi_m.integrate_scatter(true, true, dst);
@@ -1590,8 +1590,8 @@ namespace Step35 {
         phi.submit_dof_value(make_vectorized_array<Number>(1.0), i);
         phi.evaluate(true, true);
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          phi.submit_value(phi.get_value(q), q);
-          phi.submit_gradient(coeff*phi.get_gradient(q), q);
+          phi.submit_value(1.0/coeff*phi.get_value(q), q);
+          phi.submit_gradient(phi.get_gradient(q), q);
         }
         phi.integrate(true, true);
         diagonal[i] = phi.get_dof_value(i);
@@ -1617,8 +1617,6 @@ namespace Step35 {
     AlignedVector<VectorizedArray<Number>> diagonal_p(phi_p.dofs_per_component),
                                            diagonal_m(phi_m.dofs_per_component);
 
-    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt*gamma*dt : 1e6*(1.0 - gamma)*dt*(1.0 - gamma)*dt;
-
     for(unsigned int face = face_range.first; face < face_range.second; ++face) {
       phi_p.reinit(face);
       phi_m.reinit(face);
@@ -1637,10 +1635,10 @@ namespace Step35 {
           const auto& n_plus        = phi_p.get_normal_vector(q);
           const auto& avg_grad_pres = 0.5*(phi_p.get_gradient(q) + phi_m.get_gradient(q));
           const auto& jump_pres     = phi_p.get_value(q) - phi_m.get_value(q);
-          phi_p.submit_value(-coeff*scalar_product(avg_grad_pres, n_plus) + coeff*coef_jump*jump_pres, q);
-          phi_m.submit_value(coeff*scalar_product(avg_grad_pres, n_plus) - coeff*coef_jump*jump_pres, q);
-          phi_p.submit_gradient(-coeff*theta_p*0.5*jump_pres*n_plus, q);
-          phi_m.submit_gradient(-coeff*theta_p*0.5*jump_pres*n_plus, q);
+          phi_p.submit_value(-scalar_product(avg_grad_pres, n_plus) + coef_jump*jump_pres, q);
+          phi_m.submit_value(scalar_product(avg_grad_pres, n_plus) - coef_jump*jump_pres, q);
+          phi_p.submit_gradient(-theta_p*0.5*jump_pres*n_plus, q);
+          phi_m.submit_gradient(-theta_p*0.5*jump_pres*n_plus, q);
         }
         phi_p.integrate(true, true);
         diagonal_p[i] = phi_p.get_dof_value(i);
