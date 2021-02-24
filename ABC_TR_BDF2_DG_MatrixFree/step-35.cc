@@ -1796,8 +1796,7 @@ namespace Step35 {
     Vector<double> H1_error_per_cell_vel, L2_error_per_cell_vel, Linfty_error_per_cell_vel,
                    H1_rel_error_per_cell_vel, L2_rel_error_per_cell_vel, Linfty_rel_error_per_cell_vel,
                    L2_error_per_cell_pres, Linfty_error_per_cell_pres,
-                   L2_rel_error_per_cell_pres, Linfty_rel_error_per_cell_pres,
-                   Nodal_error_per_cell_vel, Nodal_error_per_cell_pres;
+                   L2_rel_error_per_cell_pres, Linfty_rel_error_per_cell_pres;
 
     double dt;
 
@@ -1904,9 +1903,6 @@ namespace Step35 {
     dof_handler_velocity.distribute_dofs(fe_velocity);
     dof_handler_pressure.distribute_dofs(fe_pressure);
 
-    Nodal_error_per_cell_vel.reinit(dof_handler_velocity.n_dofs());
-    Nodal_error_per_cell_pres.reinit(dof_handler_pressure.n_dofs());
-
     pcout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
           << std::endl
           << "dim (M_h) = " << dof_handler_pressure.n_dofs()
@@ -1978,14 +1974,14 @@ namespace Step35 {
 
     //--- TR-BDF2 first step
     if(TR_BDF2_stage == 1) {
-      u_extr.equ(1.0 + 0.0*gamma/(2.0*(1.0 - gamma)), u_n);
-      u_tmp.equ(0.0*gamma/(2.0*(1.0 - gamma)), u_n_minus_1);
+      u_extr.equ(1.0 + gamma/(2.0*(1.0 - gamma)), u_n);
+      u_tmp.equ(gamma/(2.0*(1.0 - gamma)), u_n_minus_1);
       u_extr -= u_tmp;
     }
     //--- TR-BDF2 second step
     else {
-      u_extr.equ(1.0 + 0.0*(1.0 - gamma)/gamma, u_n_gamma);
-      u_tmp.equ(0.0*(1.0 - gamma)/gamma, u_n);
+      u_extr.equ(1.0 + (1.0 - gamma)/gamma, u_n_gamma);
+      u_tmp.equ((1.0 - gamma)/gamma, u_n);
       u_extr -= u_tmp;
     }
   }
@@ -2195,50 +2191,14 @@ namespace Step35 {
   void NavierStokesProjection<dim>::output_results(const unsigned int step) {
     TimerOutput::Scope t(time_table, "Output results");
 
-    const FESystem<dim> joint_fe(fe_velocity, 1, fe_pressure, 1);
-    DoFHandler<dim>     joint_dof_handler(triangulation);
-    joint_dof_handler.distribute_dofs(joint_fe);
-    Assert(joint_dof_handler.n_dofs() == (dof_handler_velocity.n_dofs() + dof_handler_pressure.n_dofs()),
-           ExcInternalError());
-    Vector<double> joint_solution(joint_dof_handler.n_dofs());
-    std::vector<types::global_dof_index> loc_joint_dof_indices(joint_fe.n_dofs_per_cell()),
-                                         loc_vel_dof_indices(fe_velocity.n_dofs_per_cell()),
-                                         loc_pres_dof_indices(fe_pressure.n_dofs_per_cell());
-    typename DoFHandler<dim>::active_cell_iterator joint_beginc = joint_dof_handler.begin_active(),
-                                                   joint_endc   = joint_dof_handler.end(),
-                                                   vel_cell     = dof_handler_velocity.begin_active(),
-                                                   pres_cell    = dof_handler_pressure.begin_active();
-    for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
-      if(joint_cell->is_locally_owned()) {
-        joint_cell->get_dof_indices(loc_joint_dof_indices);
-        vel_cell->get_dof_indices(loc_vel_dof_indices);
-        pres_cell->get_dof_indices(loc_pres_dof_indices);
-        for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
-          switch(joint_fe.system_to_base_index(i).first.first) {
-          case 0:
-              Assert(joint_fe.system_to_base_index(i).first.second < dim,
-                     ExcInternalError());
-              joint_solution(loc_joint_dof_indices[i]) = u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
-              break;
-            case 1:
-              Assert(joint_fe.system_to_base_index(i).first.second == 0,
-                     ExcInternalError());
-              joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
-              break;
-            default:
-              Assert(false, ExcInternalError());
-          }
-        }
-      }
-    }
-    std::vector<std::string> joint_solution_names(dim, "v");
-    joint_solution_names.emplace_back("p");
     DataOut<dim> data_out;
-    data_out.attach_dof_handler(joint_dof_handler);
+    std::vector<std::string> velocity_names(dim, "v");
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
-    component_interpretation(dim + 1, DataComponentInterpretation::component_is_part_of_vector);
-    component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
-    data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
+    component_interpretation_velocity(dim, DataComponentInterpretation::component_is_part_of_vector);
+    u_n.update_ghost_values();
+    data_out.add_data_vector(dof_handler_velocity, u_n, velocity_names, component_interpretation_velocity);
+    pres_n.update_ghost_values();
+    data_out.add_data_vector(dof_handler_pressure, pres_n, "p", {DataComponentInterpretation::component_is_scalar});
     data_out.build_patches();
     const std::string output = "./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtu";
     data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
@@ -2255,18 +2215,12 @@ namespace Step35 {
     data_out.add_data_vector(L2_error_per_cell_vel, "L2_error_velocity");
     data_out.add_data_vector(Linfty_error_per_cell_vel, "Linfty_error_velocity");
     VectorTools::interpolate(dof_handler_velocity, vel_exact, u_tmp);
-    std::vector<types::global_dof_index> loc_vel_dof_indices(fe_velocity.n_dofs_per_cell());
-    for(const auto& cell: dof_handler_velocity.active_cell_iterators()) {
-      if(cell->is_locally_owned()) {
-        cell->get_dof_indices(loc_vel_dof_indices);
-        for(unsigned int i = 0; i < fe_velocity.n_dofs_per_cell(); ++i)
-          Nodal_error_per_cell_vel(loc_vel_dof_indices[i]) = std::abs(u_n(loc_vel_dof_indices[i]) - u_tmp(loc_vel_dof_indices[i]));
-      }
-    }
+    u_tmp -= u_n;
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
     component_interpretation(dim, DataComponentInterpretation::component_is_part_of_vector);
     std::vector<std::string> names(dim, "Nodal_error_velocity");
-    data_out.add_data_vector(Nodal_error_per_cell_vel, names, DataOut<dim>::type_dof_data, component_interpretation);
+    u_tmp.update_ghost_values();
+    data_out.add_data_vector(dof_handler_velocity, u_tmp, names, component_interpretation);
     data_out.build_patches();
     const std::string output_vel = "./" + saving_dir + "/errors_velocity-" + Utilities::int_to_string(step, 5) + ".vtu";
     data_out.write_vtu_in_parallel(output_vel, MPI_COMM_WORLD);
@@ -2277,16 +2231,9 @@ namespace Step35 {
     data_out.add_data_vector(L2_error_per_cell_pres, "L2_error_pressure");
     data_out.add_data_vector(Linfty_error_per_cell_pres, "Linfty_error_pressure");
     VectorTools::interpolate(dof_handler_pressure, pres_exact, pres_int);
-    std::vector<types::global_dof_index> loc_pres_dof_indices(fe_pressure.n_dofs_per_cell());
-    for(const auto& cell: dof_handler_pressure.active_cell_iterators()) {
-      if(cell->is_locally_owned()) {
-        cell->get_dof_indices(loc_pres_dof_indices);
-        for(unsigned int i = 0; i < fe_pressure.n_dofs_per_cell(); ++i)
-          Nodal_error_per_cell_pres(loc_pres_dof_indices[i]) =
-          std::abs(pres_n(loc_pres_dof_indices[i]) - pres_int(loc_pres_dof_indices[i]));
-      }
-    }
-    data_out.add_data_vector(Nodal_error_per_cell_pres, "Nodal_error_pressure");
+    pres_int -= pres_n;
+    pres_int.update_ghost_values();
+    data_out.add_data_vector(dof_handler_pressure, pres_int, "Nodal_error_pressure", {DataComponentInterpretation::component_is_scalar});
     data_out.build_patches();
     const std::string output_pres = "./" + saving_dir + "/errors_pressure-" + Utilities::int_to_string(step, 5) + ".vtu";
     data_out.write_vtu_in_parallel(output_pres, MPI_COMM_WORLD);
