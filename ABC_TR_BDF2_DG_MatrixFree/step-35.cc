@@ -867,7 +867,9 @@ namespace Step35 {
     FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number>   phi(data, 1, 1), phi_old(data, 1, 1);
     FEEvaluation<dim, fe_degree_v, n_q_points_1d - 1, dim, Number> phi_proj(data, 0, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
+    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt*gamma*dt : 1e6*(1.0 - gamma)*dt*(1.0 - gamma)*dt;
+
+    const double coeff_2 = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi_proj.reinit(cell);
@@ -878,8 +880,8 @@ namespace Step35 {
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& u_star_star = phi_proj.get_value(q);
         const auto& p_old       = phi_old.get_value(q);
-        phi.submit_value(0.000001*coeff*p_old, q);
-        phi.submit_gradient(coeff*u_star_star, q);
+        phi.submit_value(1.0/coeff*p_old, q);
+        phi.submit_gradient(1.0/coeff_2*u_star_star, q);
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -938,9 +940,8 @@ namespace Step35 {
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& n_plus = phi.get_normal_vector(q);
         phi.submit_value(-coeff*scalar_product(phi_proj.get_value(q), n_plus), q);
-        phi.submit_normal_derivative(0.0, q);
       }
-      phi.integrate_scatter(true, true, dst);
+      phi.integrate_scatter(true, false, dst);
     }
   }
 
@@ -1158,14 +1159,14 @@ namespace Step35 {
                               const std::pair<unsigned int, unsigned int>& cell_range) const {
     FEEvaluation<dim, fe_degree_p, n_q_points_1d - 1, 1, Number> phi(data, 1, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
+    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt*gamma*dt : 1e6*(1.0 - gamma)*dt*(1.0 - gamma)*dt;
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
       phi.gather_evaluate(src, true, true);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         phi.submit_gradient(phi.get_gradient(q), q);
-        phi.submit_value(0.000001/coeff*phi.get_value(q), q);
+        phi.submit_value(1.0/coeff*phi.get_value(q), q);
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -1585,7 +1586,7 @@ namespace Step35 {
 
     AlignedVector<VectorizedArray<Number>> diagonal(phi.dofs_per_component);
 
-    const double coeff = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
+    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt*gamma*dt : 1e6*(1.0 - gamma)*dt*(1.0 - gamma)*dt;
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
@@ -1595,7 +1596,7 @@ namespace Step35 {
         phi.submit_dof_value(make_vectorized_array<Number>(1.0), i);
         phi.evaluate(true, true);
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          phi.submit_value(0.000001/coeff*phi.get_value(q), q);
+          phi.submit_value(1.0/coeff*phi.get_value(q), q);
           phi.submit_gradient(phi.get_gradient(q), q);
         }
         phi.integrate(true, true);
