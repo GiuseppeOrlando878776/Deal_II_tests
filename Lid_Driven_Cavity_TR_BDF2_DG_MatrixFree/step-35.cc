@@ -895,7 +895,9 @@ namespace Step35 {
     FEEvaluation<dim, fe_degree_p, n_q_points_1d_p, 1, Number>   phi(data, 1, 1), phi_old(data, 1, 1);
     FEEvaluation<dim, fe_degree_v, n_q_points_1d_p, dim, Number> phi_proj(data, 0, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? 1.0/(gamma*dt) : 1.0/((1.0 - gamma)*dt);
+    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt*gamma*dt : 1e6*(1.0 - gamma)*dt*(1.0 - gamma)*dt;
+
+    const double coeff_2 = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi_proj.reinit(cell);
@@ -906,8 +908,8 @@ namespace Step35 {
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& u_star_star = phi_proj.get_value(q);
         const auto& p_old       = phi_old.get_value(q);
-        phi.submit_value(0.000001*coeff*p_old, q);
-        phi.submit_gradient(coeff*u_star_star, q);
+        phi.submit_value(1.0/coeff*p_old, q);
+        phi.submit_gradient(1.0/coeff_2*u_star_star, q);
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -966,9 +968,8 @@ namespace Step35 {
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& n_plus = phi.get_normal_vector(q);
         phi.submit_value(-coeff*scalar_product(phi_proj.get_value(q), n_plus), q);
-        phi.submit_normal_derivative(0.0, q);
       }
-      phi.integrate_scatter(true, true, dst);
+      phi.integrate_scatter(true, false, dst);
     }
   }
 
@@ -1184,14 +1185,14 @@ namespace Step35 {
                               const std::pair<unsigned int, unsigned int>& cell_range) const {
     FEEvaluation<dim, fe_degree_p, n_q_points_1d_p, 1, Number> phi(data, 1, 1);
 
-    const double coeff = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
+    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt*gamma*dt : 1e6*(1.0 - gamma)*dt*(1.0 - gamma)*dt;
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
       phi.gather_evaluate(src, true, true);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         phi.submit_gradient(phi.get_gradient(q), q);
-        phi.submit_value(0.000001/coeff*phi.get_value(q), q);
+        phi.submit_value(1.0/coeff*phi.get_value(q), q);
       }
       phi.integrate_scatter(true, true, dst);
     }
@@ -1668,7 +1669,7 @@ namespace Step35 {
 
     AlignedVector<VectorizedArray<Number>> diagonal(phi.dofs_per_component);
 
-    const double coeff = (TR_BDF2_stage == 1) ? gamma*dt : (1.0 - gamma)*dt;
+    const double coeff = (TR_BDF2_stage == 1) ? 1e6*gamma*dt*gamma*dt : 1e6*(1.0 - gamma)*dt*(1.0 - gamma)*dt;
 
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
@@ -1678,7 +1679,7 @@ namespace Step35 {
         phi.submit_dof_value(make_vectorized_array<Number>(1.0), i);
         phi.evaluate(true, true);
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          phi.submit_value(0.000001/coeff*phi.get_value(q), q);
+          phi.submit_value(1.0/coeff*phi.get_value(q), q);
           phi.submit_gradient(phi.get_gradient(q), q);
         }
         phi.integrate(true, true);
@@ -2307,50 +2308,14 @@ namespace Step35 {
   void NavierStokesProjection<dim>::output_results(const unsigned int step) {
     TimerOutput::Scope t(time_table, "Output results");
 
-    const FESystem<dim> joint_fe(fe_velocity, 1, fe_pressure, 1);
-    DoFHandler<dim>     joint_dof_handler(triangulation);
-    joint_dof_handler.distribute_dofs(joint_fe);
-    Assert(joint_dof_handler.n_dofs() == (dof_handler_velocity.n_dofs() + dof_handler_pressure.n_dofs()),
-           ExcInternalError());
-    Vector<double> joint_solution(joint_dof_handler.n_dofs());
-    std::vector<types::global_dof_index> loc_joint_dof_indices(joint_fe.n_dofs_per_cell()),
-                                         loc_vel_dof_indices(fe_velocity.n_dofs_per_cell()),
-                                         loc_pres_dof_indices(fe_pressure.n_dofs_per_cell());
-    typename DoFHandler<dim>::active_cell_iterator joint_beginc = joint_dof_handler.begin_active(),
-                                                   joint_endc   = joint_dof_handler.end(),
-                                                   vel_cell     = dof_handler_velocity.begin_active(),
-                                                   pres_cell    = dof_handler_pressure.begin_active();
-    for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
-      if(joint_cell->is_locally_owned()) {
-        joint_cell->get_dof_indices(loc_joint_dof_indices);
-        vel_cell->get_dof_indices(loc_vel_dof_indices);
-        pres_cell->get_dof_indices(loc_pres_dof_indices);
-        for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
-          switch(joint_fe.system_to_base_index(i).first.first) {
-            case 0:
-              Assert(joint_fe.system_to_base_index(i).first.second < dim,
-                     ExcInternalError());
-              joint_solution(loc_joint_dof_indices[i]) = u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
-              break;
-            case 1:
-              Assert(joint_fe.system_to_base_index(i).first.second == 0,
-                    ExcInternalError());
-              joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
-              break;
-            default:
-              Assert(false, ExcInternalError());
-          }
-        }
-      }
-    }
-    std::vector<std::string> joint_solution_names(dim, "v");
-    joint_solution_names.emplace_back("p");
     DataOut<dim> data_out;
-    data_out.attach_dof_handler(joint_dof_handler);
+    std::vector<std::string> velocity_names(dim, "v");
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
-    component_interpretation(dim + 1, DataComponentInterpretation::component_is_part_of_vector);
-    component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
-    data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
+    component_interpretation_velocity(dim, DataComponentInterpretation::component_is_part_of_vector);
+    u_n.update_ghost_values();
+    data_out.add_data_vector(dof_handler_velocity, u_n, velocity_names, component_interpretation_velocity);
+    pres_n.update_ghost_values();
+    data_out.add_data_vector(dof_handler_pressure, pres_n, "p", {DataComponentInterpretation::component_is_scalar});
 
     PostprocessorVorticity<dim> postprocessor;
     data_out.add_data_vector(dof_handler_velocity, u_n, postprocessor);
@@ -2523,50 +2488,14 @@ namespace Step35 {
     streamline     = transfer_streamline;
     streamline_old = transfer_streamline_old;
 
-    const FESystem<dim> joint_fe(fe_velocity, 1, fe_pressure, 1);
-    DoFHandler<dim>     joint_dof_handler(triangulation);
-    joint_dof_handler.distribute_dofs(joint_fe);
-    Assert(joint_dof_handler.n_dofs() == (dof_handler_velocity.n_dofs() + dof_handler_pressure.n_dofs()),
-           ExcInternalError());
-    Vector<double> joint_solution(joint_dof_handler.n_dofs());
-    std::vector<types::global_dof_index> loc_joint_dof_indices(joint_fe.n_dofs_per_cell()),
-                                         loc_vel_dof_indices(fe_velocity.n_dofs_per_cell()),
-                                         loc_pres_dof_indices(fe_pressure.n_dofs_per_cell());
-    typename DoFHandler<dim>::active_cell_iterator joint_beginc = joint_dof_handler.begin_active(),
-                                                   joint_endc   = joint_dof_handler.end(),
-                                                   vel_cell     = dof_handler_velocity.begin_active(),
-                                                   pres_cell    = dof_handler_pressure.begin_active();
-    for(auto joint_cell = joint_beginc; joint_cell != joint_endc; ++joint_cell, ++vel_cell, ++pres_cell) {
-      if(joint_cell->is_locally_owned()) {
-        joint_cell->get_dof_indices(loc_joint_dof_indices);
-        vel_cell->get_dof_indices(loc_vel_dof_indices);
-        pres_cell->get_dof_indices(loc_pres_dof_indices);
-        for(unsigned int i = 0; i < joint_fe.n_dofs_per_cell(); ++i) {
-          switch(joint_fe.system_to_base_index(i).first.first) {
-            case 0:
-              Assert(joint_fe.system_to_base_index(i).first.second < dim,
-                     ExcInternalError());
-              joint_solution(loc_joint_dof_indices[i]) = u_n(loc_vel_dof_indices[joint_fe.system_to_base_index(i).second]);
-              break;
-            case 1:
-              Assert(joint_fe.system_to_base_index(i).first.second == 0,
-                    ExcInternalError());
-              joint_solution(loc_joint_dof_indices[i]) = pres_n(loc_pres_dof_indices[joint_fe.system_to_base_index(i).second]);
-              break;
-            default:
-              Assert(false, ExcInternalError());
-          }
-        }
-      }
-    }
-    std::vector<std::string> joint_solution_names(dim, "v");
-    joint_solution_names.emplace_back("p");
     DataOut<dim> data_out;
-    data_out.attach_dof_handler(joint_dof_handler);
+    std::vector<std::string> velocity_names(dim, "v");
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
-    component_interpretation(dim + 1, DataComponentInterpretation::component_is_part_of_vector);
-    component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
-    data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
+    component_interpretation_velocity(dim, DataComponentInterpretation::component_is_part_of_vector);
+    u_n.update_ghost_values();
+    data_out.add_data_vector(dof_handler_velocity, u_n, velocity_names, component_interpretation_velocity);
+    pres_n.update_ghost_values();
+    data_out.add_data_vector(dof_handler_pressure, pres_n, "p", {DataComponentInterpretation::component_is_scalar});
     PostprocessorVorticity<dim> postprocessor;
     data_out.add_data_vector(dof_handler_velocity, u_n, postprocessor);
     streamline.update_ghost_values();
@@ -2576,10 +2505,11 @@ namespace Step35 {
     data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
 
     DataOut<dim> data_out_old;
-    std::vector<std::string> solution_names_old(dim, "v");
+    std::vector<std::string> velocity_names_old(dim, "v");
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
     component_interpretation_old(dim, DataComponentInterpretation::component_is_part_of_vector);
-    data_out_old.add_data_vector(dof_handler_velocity, u_n_minus_1, solution_names_old, component_interpretation_old);
+    u_n_minus_1.update_ghost_values();
+    data_out_old.add_data_vector(dof_handler_velocity, u_n_minus_1, velocity_names_old, component_interpretation_old);
     PostprocessorVorticity<dim> postprocessor_old;
     data_out_old.add_data_vector(dof_handler_velocity, u_n_minus_1, postprocessor_old);
     streamline_old.update_ghost_values();
