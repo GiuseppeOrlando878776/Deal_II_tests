@@ -2317,6 +2317,10 @@ namespace Step35 {
     pres_n.update_ghost_values();
     data_out.add_data_vector(dof_handler_pressure, pres_n, "p", {DataComponentInterpretation::component_is_scalar});
 
+    std::vector<std::string> velocity_names_old(dim, "v_old");
+    u_n_minus_1.update_ghost_values();
+    data_out.add_data_vector(dof_handler_velocity, u_n_minus_1, velocity_names_old, component_interpretation_velocity);
+
     PostprocessorVorticity<dim> postprocessor;
     data_out.add_data_vector(dof_handler_velocity, u_n, postprocessor);
 
@@ -2324,11 +2328,21 @@ namespace Step35 {
       compute_streamline();
       streamline.update_ghost_values();
       data_out.add_data_vector(dof_handler_streamline, streamline, "streamline", {DataComponentInterpretation::component_is_scalar});
+      streamline_old.update_ghost_values();
+      data_out.add_data_vector(dof_handler_streamline, streamline_old, "streamline_old",
+                               {DataComponentInterpretation::component_is_scalar});
     }
 
     data_out.build_patches();
     const std::string output = "./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtu";
     data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
+
+    data_out.clear();
+    PostprocessorVorticity<dim> postprocessor_old;
+    data_out.add_data_vector(dof_handler_velocity, u_n_minus_1, postprocessor_old);
+    data_out.build_patches();
+    const std::string output_old = "./" + saving_dir + "/vorticity_old-" + Utilities::int_to_string(step, 5) + ".vtu";
+    data_out.write_vtu_in_parallel(output_old, MPI_COMM_WORLD);
   }
 
 
@@ -2585,8 +2599,8 @@ namespace Step35 {
                            std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
       if(n % output_interval == 0) {
         verbose_cout << "Plotting Solution final" << std::endl;
-        output_results(n);
         streamline_old = streamline;
+        output_results(n);
       }
       if(time > 0.1*T && get_maximal_difference() < 1e-7)
         break;
@@ -2601,8 +2615,8 @@ namespace Step35 {
     }
     if(n % output_interval != 0) {
       verbose_cout << "Plotting Solution final" << std::endl;
-      output_results(n);
       streamline_old = streamline;
+      output_results(n);
     }
     for(unsigned int lev = 0; lev < triangulation.n_global_levels() - 1; ++ lev)
       interpolate_max_res(lev);
