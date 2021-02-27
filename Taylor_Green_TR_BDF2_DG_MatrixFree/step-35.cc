@@ -56,6 +56,8 @@
 
 #include <deal.II/base/timer.h>
 
+#include <random>
+
 // Finally this is as in all previous programs:
 namespace Step35 {
   using namespace dealii;
@@ -1876,12 +1878,33 @@ namespace Step35 {
   void NavierStokesProjection<dim>::create_triangulation_and_dofs(const unsigned int n_refines) {
     TimerOutput::Scope t(time_table, "Create triangulation and dofs");
 
-    GridGenerator::hyper_cube(triangulation, 0.0, 2.0*numbers::PI, true);
+    const unsigned int n_cells = std::pow(2, 3);
+    double h = 2.0*numbers::PI/n_cells;
+    std::vector<double> default_step_sizes_x(n_cells, h),
+                        default_step_sizes_y(n_cells, h);
+    std::default_random_engine generator(42);
+    std::uniform_real_distribution<double> distribution(-h/3.0, h/3.0);
+    double L_covered_x = 0.0;
+    for(unsigned int i = 0; i < n_cells - 1; ++i) {
+      default_step_sizes_x[i] += distribution(generator);
+      L_covered_x += default_step_sizes_x[i];
+    }
+    default_step_sizes_x[n_cells - 1] = 2.0*numbers::PI - L_covered_x;
+    double L_covered_y = 0.0;
+    for(unsigned int j = 0; j < n_cells - 1; ++j) {
+      default_step_sizes_y[j] += distribution(generator);
+      L_covered_y += default_step_sizes_y[j];
+    }
+    default_step_sizes_y[n_cells - 1] = 2.0*numbers::PI - L_covered_y;
 
-    pcout << "Number of refines = " << n_refines << std::endl;
-    triangulation.refine_global(n_refines);
-    pcout << "Number of active cells: " << triangulation.n_active_cells() << std::endl;
-    dt = CFL*2.0*numbers::PI/(std::pow(2, n_refines))/(EquationData::degree_p + 1);
+    GridGenerator::subdivided_hyper_rectangle(triangulation, {default_step_sizes_x, default_step_sizes_y},
+                                              Point<dim>(), Point<dim>(2.0*numbers::PI, 2.0*numbers::PI), true);
+    h = std::min(*std::min_element(default_step_sizes_x.cbegin(), default_step_sizes_x.cend()),
+                 *std::min_element(default_step_sizes_y.cbegin(), default_step_sizes_y.cend()));
+    triangulation.refine_global(n_refines - 3);
+    h /= std::pow(2, n_refines - 3);
+    pcout << "Number of active cells: " << triangulation.n_global_active_cells() << std::endl;
+    dt = CFL*h/(EquationData::degree_p + 1);
     navier_stokes_matrix.set_dt(dt);
 
     Vector<double> error_per_cell_tmp(triangulation.n_active_cells());
@@ -2021,7 +2044,7 @@ namespace Step35 {
       u_n_gamma_k = u_n_gamma;
     }
 
-    for(unsigned int iter = 0; iter < 100; ++iter) {
+    for(unsigned int iter = 0; iter < 1; ++iter) {
       if(TR_BDF2_stage == 1) {
         navier_stokes_matrix.set_u_extr(u_n_k);
         u_star = u_n_k;
