@@ -1878,33 +1878,63 @@ namespace Step35 {
   void NavierStokesProjection<dim>::create_triangulation_and_dofs(const unsigned int n_refines) {
     TimerOutput::Scope t(time_table, "Create triangulation and dofs");
 
-    const unsigned int n_cells = std::pow(2, 3);
-    double h = 2.0*numbers::PI/n_cells;
-    std::vector<double> default_step_sizes_x(n_cells, h),
-                        default_step_sizes_y(n_cells, h);
+    /*double h = 2.0*numbers::PI/8;
+    double dx = h;
     std::default_random_engine generator(42);
     std::uniform_real_distribution<double> distribution(-h/3.0, h/3.0);
-    double L_covered_x = 0.0;
-    for(unsigned int i = 0; i < n_cells - 1; ++i) {
-      default_step_sizes_x[i] += distribution(generator);
-      L_covered_x += default_step_sizes_x[i];
-    }
-    default_step_sizes_x[n_cells - 1] = 2.0*numbers::PI - L_covered_x;
-    double L_covered_y = 0.0;
-    for(unsigned int j = 0; j < n_cells - 1; ++j) {
-      default_step_sizes_y[j] += distribution(generator);
-      L_covered_y += default_step_sizes_y[j];
-    }
-    default_step_sizes_y[n_cells - 1] = 2.0*numbers::PI - L_covered_y;
 
-    GridGenerator::subdivided_hyper_rectangle(triangulation, {default_step_sizes_x, default_step_sizes_y},
-                                              Point<dim>(), Point<dim>(2.0*numbers::PI, 2.0*numbers::PI), true);
-    h = std::min(*std::min_element(default_step_sizes_x.cbegin(), default_step_sizes_x.cend()),
-                 *std::min_element(default_step_sizes_y.cbegin(), default_step_sizes_y.cend()));
+    //Save the vertices computing also minimum dx
+    std::vector<Point<dim>> vertices;
+    for(unsigned int i = 0; i <= 8; ++i)
+      vertices.emplace_back(Point<dim>(i*h, 0.0));
+    for(unsigned int j = 1; j < 8; ++ j) {
+      vertices.emplace_back(Point<dim>(0.0, j*h));
+      for(unsigned int i = 1; i < 8; ++ i) {
+        const double width  = h + distribution(generator);
+        const double height = h + distribution(generator);
+        dx = std::min(dx, std::min(width, height));
+        vertices.emplace_back(Point<dim>(i*width, j*height));
+      }
+      vertices.emplace_back(Point<dim>(2.0*numbers::PI, j*h));
+    }
+    for(unsigned int i = 0; i <= 8; ++i)
+      vertices.emplace_back(Point<dim>(i*h, 2.0*numbers::PI));
+
+    //Define the cells and the vertices they contain
+    std::vector<std::array<int, GeometryInfo<dim>::vertices_per_cell>> cell_vertices;
+    for(unsigned int j = 0; j < 8; ++j) {
+      for(unsigned int i = 0; i < 8; ++i) {
+        pcout<<vertices[i + j*9]<<std::endl;
+        pcout<<vertices[i + j*9 + 1]<<std::endl;
+        pcout<<vertices[i + j*9 + 10]<<std::endl;
+        pcout<<vertices[i + j*9 + 9]<<std::endl;
+        cell_vertices.emplace_back(std::array<int, GeometryInfo<dim>::vertices_per_cell>
+                                   ({i + j*9, i + j*9 + 1, i + j*9 + 9, i + j*9 + 10}));
+        pcout<<std::endl;
+      }
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    //Set all boundary to 0 and create triangulation
+    const unsigned int n_cells = cell_vertices.size();
+    std::vector<CellData<dim>> cells(n_cells, CellData<dim>());
+    for(unsigned int i = 0; i < n_cells; ++i) {
+      for(unsigned int j = 0; j < GeometryInfo<dim>::vertices_per_cell; ++j)
+        cells[i].vertices[j] = cell_vertices[i][j];
+      cells[i].material_id = 0;
+    }
+    triangulation.create_triangulation(vertices, cells, SubCellData());*/
+
+    GridGenerator::hyper_cube(triangulation, 0.0, 2.0*numbers::PI, true);
+    triangulation.refine_global(3);
+    GridTools::distort_random(2.0*numbers::PI/24, triangulation);
+
     triangulation.refine_global(n_refines - 3);
-    h /= std::pow(2, n_refines - 3);
+    double dx = GridTools::minimal_cell_diameter(triangulation)/std::sqrt(dim);
     pcout << "Number of active cells: " << triangulation.n_global_active_cells() << std::endl;
-    dt = CFL*h/(EquationData::degree_p + 1);
+    pcout << "h: " << dx << std::endl;
+    dt = CFL*dx/(EquationData::degree_p + 1);
     navier_stokes_matrix.set_dt(dt);
 
     Vector<double> error_per_cell_tmp(triangulation.n_active_cells());
