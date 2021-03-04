@@ -294,7 +294,7 @@ namespace Step35 {
 
     template<int dim>
     double Velocity<dim>::value(const Point<dim>& p, const unsigned int component) const {
-      AssertIndexRange(component, 2);
+      AssertIndexRange(component, 3);
       if(component == 0)
         return -1.0;
       else
@@ -364,10 +364,24 @@ namespace Step35 {
 
     Assert(inputs.solution_values[0].size() == dim, ExcInternalError());
 
-    Assert(computed_quantities[0].size() == 1, ExcInternalError());
+    if(dim == 2) {
+      Assert(computed_quantities[0].size() == 1, ExcInternalError());
+    }
+    else {
+      Assert(computed_quantities[0].size() == dim, ExcInternalError());
+    }
 
-    for(unsigned int q = 0; q < n_quadrature_points; ++q)
-      computed_quantities[q](0) = inputs.solution_gradients[q][1][0] - inputs.solution_gradients[q][0][1];
+    if(dim == 2) {
+      for(unsigned int q = 0; q < n_quadrature_points; ++q)
+        computed_quantities[q](0) = inputs.solution_gradients[q][1][0] - inputs.solution_gradients[q][0][1];
+    }
+    else {
+      for(unsigned int q = 0; q < n_quadrature_points; ++q) {
+        computed_quantities[q](0) = inputs.solution_gradients[q][2][1] - inputs.solution_gradients[q][1][2];
+        computed_quantities[q](1) = inputs.solution_gradients[q][0][2] - inputs.solution_gradients[q][2][0];
+        computed_quantities[q](2) = inputs.solution_gradients[q][1][0] - inputs.solution_gradients[q][0][1];
+      }
+    }
   }
 
 
@@ -375,6 +389,10 @@ namespace Step35 {
   std::vector<std::string> PostprocessorVorticity<dim>::get_names() const {
     std::vector<std::string> names;
     names.emplace_back("vorticity");
+    if(dim == 3) {
+      names.emplace_back("vorticity");
+      names.emplace_back("vorticity");
+    }
 
     return names;
   }
@@ -384,7 +402,13 @@ namespace Step35 {
   std::vector<DataComponentInterpretation::DataComponentInterpretation>
   PostprocessorVorticity<dim>::get_data_component_interpretation() const {
     std::vector<DataComponentInterpretation::DataComponentInterpretation> interpretation;
-    interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+    if(dim == 2)
+      interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+    else {
+      interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
+      interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
+      interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
+    }
 
     return interpretation;
   }
@@ -1354,8 +1378,16 @@ namespace Step35 {
       phi.reinit(cell);
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& grad_u_n = phi_vel.get_gradient(q);
-        VectorizedArray<Number> vorticity = grad_u_n[1][0] - grad_u_n[0][1];
-        phi.submit_value(vorticity, q);
+        if(dim == 2) {
+          VectorizedArray<Number> vorticity = grad_u_n[1][0] - grad_u_n[0][1];
+          phi.submit_value(vorticity, q);
+        }
+        else {
+          Tensor<1, dim, VectorizedArray<Number>> vorticity;
+          vorticity[0] = grad_u_n[2][1] - grad_u_n[1][2];
+          vorticity[1] = grad_u_n[0][2] - grad_u_n[2][0];
+          vorticity[2] = grad_u_n[1][0] - grad_u_n[0][1];
+        }
       }
       phi.integrate_scatter(true, false, dst);
     }
@@ -1865,13 +1897,15 @@ namespace Step35 {
 
     double get_maximal_velocity() const;
 
-    double get_maximal_difference() const;
+    double get_maximal_difference();
 
     void output_results(const unsigned int step);
 
     void refine_mesh();
 
     void interpolate_max_res(const unsigned int level);
+
+    void save_max_res();
 
   private:
     std::shared_ptr<MatrixFree<dim, double>> matrix_free_storage;
@@ -1925,7 +1959,7 @@ namespace Step35 {
     triangulation(MPI_COMM_WORLD),
     fe_velocity(FE_DGQ<dim>(EquationData::degree_p + 1), dim),
     fe_pressure(FE_DGQ<dim>(EquationData::degree_p), 1),
-    fe_streamline(FE_Q<dim>(EquationData::degree_p + 1), 1),
+    fe_streamline(FE_Q<dim>(EquationData::degree_p + 1), dim == 2 ? 1 : dim),
     dof_handler_velocity(triangulation),
     dof_handler_pressure(triangulation),
     dof_handler_streamline(triangulation),
@@ -1980,7 +2014,12 @@ namespace Step35 {
   void NavierStokesProjection<dim>::create_triangulation(const unsigned int n_cells) {
     TimerOutput::Scope t(time_table, "Create triangulation");
 
-    GridGenerator::subdivided_hyper_cube(triangulation, n_cells, 0.0, 1.0, true);
+    if(refinement_iterations == 0 and n_cells == 128) {
+      GridGenerator::subdivided_hyper_cube(triangulation, 8, 0.0, 1.0, true);
+      triangulation.refine_global(4);
+    }
+    else
+      GridGenerator::subdivided_hyper_cube(triangulation, n_cells, 0.0, 1.0, true);
 
     pcout << "Number of initial cells = " << n_cells << std::endl;
   }
@@ -2263,30 +2302,14 @@ namespace Step35 {
   // The following function is used in determining the maximal nodal difference
   // in order to see if we have reched steady-state
   template<int dim>
-  double NavierStokesProjection<dim>::get_maximal_difference() const {
-    QGauss<dim>        quadrature_formula(EquationData::degree_p + 2);
-    const unsigned int n_q_points = quadrature_formula.size();
+  double NavierStokesProjection<dim>::get_maximal_difference() {
+    Vector<double> Linfty_error_per_cell_vel(triangulation.n_active_cells());
 
-    FEValues<dim> fe_values(fe_velocity, quadrature_formula, update_values);
-    std::vector<Vector<double>> solution_values(n_q_points, Vector<double>(dim));
-    std::vector<Vector<double>> solution_old_values(n_q_points, Vector<double>(dim));
-    double max_difference = 0.0;
-
-    for(const auto& cell: dof_handler_velocity.active_cell_iterators()) {
-      if(cell->is_locally_owned()) {
-        fe_values.reinit(cell);
-        fe_values.get_function_values(u_n, solution_values);
-        fe_values.get_function_values(u_n_minus_1, solution_old_values);
-        for(unsigned int q = 0; q < n_q_points; ++q) {
-          Tensor<1, dim> velocity;
-          for(unsigned int i = 0; i < dim; ++i)
-            velocity[i] = solution_values[q](i) - solution_old_values[q](i);
-          max_difference = std::max(max_difference, velocity.norm());
-        }
-      }
-    }
-
-    const double res = Utilities::MPI::max(max_difference, MPI_COMM_WORLD);
+    u_tmp = u_n;
+    u_tmp -= u_n_minus_1;
+    VectorTools::integrate_difference(dof_handler_velocity, u_tmp, ZeroFunction<dim>(dim),
+                                      Linfty_error_per_cell_vel, quadrature_velocity, VectorTools::Linfty_norm);
+    const double res = VectorTools::compute_global_error(triangulation, Linfty_error_per_cell_vel, VectorTools::Linfty_norm);
     pcout << "Maximum nodal difference = " << res <<std::endl;
 
     return res;
@@ -2327,10 +2350,27 @@ namespace Step35 {
     if(step > 1) {
       compute_streamline();
       streamline.update_ghost_values();
-      data_out.add_data_vector(dof_handler_streamline, streamline, "streamline", {DataComponentInterpretation::component_is_scalar});
+      std::vector<DataComponentInterpretation::DataComponentInterpretation> interpretation;
+      std::vector<std::string> streamline_names, streamline_names_old;
+      if(dim == 2) {
+        interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+        streamline_names.push_back("streamline");
+        streamline_names_old.push_back("streamline_old");
+      }
+      else {
+        interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
+        interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
+        interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
+        streamline_names.push_back("streamline");
+        streamline_names.push_back("streamline");
+        streamline_names.push_back("streamline");
+        streamline_names_old.push_back("streamline_old");
+        streamline_names_old.push_back("streamline_old");
+        streamline_names_old.push_back("streamline_old");
+      }
+      data_out.add_data_vector(dof_handler_streamline, streamline, streamline_names, interpretation);
       streamline_old.update_ghost_values();
-      data_out.add_data_vector(dof_handler_streamline, streamline_old, "streamline_old",
-                               {DataComponentInterpretation::component_is_scalar});
+      data_out.add_data_vector(dof_handler_streamline, streamline_old, streamline_names_old, interpretation);
     }
 
     data_out.build_patches();
@@ -2501,33 +2541,77 @@ namespace Step35 {
     pres_n         = transfer_pressure;
     streamline     = transfer_streamline;
     streamline_old = transfer_streamline_old;
+  }
+
+
+  // @sect4{ <code>NavierStokesProjection::save_max_res</code>}
+  //
+  // Save maximum resolution to a mesh adapted for paraview
+  // in order to perform the difference
+  //
+  template<int dim>
+  void NavierStokesProjection<dim>::save_max_res() {
+    parallel::distributed::Triangulation<dim> triangulation_tmp(MPI_COMM_WORLD);
+    GridGenerator::subdivided_hyper_cube(triangulation_tmp, n_cells, 0.0, 1.0, true);
+    triangulation_tmp.refine_global(triangulation.n_global_levels() - 1);
+    DoFHandler<dim> dof_handler_velocity_tmp(triangulation_tmp);
+    DoFHandler<dim> dof_handler_pressure_tmp(triangulation_tmp);
+    DoFHandler<dim> dof_handler_streamline_tmp(triangulation_tmp);
+    dof_handler_velocity_tmp.distribute_dofs(fe_velocity);
+    dof_handler_pressure_tmp.distribute_dofs(fe_pressure);
+    dof_handler_streamline_tmp.distribute_dofs(fe_streamline);
+
+    LinearAlgebra::distributed::Vector<double> u_n_tmp, u_n_minus_1_tmp,
+                                               pres_n_tmp,
+                                               streamline_tmp, streamline_old_tmp;
+    u_n_tmp.reinit(dof_handler_velocity_tmp.n_dofs());
+    u_n_minus_1_tmp.reinit(dof_handler_velocity_tmp.n_dofs());
+    pres_n_tmp.reinit(dof_handler_pressure_tmp.n_dofs());
+    streamline_tmp.reinit(dof_handler_streamline_tmp.n_dofs());
+    streamline_old_tmp.reinit(dof_handler_streamline_tmp.n_dofs());
 
     DataOut<dim> data_out;
     std::vector<std::string> velocity_names(dim, "v");
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
     component_interpretation_velocity(dim, DataComponentInterpretation::component_is_part_of_vector);
-    u_n.update_ghost_values();
-    data_out.add_data_vector(dof_handler_velocity, u_n, velocity_names, component_interpretation_velocity);
-    pres_n.update_ghost_values();
-    data_out.add_data_vector(dof_handler_pressure, pres_n, "p", {DataComponentInterpretation::component_is_scalar});
+    VectorTools::interpolate_to_different_mesh(dof_handler_velocity, u_n, dof_handler_velocity_tmp, u_n_tmp);
+    u_n_tmp.update_ghost_values();
+    data_out.add_data_vector(dof_handler_velocity_tmp, u_n_tmp, velocity_names, component_interpretation_velocity);
+    VectorTools::interpolate_to_different_mesh(dof_handler_pressure, pres_n, dof_handler_pressure_tmp, pres_n_tmp);
+    pres_n_tmp.update_ghost_values();
+    data_out.add_data_vector(dof_handler_pressure_tmp, pres_n_tmp, "p", {DataComponentInterpretation::component_is_scalar});
     PostprocessorVorticity<dim> postprocessor;
-    data_out.add_data_vector(dof_handler_velocity, u_n, postprocessor);
-    streamline.update_ghost_values();
-    data_out.add_data_vector(dof_handler_streamline, streamline, "streamline", {DataComponentInterpretation::component_is_scalar});
+    data_out.add_data_vector(dof_handler_velocity_tmp, u_n_tmp, postprocessor);
+    VectorTools::interpolate_to_different_mesh(dof_handler_streamline, streamline, dof_handler_streamline_tmp, streamline_tmp);
+    streamline_tmp.update_ghost_values();
+    std::vector<DataComponentInterpretation::DataComponentInterpretation> interpretation;
+    std::vector<std::string> streamline_names;
+    if(dim == 2) {
+      interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+      streamline_names.push_back("streamline");
+    }
+    else {
+      interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
+      interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
+      interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
+      streamline_names.push_back("streamline");
+      streamline_names.push_back("streamline");
+      streamline_names.push_back("streamline");
+    }
+    data_out.add_data_vector(dof_handler_streamline_tmp, streamline_tmp, streamline_names, interpretation);
     data_out.build_patches();
     const std::string output = "./" + saving_dir + "/solution_max_res_end.vtu";
     data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
 
     DataOut<dim> data_out_old;
-    std::vector<std::string> velocity_names_old(dim, "v");
-    std::vector<DataComponentInterpretation::DataComponentInterpretation>
-    component_interpretation_old(dim, DataComponentInterpretation::component_is_part_of_vector);
-    u_n_minus_1.update_ghost_values();
-    data_out_old.add_data_vector(dof_handler_velocity, u_n_minus_1, velocity_names_old, component_interpretation_old);
+    VectorTools::interpolate_to_different_mesh(dof_handler_velocity, u_n_minus_1, dof_handler_velocity_tmp, u_n_minus_1_tmp);
+    u_n_minus_1_tmp.update_ghost_values();
+    data_out_old.add_data_vector(dof_handler_velocity_tmp, u_n_minus_1_tmp, velocity_names, component_interpretation_velocity);
     PostprocessorVorticity<dim> postprocessor_old;
-    data_out_old.add_data_vector(dof_handler_velocity, u_n_minus_1, postprocessor_old);
-    streamline_old.update_ghost_values();
-    data_out_old.add_data_vector(dof_handler_streamline, streamline_old, "streamline", {DataComponentInterpretation::component_is_scalar});
+    data_out_old.add_data_vector(dof_handler_velocity_tmp, u_n_minus_1_tmp, postprocessor_old);
+    VectorTools::interpolate_to_different_mesh(dof_handler_streamline, streamline_old, dof_handler_streamline_tmp, streamline_old_tmp);
+    streamline_old_tmp.update_ghost_values();
+    data_out_old.add_data_vector(dof_handler_streamline_tmp, streamline_old_tmp, streamline_names, interpretation);
     data_out_old.build_patches();
     const std::string output_old = "./" + saving_dir + "/solution_max_res_end_minus_1.vtu";
     data_out_old.write_vtu_in_parallel(output_old, MPI_COMM_WORLD);
@@ -2618,8 +2702,11 @@ namespace Step35 {
       streamline_old = streamline;
       output_results(n);
     }
-    for(unsigned int lev = 0; lev < triangulation.n_global_levels() - 1; ++ lev)
-      interpolate_max_res(lev);
+    if(refinement_iterations > 0) {
+      for(unsigned int lev = 0; lev < triangulation.n_global_levels() - 1; ++ lev)
+        interpolate_max_res(lev);
+      save_max_res();
+    }
   }
 
 } // namespace Step35
