@@ -2019,9 +2019,9 @@ namespace Step35 {
   void NavierStokesProjection<dim>::create_triangulation(const unsigned int n_cells) {
     TimerOutput::Scope t(time_table, "Create triangulation");
 
-    const double Lambda = 1.0;
+    const double Lambda = 2.0;
     const double Gamma  = 1.0;
-    GridGenerator::subdivided_hyper_rectangle(triangulation, {24, 24, 16},
+    GridGenerator::subdivided_hyper_rectangle(triangulation, {28, 28, 28},
                                               Point<dim>(-0.5*Gamma, -0.5, -0.5*Lambda),
                                               Point<dim>(0.5*Gamma, 0.5, 0.5*Lambda), true);
   }
@@ -2200,7 +2200,7 @@ namespace Step35 {
       gmres.solve(navier_stokes_matrix, u_star, rhs_u, preconditioner);
 
       //Compute the relative error and update the iterative variables
-      VectorTools::integrate_difference(dof_handler_velocity, u_star, ZeroFunction<dim>(dim),
+      /*VectorTools::integrate_difference(dof_handler_velocity, u_star, ZeroFunction<dim>(dim),
                                         Linfty_error_per_cell_vel, quadrature_velocity, VectorTools::Linfty_norm);
       const double den = VectorTools::compute_global_error(triangulation, Linfty_error_per_cell_vel, VectorTools::Linfty_norm);
       double error = 0.0;
@@ -2220,7 +2220,7 @@ namespace Step35 {
         u_n_gamma_k = u_star;
       }
       if(error < vel_eps)
-        break;
+        break;*/
     }
   }
 
@@ -2699,7 +2699,8 @@ namespace Step35 {
       TR_BDF2_stage = 1; //--- Flag to pass at first stage at next step
       const double max_vel = get_maximal_velocity();
       pcout<< "Maximal velocity = " << max_vel << std::endl;
-      pcout << "CFL = " << dt*max_vel*(EquationData::degree_p + 1)/(1.0/24) << std::endl;
+      pcout << "CFL = " << dt*max_vel*(EquationData::degree_p + 1)*
+                           std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
       if(n % output_interval == 0) {
         verbose_cout << "Plotting Solution final" << std::endl;
         //streamline_old = streamline;
