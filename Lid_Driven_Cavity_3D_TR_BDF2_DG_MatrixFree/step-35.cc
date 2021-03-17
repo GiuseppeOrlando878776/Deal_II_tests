@@ -444,8 +444,6 @@ namespace Step35 {
 
     void vmult_grad_p_projection(Vec& dst, const Vec& src) const;
 
-    void vmult_streamline(Vec& dst, const Vec& src) const;
-
     virtual void compute_diagonal() override;
 
   protected:
@@ -538,15 +536,6 @@ namespace Step35 {
                                                   const Vec&                                   src,
                                                   const std::pair<unsigned int, unsigned int>& cell_range) const;
 
-    void assemble_cell_term_streamline(const MatrixFree<dim, Number>&               data,
-                                       Vec&                                         dst,
-                                       const Vec&                                   src,
-                                       const std::pair<unsigned int, unsigned int>& cell_range) const;
-    void assemble_rhs_cell_term_streamline(const MatrixFree<dim, Number>&               data,
-                                           Vec&                                         dst,
-                                           const Vec&                                   src,
-                                           const std::pair<unsigned int, unsigned int>& cell_range) const;
-
     void assemble_diagonal_cell_term_velocity(const MatrixFree<dim, Number>&               data,
                                               Vec&                                         dst,
                                               const Vec&                                   src,
@@ -621,7 +610,7 @@ namespace Step35 {
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   set_NS_stage(const unsigned int stage) {
-    AssertIndexRange(stage, 5);
+    AssertIndexRange(stage, 4);
     Assert(stage > 0, ExcInternalError());
     NS_stage = stage;
   }
@@ -1280,10 +1269,6 @@ namespace Step35 {
       this->data->cell_loop(&NavierStokesProjectionOperator::assemble_cell_term_projection_grad_p,
                             this, dst, src, false);
     }
-    else if(NS_stage == 4) {
-      this->data->cell_loop(&NavierStokesProjectionOperator::assemble_cell_term_streamline,
-                            this, dst, src, false);
-    }
     else
       Assert(false, ExcNotImplemented());
   }
@@ -1337,69 +1322,6 @@ namespace Step35 {
   void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   vmult_grad_p_projection(Vec& dst, const Vec& src) const {
     this->data->cell_loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_projection_grad_p,
-                          this, dst, src, true);
-  }
-
-
-  // Assemble cell term for the streamline
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
-  assemble_cell_term_streamline(const MatrixFree<dim, Number>&               data,
-                                Vec&                                         dst,
-                                const Vec&                                   src,
-                                const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, 1, Number> phi(data, 2);
-
-    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-      phi.reinit(cell);
-      phi.gather_evaluate(src, false, true);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q)
-        phi.submit_gradient(phi.get_gradient(q), q);
-      phi.integrate_scatter(false, true, dst);
-    }
-  }
-
-
-  // Assemble rhs cell term for the projection of gradient of pressure
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
-  assemble_rhs_cell_term_streamline(const MatrixFree<dim, Number>&               data,
-                                    Vec&                                         dst,
-                                    const Vec&                                   src,
-                                    const std::pair<unsigned int, unsigned int>& cell_range) const {
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, 1, Number>   phi(data, 2);
-    FEEvaluation<dim, fe_degree_v, n_q_points_1d_v, dim, Number> phi_vel(data, 0);
-
-    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-      phi_vel.reinit(cell);
-      phi_vel.gather_evaluate(src, false, true);
-      phi.reinit(cell);
-      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-        const auto& grad_u_n = phi_vel.get_gradient(q);
-        if(dim == 2) {
-          VectorizedArray<Number> vorticity = grad_u_n[1][0] - grad_u_n[0][1];
-          phi.submit_value(vorticity, q);
-        }
-        else {
-          Tensor<1, dim, VectorizedArray<Number>> vorticity;
-          vorticity[0] = grad_u_n[2][1] - grad_u_n[1][2];
-          vorticity[1] = grad_u_n[0][2] - grad_u_n[2][0];
-          vorticity[2] = grad_u_n[1][0] - grad_u_n[0][1];
-        }
-      }
-      phi.integrate_scatter(true, false, dst);
-    }
-  }
-
-
-  // Put together all the previous steps for streamline
-  //
-  template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
-  void NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
-  vmult_streamline(Vec& dst, const Vec& src) const {
-    this->data->cell_loop(&NavierStokesProjectionOperator::assemble_rhs_cell_term_streamline,
                           this, dst, src, true);
   }
 
@@ -1847,11 +1769,9 @@ namespace Step35 {
 
     FESystem<dim> fe_velocity;
     FESystem<dim> fe_pressure;
-    FESystem<dim> fe_streamline;
 
     DoFHandler<dim> dof_handler_velocity;
     DoFHandler<dim> dof_handler_pressure;
-    DoFHandler<dim> dof_handler_streamline;
 
     QGauss<dim> quadrature_pressure;
     QGauss<dim> quadrature_velocity;
@@ -1867,13 +1787,6 @@ namespace Step35 {
     LinearAlgebra::distributed::Vector<double> u_star;
     LinearAlgebra::distributed::Vector<double> u_tmp;
     LinearAlgebra::distributed::Vector<double> rhs_u;
-
-    LinearAlgebra::distributed::Vector<double> u_n_k;
-    LinearAlgebra::distributed::Vector<double> u_n_gamma_k;
-
-    LinearAlgebra::distributed::Vector<double> streamline;
-    LinearAlgebra::distributed::Vector<double> streamline_old;
-    LinearAlgebra::distributed::Vector<double> omega;
 
     Vector<double> Linfty_error_per_cell_vel;
 
@@ -1898,8 +1811,6 @@ namespace Step35 {
 
     void project_grad(const unsigned int flag);
 
-    void compute_streamline();
-
     double get_maximal_velocity();
 
     double get_maximal_difference();
@@ -1919,7 +1830,7 @@ namespace Step35 {
                                    EquationData::degree_p + 1, EquationData::degree_p + 2,
                                    LinearAlgebra::distributed::Vector<double>, double> navier_stokes_matrix;
 
-    AffineConstraints<double> constraints_velocity, constraints_pressure, constraints_streamline;
+    AffineConstraints<double> constraints_velocity, constraints_pressure;
 
     unsigned int vel_max_its;
     unsigned int vel_Krylov_size;
@@ -1964,10 +1875,8 @@ namespace Step35 {
     triangulation(MPI_COMM_WORLD),
     fe_velocity(FE_DGQ<dim>(EquationData::degree_p + 1), dim),
     fe_pressure(FE_DGQ<dim>(EquationData::degree_p), 1),
-    fe_streamline(FE_Q<dim>(EquationData::degree_p + 1), dim == 2 ? 1 : dim),
     dof_handler_velocity(triangulation),
     dof_handler_pressure(triangulation),
-    dof_handler_streamline(triangulation),
     quadrature_pressure(EquationData::degree_p + 1),
     quadrature_velocity(EquationData::degree_p + 2),
     navier_stokes_matrix(data),
@@ -2002,7 +1911,6 @@ namespace Step35 {
 
       constraints_velocity.clear();
       constraints_pressure.clear();
-      constraints_streamline.clear();
 
       create_triangulation(data.n_cells);
       setup_dofs();
@@ -2019,9 +1927,35 @@ namespace Step35 {
   void NavierStokesProjection<dim>::create_triangulation(const unsigned int n_cells) {
     TimerOutput::Scope t(time_table, "Create triangulation");
 
-    const double Lambda = 2.0;
+    const double Lambda = 1.0;
     const double Gamma  = 1.0;
-    GridGenerator::subdivided_hyper_rectangle(triangulation, {28, 28, 28},
+    /*std::vector<std::vector<double>> step_sizes(dim);
+    step_sizes[0].resize(n_cells, Gamma/n_cells);
+    for(unsigned int i = 0; i < n_cells/4; ++i) {
+      step_sizes[0][i] /= 2;
+      step_sizes[0][n_cells - 1 - i] /= 2;
+    }
+    for(unsigned int i = 0; i < n_cells/2; ++i) {
+      step_sizes[0][n_cells/4 + i] = 1.5*Gamma/n_cells;
+    }
+    step_sizes[1].resize(n_cells, 1.0/n_cells);
+    for(unsigned int i = 0; i < n_cells/4; ++i) {
+      step_sizes[1][i] /= 2;
+      step_sizes[1][n_cells - 1 - i] /= 2;
+    }
+    for(unsigned int i = 0; i < n_cells/2; ++i) {
+      step_sizes[1][n_cells/4 + i] = 1.5/n_cells;
+    }
+    const unsigned int n_cells_z = n_cells*2/3;
+    step_sizes[2].resize(n_cells_z, Lambda/n_cells_z);
+    for(unsigned int i = 0; i < n_cells_z/4; ++i) {
+      step_sizes[2][i] /= 2;
+      step_sizes[2][n_cells_z - 1 - i] /= 2;
+    }
+    for(unsigned int i = 0; i < n_cells_z/2; ++i) {
+      step_sizes[2][n_cells_z/4 + i] = 1.5*Lambda/n_cells_z;
+    }*/
+    GridGenerator::subdivided_hyper_rectangle(triangulation, {6, 6, 6},
                                               Point<dim>(-0.5*Gamma, -0.5, -0.5*Lambda),
                                               Point<dim>(0.5*Gamma, 0.5, 0.5*Lambda), true);
   }
@@ -2040,7 +1974,6 @@ namespace Step35 {
 
     dof_handler_velocity.distribute_dofs(fe_velocity);
     dof_handler_pressure.distribute_dofs(fe_pressure);
-    dof_handler_streamline.distribute_dofs(fe_streamline);
 
     pcout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
           << std::endl
@@ -2054,13 +1987,6 @@ namespace Step35 {
       output_n_dofs_pressure << dof_handler_pressure.n_dofs() << std::endl;
     }
 
-    IndexSet locally_relevant_dofs;
-    DoFTools::extract_locally_relevant_dofs(dof_handler_streamline, locally_relevant_dofs);
-    constraints_streamline.reinit(locally_relevant_dofs);
-    DoFTools::make_hanging_node_constraints(dof_handler_streamline, constraints_streamline);
-    DoFTools::make_zero_boundary_constraints(dof_handler_streamline, constraints_streamline);
-    constraints_streamline.close();
-
     typename MatrixFree<dim, double>::AdditionalData additional_data;
     additional_data.mapping_update_flags = (update_gradients | update_JxW_values |
                                             update_quadrature_points | update_values);
@@ -2073,12 +1999,10 @@ namespace Step35 {
     std::vector<const DoFHandler<dim>*> dof_handlers;
     dof_handlers.push_back(&dof_handler_velocity);
     dof_handlers.push_back(&dof_handler_pressure);
-    dof_handlers.push_back(&dof_handler_streamline);
 
     std::vector<const AffineConstraints<double>*> constraints;
     constraints.push_back(&constraints_velocity);
     constraints.push_back(&constraints_pressure);
-    constraints.push_back(&constraints_streamline);
 
     std::vector<QGauss<1>> quadratures;
     quadratures.push_back(QGauss<1>(EquationData::degree_p + 2));
@@ -2093,16 +2017,9 @@ namespace Step35 {
     matrix_free_storage->initialize_dof_vector(u_n_gamma, 0);
     matrix_free_storage->initialize_dof_vector(u_tmp, 0);
 
-    matrix_free_storage->initialize_dof_vector(u_n_k, 0);
-    matrix_free_storage->initialize_dof_vector(u_n_gamma_k, 0);
-
     matrix_free_storage->initialize_dof_vector(pres_int, 1);
     matrix_free_storage->initialize_dof_vector(pres_n, 1);
     matrix_free_storage->initialize_dof_vector(rhs_p, 1);
-
-    matrix_free_storage->initialize_dof_vector(streamline, 2);
-    matrix_free_storage->initialize_dof_vector(streamline_old, 2);
-    matrix_free_storage->initialize_dof_vector(omega, 2);
   }
 
 
@@ -2168,11 +2085,13 @@ namespace Step35 {
 
     if(TR_BDF2_stage == 1) {
       navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n, pres_n});
-      u_n_k = u_n;
+      navier_stokes_matrix.set_u_extr(u_n);
+      u_star = u_n;
     }
     else {
       navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_n_gamma});
-      u_n_gamma_k = u_n_gamma;
+      navier_stokes_matrix.set_u_extr(u_n_gamma);
+      u_star = u_n_gamma;
     }
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
@@ -2185,43 +2104,9 @@ namespace Step35 {
                                                       EquationData::degree_p + 2,
                                                       LinearAlgebra::distributed::Vector<double>,
                                                       double>> preconditioner;
-
-    for(unsigned int iter = 0; iter < 1; ++iter) {
-      if(TR_BDF2_stage == 1) {
-        navier_stokes_matrix.set_u_extr(u_n_k);
-        u_star = u_n_k;
-      }
-      else {
-        navier_stokes_matrix.set_u_extr(u_n_gamma_k);
-        u_star = u_n_gamma_k;
-      }
-      navier_stokes_matrix.compute_diagonal();
-      preconditioner.initialize(navier_stokes_matrix);
-      gmres.solve(navier_stokes_matrix, u_star, rhs_u, preconditioner);
-
-      //Compute the relative error and update the iterative variables
-      /*VectorTools::integrate_difference(dof_handler_velocity, u_star, ZeroFunction<dim>(dim),
-                                        Linfty_error_per_cell_vel, quadrature_velocity, VectorTools::Linfty_norm);
-      const double den = VectorTools::compute_global_error(triangulation, Linfty_error_per_cell_vel, VectorTools::Linfty_norm);
-      double error = 0.0;
-      u_tmp = u_star;
-      if(TR_BDF2_stage == 1) {
-        u_tmp -= u_n_k;
-        VectorTools::integrate_difference(dof_handler_velocity, u_tmp, ZeroFunction<dim>(dim),
-                                          Linfty_error_per_cell_vel, quadrature_velocity, VectorTools::Linfty_norm);
-        error = VectorTools::compute_global_error(triangulation, Linfty_error_per_cell_vel, VectorTools::Linfty_norm)/den;
-        u_n_k = u_star;
-      }
-      else {
-        u_tmp -= u_n_gamma_k;
-        VectorTools::integrate_difference(dof_handler_velocity, u_tmp, ZeroFunction<dim>(dim),
-                                          Linfty_error_per_cell_vel, quadrature_velocity, VectorTools::Linfty_norm);
-        error = VectorTools::compute_global_error(triangulation, Linfty_error_per_cell_vel, VectorTools::Linfty_norm)/den;
-        u_n_gamma_k = u_star;
-      }
-      if(error < vel_eps)
-        break;*/
-    }
+    navier_stokes_matrix.compute_diagonal();
+    preconditioner.initialize(navier_stokes_matrix);
+    gmres.solve(navier_stokes_matrix, u_star, rhs_u, preconditioner);
   }
 
 
@@ -2287,27 +2172,6 @@ namespace Step35 {
   }
 
 
-  // This implements the solution of Poisson problem for streamline
-  //
-  template<int dim>
-  void NavierStokesProjection<dim>::compute_streamline() {
-    TimerOutput::Scope t(time_table, "Compute streamline");
-
-    const std::vector<unsigned int> tmp = {2};
-    navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
-
-    navier_stokes_matrix.vmult_streamline(omega, u_n);
-
-    navier_stokes_matrix.set_NS_stage(4);
-
-    IterationNumberControl solver_control(vel_max_its, 1e-12*omega.l2_norm());
-    SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
-    cg.solve(navier_stokes_matrix, streamline, omega, PreconditionIdentity());
-
-    constraints_streamline.distribute(streamline);
-  }
-
-
   // The following function is used in determining the maximal velocity
   // in order to compute the CFL
   //
@@ -2367,42 +2231,9 @@ namespace Step35 {
     PostprocessorVorticity<dim> postprocessor;
     data_out.add_data_vector(dof_handler_velocity, u_n, postprocessor);
 
-    /*if(step > 1) {
-      compute_streamline();
-      streamline.update_ghost_values();
-      std::vector<DataComponentInterpretation::DataComponentInterpretation> interpretation;
-      std::vector<std::string> streamline_names, streamline_names_old;
-      if(dim == 2) {
-        interpretation.push_back(DataComponentInterpretation::component_is_scalar);
-        streamline_names.push_back("streamline");
-        streamline_names_old.push_back("streamline_old");
-      }
-      else {
-        interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
-        interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
-        interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
-        streamline_names.push_back("streamline");
-        streamline_names.push_back("streamline");
-        streamline_names.push_back("streamline");
-        streamline_names_old.push_back("streamline_old");
-        streamline_names_old.push_back("streamline_old");
-        streamline_names_old.push_back("streamline_old");
-      }
-      data_out.add_data_vector(dof_handler_streamline, streamline, streamline_names, interpretation);
-      streamline_old.update_ghost_values();
-      data_out.add_data_vector(dof_handler_streamline, streamline_old, streamline_names_old, interpretation);
-    }*/
-
     data_out.build_patches();
     const std::string output = "./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtu";
     data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
-
-    /*data_out.clear();
-    PostprocessorVorticity<dim> postprocessor_old;
-    data_out.add_data_vector(dof_handler_velocity, u_n_minus_1, postprocessor_old);
-    data_out.build_patches();
-    const std::string output_old = "./" + saving_dir + "/vorticity_old-" + Utilities::int_to_string(step, 5) + ".vtu";
-    data_out.write_vtu_in_parallel(output_old, MPI_COMM_WORLD);*/
   }
 
 
@@ -2491,8 +2322,7 @@ namespace Step35 {
   // @sect4{ <code>NavierStokesProjection::interpolate_max_res</code>}
   //
   // Interpolate the locally refined solution to a mesh with maximal resolution
-  // and trnasfer velocity and pressure. Then compute streamline and vorticity
-  // and let paraview do the difference
+  // and transfer velocity and pressure.
   //
   template<int dim>
   void NavierStokesProjection<dim>::interpolate_max_res(const unsigned int level) {
@@ -2507,13 +2337,6 @@ namespace Step35 {
     solution_transfer_pressure(dof_handler_pressure);
     solution_transfer_pressure.prepare_for_coarsening_and_refinement(pres_n);
 
-    parallel::distributed::SolutionTransfer<dim, LinearAlgebra::distributed::Vector<double>>
-    solution_transfer_streamline(dof_handler_streamline);
-    std::vector<const LinearAlgebra::distributed::Vector<double>*> streamlines;
-    streamlines.push_back(&streamline);
-    streamlines.push_back(&streamline_old);
-    solution_transfer_streamline.prepare_for_coarsening_and_refinement(streamlines);
-
     for(const auto& cell: triangulation.active_cell_iterators_on_level(level)) {
       if(cell->is_locally_owned())
         cell->set_refine_flag();
@@ -2523,8 +2346,7 @@ namespace Step35 {
     setup_dofs();
 
     LinearAlgebra::distributed::Vector<double> transfer_velocity, transfer_velocity_minus_1,
-                                               transfer_pressure,
-                                               transfer_streamline, transfer_streamline_old;
+                                               transfer_pressure;
 
     transfer_velocity.reinit(u_n);
     transfer_velocity.zero_out_ghosts();
@@ -2534,12 +2356,7 @@ namespace Step35 {
     transfer_pressure.reinit(pres_n);
     transfer_pressure.zero_out_ghosts();
 
-    transfer_streamline.reinit(streamline);
-    transfer_streamline.zero_out_ghosts();
-    transfer_streamline_old.reinit(streamline_old);
-    transfer_streamline_old.zero_out_ghosts();
-
-    std::vector<LinearAlgebra::distributed::Vector<double>*> transfer_velocities, transfer_streamlines;
+    std::vector<LinearAlgebra::distributed::Vector<double>*> transfer_velocities;
 
     transfer_velocities.push_back(&transfer_velocity);
     transfer_velocities.push_back(&transfer_velocity_minus_1);
@@ -2550,17 +2367,9 @@ namespace Step35 {
     solution_transfer_pressure.interpolate(transfer_pressure);
     transfer_pressure.update_ghost_values();
 
-    transfer_streamlines.push_back(&transfer_streamline);
-    transfer_streamlines.push_back(&transfer_streamline_old);
-    solution_transfer_streamline.interpolate(transfer_streamlines);
-    transfer_streamline.update_ghost_values();
-    transfer_streamline_old.update_ghost_values();
-
     u_n            = transfer_velocity;
     u_n_minus_1    = transfer_velocity_minus_1;
     pres_n         = transfer_pressure;
-    streamline     = transfer_streamline;
-    streamline_old = transfer_streamline_old;
   }
 
 
@@ -2572,23 +2381,22 @@ namespace Step35 {
   template<int dim>
   void NavierStokesProjection<dim>::save_max_res() {
     parallel::distributed::Triangulation<dim> triangulation_tmp(MPI_COMM_WORLD);
-    GridGenerator::subdivided_hyper_cube(triangulation_tmp, n_cells, 0.0, 1.0, true);
+    const double Gamma = 1.0;
+    const double Lambda = 1.0;
+    GridGenerator::subdivided_hyper_rectangle(triangulation_tmp, {6, 6, 6},
+                                              Point<dim>(-0.5*Gamma, -0.5, -0.5*Lambda),
+                                              Point<dim>(0.5*Gamma, 0.5, 0.5*Lambda), true);
     triangulation_tmp.refine_global(triangulation.n_global_levels() - 1);
     DoFHandler<dim> dof_handler_velocity_tmp(triangulation_tmp);
     DoFHandler<dim> dof_handler_pressure_tmp(triangulation_tmp);
-    DoFHandler<dim> dof_handler_streamline_tmp(triangulation_tmp);
     dof_handler_velocity_tmp.distribute_dofs(fe_velocity);
     dof_handler_pressure_tmp.distribute_dofs(fe_pressure);
-    dof_handler_streamline_tmp.distribute_dofs(fe_streamline);
 
     LinearAlgebra::distributed::Vector<double> u_n_tmp, u_n_minus_1_tmp,
-                                               pres_n_tmp,
-                                               streamline_tmp, streamline_old_tmp;
+                                               pres_n_tmp;
     u_n_tmp.reinit(dof_handler_velocity_tmp.n_dofs());
     u_n_minus_1_tmp.reinit(dof_handler_velocity_tmp.n_dofs());
     pres_n_tmp.reinit(dof_handler_pressure_tmp.n_dofs());
-    streamline_tmp.reinit(dof_handler_streamline_tmp.n_dofs());
-    streamline_old_tmp.reinit(dof_handler_streamline_tmp.n_dofs());
 
     DataOut<dim> data_out;
     std::vector<std::string> velocity_names(dim, "v");
@@ -2602,23 +2410,6 @@ namespace Step35 {
     data_out.add_data_vector(dof_handler_pressure_tmp, pres_n_tmp, "p", {DataComponentInterpretation::component_is_scalar});
     PostprocessorVorticity<dim> postprocessor;
     data_out.add_data_vector(dof_handler_velocity_tmp, u_n_tmp, postprocessor);
-    VectorTools::interpolate_to_different_mesh(dof_handler_streamline, streamline, dof_handler_streamline_tmp, streamline_tmp);
-    streamline_tmp.update_ghost_values();
-    std::vector<DataComponentInterpretation::DataComponentInterpretation> interpretation;
-    std::vector<std::string> streamline_names;
-    if(dim == 2) {
-      interpretation.push_back(DataComponentInterpretation::component_is_scalar);
-      streamline_names.push_back("streamline");
-    }
-    else {
-      interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
-      interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
-      interpretation.push_back(DataComponentInterpretation::component_is_part_of_vector);
-      streamline_names.push_back("streamline");
-      streamline_names.push_back("streamline");
-      streamline_names.push_back("streamline");
-    }
-    data_out.add_data_vector(dof_handler_streamline_tmp, streamline_tmp, streamline_names, interpretation);
     data_out.build_patches();
     const std::string output = "./" + saving_dir + "/solution_max_res_end.vtu";
     data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
@@ -2629,9 +2420,6 @@ namespace Step35 {
     data_out_old.add_data_vector(dof_handler_velocity_tmp, u_n_minus_1_tmp, velocity_names, component_interpretation_velocity);
     PostprocessorVorticity<dim> postprocessor_old;
     data_out_old.add_data_vector(dof_handler_velocity_tmp, u_n_minus_1_tmp, postprocessor_old);
-    VectorTools::interpolate_to_different_mesh(dof_handler_streamline, streamline_old, dof_handler_streamline_tmp, streamline_old_tmp);
-    streamline_old_tmp.update_ghost_values();
-    data_out_old.add_data_vector(dof_handler_streamline_tmp, streamline_old_tmp, streamline_names, interpretation);
     data_out_old.build_patches();
     const std::string output_old = "./" + saving_dir + "/solution_max_res_end_minus_1.vtu";
     data_out_old.write_vtu_in_parallel(output_old, MPI_COMM_WORLD);
@@ -2703,7 +2491,6 @@ namespace Step35 {
                            std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
       if(n % output_interval == 0) {
         verbose_cout << "Plotting Solution final" << std::endl;
-        //streamline_old = streamline;
         output_results(n);
       }
       if(get_maximal_difference()/dt < 1e-7)
@@ -2719,7 +2506,6 @@ namespace Step35 {
     }
     if(n % output_interval != 0) {
       verbose_cout << "Plotting Solution final" << std::endl;
-      //streamline_old = streamline;
       output_results(n);
     }
     if(refinement_iterations > 0) {
