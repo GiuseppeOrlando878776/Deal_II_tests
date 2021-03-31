@@ -1955,7 +1955,7 @@ namespace Step35 {
     for(unsigned int i = 0; i < n_cells_z/2; ++i) {
       step_sizes[2][n_cells_z/4 + i] = 1.5*Lambda/n_cells_z;
     }*/
-    GridGenerator::subdivided_hyper_rectangle(triangulation, {6, 6, 6},
+    GridGenerator::subdivided_hyper_rectangle(triangulation, {48, 48, 32},
                                               Point<dim>(-0.5*Gamma, -0.5, -0.5*Lambda),
                                               Point<dim>(0.5*Gamma, 0.5, 0.5*Lambda), true);
   }
@@ -2273,7 +2273,7 @@ namespace Step35 {
     for(const auto& cell: triangulation.active_cell_iterators()) {
       if(cell->refine_flag_set() && cell->level() == max_loc_refinements)
         cell->clear_refine_flag();
-      if(cell->refine_flag_set() && cell->level() == min_loc_refinements)
+      if(cell->coarsen_flag_set() && cell->level() == min_loc_refinements)
         cell->clear_coarsen_flag();
     }
     triangulation.prepare_coarsening_and_refinement();

@@ -2486,7 +2486,7 @@ namespace Step35 {
     for(const auto& cell: triangulation.active_cell_iterators()) {
       if(cell->refine_flag_set() && cell->level() == max_loc_refinements)
         cell->clear_refine_flag();
-      if(cell->refine_flag_set() && cell->level() == min_loc_refinements)
+      if(cell->coarsen_flag_set() && cell->level() == min_loc_refinements)
         cell->clear_coarsen_flag();
     }
     triangulation.prepare_coarsening_and_refinement();

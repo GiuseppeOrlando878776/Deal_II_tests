@@ -2014,12 +2014,12 @@ namespace Step35 {
   void NavierStokesProjection<dim>::create_triangulation(const unsigned int n_cells) {
     TimerOutput::Scope t(time_table, "Create triangulation");
 
-    if(refinement_iterations == 0 and n_cells == 128) {
+    /*if(refinement_iterations == 0 and n_cells == 128) {
       GridGenerator::subdivided_hyper_cube(triangulation, 8, 0.0, 1.0, true);
       triangulation.refine_global(4);
     }
-    else
-      GridGenerator::subdivided_hyper_cube(triangulation, n_cells, 0.0, 1.0, true);
+    else*/
+    GridGenerator::subdivided_hyper_cube(triangulation, n_cells, 0.0, 1.0, true);
 
     pcout << "Number of initial cells = " << n_cells << std::endl;
   }
@@ -2422,7 +2422,7 @@ namespace Step35 {
     for(const auto& cell: triangulation.active_cell_iterators()) {
       if(cell->refine_flag_set() && cell->level() == max_loc_refinements)
         cell->clear_refine_flag();
-      if(cell->refine_flag_set() && cell->level() == min_loc_refinements)
+      if(cell->coarsen_flag_set() && cell->level() == min_loc_refinements)
         cell->clear_coarsen_flag();
     }
     triangulation.prepare_coarsening_and_refinement();

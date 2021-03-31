@@ -16,7 +16,7 @@ subsection Space discretization
   # In this subsection we declare the data that is relevant to the space discretization
   # we set the number of global refines the triangulation must have
   # and the degree k of the pair Q_(k+1)--Q_k of velocity--pressure finite element spaces
-  set n_of_cells = 8
+  set n_of_cells = 128
   set max_loc_refinements = 4
   set min_loc_refinements = 2
 end
@@ -32,12 +32,12 @@ subsection Data solve velocity
   set update_prec    = 10    # this number indicates how often the preconditioner must be updated
 end
 
-set saving directory = SimTest_4
+set saving directory = SimTest
 
-set refinement_iterations = 100
+set refinement_iterations = 0
 
 #The output frequency
-set output_interval = 50
+set output_interval = 150
 
 #Finally we set the verbosity level
 set verbose = true
