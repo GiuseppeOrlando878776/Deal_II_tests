@@ -84,7 +84,7 @@ namespace Step35 {
 
       double Reynolds;
 
-      unsigned int n_global_refines;
+      unsigned int n_cells;
 
       unsigned int pressure_degree;
 
@@ -112,7 +112,7 @@ namespace Step35 {
                                   initial_time(0.0),
                                   final_time(1.0),
                                   Reynolds(1.0),
-                                  n_global_refines(0),
+                                  n_cells(0),
                                   pressure_degree(1),
                                   vel_max_iterations(1000),
                                   vel_Krylov_size(30),
@@ -155,10 +155,10 @@ namespace Step35 {
 
       prm.enter_subsection("Space discretization");
       {
-        prm.declare_entry("n_of_refines",
+        prm.declare_entry("n_of_cells",
                           "0",
-                          Patterns::Integer(0, 15),
-                          " The number of global refines we do on the mesh. ");
+                          Patterns::Integer(0, 1500),
+                          " The number of cells we do on the mesh. ");
         prm.declare_entry("pressure_fe_degree",
                           "1",
                           Patterns::Integer(1, 5),
@@ -241,7 +241,7 @@ namespace Step35 {
 
       prm.enter_subsection("Space discretization");
       {
-        n_global_refines = prm.get_integer("n_of_refines");
+        n_cells = prm.get_integer("n_of_cells");
         pressure_degree  = prm.get_integer("pressure_fe_degree");
       }
       prm.leave_subsection();
@@ -332,13 +332,10 @@ namespace Step35 {
 
     template <int dim>
     double Velocity<dim>::value(const Point<dim> &p, const unsigned int) const {
-      if(this->comp == 0) {
-          const double Um = 1.5;
-          const double H  = 4.1;
-          return 4. * Um * p(1) * (H - p(1)) / (H * H);
-      }
+      if(this->comp == 0)
+        return -1.0;
       else
-        return 0.;
+        return 0.0;
     }
 
 
@@ -365,7 +362,7 @@ namespace Step35 {
                                 const unsigned int component) const {
       (void)component;
       AssertIndexRange(component, 1);
-      return 25.0 - p(0);
+      return 1.0;
     }
 
     template <int dim>
@@ -445,11 +442,13 @@ namespace Step35 {
     Vector<double> v_tmp;
     Vector<double> pres_tmp;
     Vector<double> rot_u;
+    Vector<double> streamline_n;
 
     SparseILU<double>   prec_velocity[dim];
     SparseILU<double>   prec_pres_Laplace;
     SparseDirectUMFPACK prec_mass;
     SparseDirectUMFPACK prec_vel_mass;
+    SparseILU<double>   prec_vel_Laplace;
 
     DeclException2(ExcInvalidTimeStep,
                    double,
@@ -458,7 +457,7 @@ namespace Step35 {
                    << std::endl
                    << " The permitted range is (0," << arg2 << "]");
 
-    void create_triangulation_and_dofs(const unsigned int n_refines);
+    void create_triangulation_and_dofs(const unsigned int n_cells);
 
     void initialize();
 
@@ -610,12 +609,14 @@ namespace Step35 {
     void copy_advection_local_to_global(const AdvectionPerTaskData& data);
 
     // The final few functions implement the diffusion solve as well as
-    // postprocessing the output, including computing the curl of the velocity:
+    // postprocessing the output, including computing the curl of the velocity and the streamline:
     void diffusion_component_solve(const unsigned int d);
 
     void output_results(const unsigned int step);
 
     void assemble_vorticity(const bool reinit_prec);
+
+    void compute_streamline(const bool reinit_prec);
   };
 
 
@@ -658,33 +659,21 @@ namespace Step35 {
 
       AssertThrow(!((dt <= 0.0) || (dt > 0.5 * T)), ExcInvalidTimeStep(dt, 0.5 * T));
 
-      create_triangulation_and_dofs(data.n_global_refines);
+      create_triangulation_and_dofs(data.n_cells);
       initialize();
   }
 
 
   // @sect4{<code>NavierStokesProjection::create_triangulation_and_dofs</code>}
 
-  // The method that creates the triangulation and refines it the needed number
-  // of times. After creating the triangulation, it creates the mesh dependent
-  // data, i.e. it distributes degrees of freedom and renumbers them, and
-  // initializes the matrices and vectors that we will use.
+  // The method that creates the triangulation. After creating the triangulation,
+  // it creates the mesh dependent data, i.e. it distributes degrees of freedom
+  // and renumbers them, and initializes the matrices and vectors that we will use.
   template <int dim>
-  void NavierStokesProjection<dim>::create_triangulation_and_dofs(const unsigned int n_refines) {
+  void NavierStokesProjection<dim>::create_triangulation_and_dofs(const unsigned int n_cells) {
     TimerOutput::Scope t(time_table, "Create triangulation");
 
-    GridIn<dim> grid_in;
-    grid_in.attach_triangulation(triangulation);
-
-    std::string   filename = "nsbench2.inp";
-    std::ifstream file(filename);
-    Assert(file, ExcFileNotOpen(filename.c_str()));
-    grid_in.read_ucd(file);
-
-    std::cout << "Number of refines = " << n_refines << std::endl;
-    triangulation.refine_global(n_refines);
-    std::cout << "Number of active cells: " << triangulation.n_active_cells()
-              << std::endl;
+    GridGenerator::subdivided_hyper_cube(triangulation, n_cells, 0.0, 1.0, true);
 
     boundary_ids = triangulation.get_boundary_ids();
 
@@ -710,6 +699,7 @@ namespace Step35 {
     }
     v_tmp.reinit(dof_handler_velocity.n_dofs());
     rot_u.reinit(dof_handler_velocity.n_dofs());
+    streamline_n.reinit(dof_handler_velocity.n_dofs());
 
     std::cout << "dim (X_h) = " << (dof_handler_velocity.n_dofs() * dim)
               << std::endl
@@ -740,9 +730,9 @@ namespace Step35 {
     for(unsigned int d = 0; d < dim; ++d) {
       vel_exact.set_time(t_0);
       vel_exact.set_component(d);
-      VectorTools::interpolate(dof_handler_velocity, vel_exact, u_n_minus_1[d]);
+      VectorTools::interpolate(dof_handler_velocity, ZeroFunction<dim>(), u_n_minus_1[d]);
       vel_exact.advance_time(dt);
-      VectorTools::interpolate(dof_handler_velocity, vel_exact, u_n[d]);
+      VectorTools::interpolate(dof_handler_velocity, ZeroFunction<dim>(), u_n[d]);
     }
   }
 
@@ -915,7 +905,6 @@ namespace Step35 {
       }
       std::cout << "Step = " << n << " Time = " << (n * dt) << std::endl;
       verbose_cout << "  Interpolating the velocity " << std::endl;
-
       interpolate_velocity();
       verbose_cout << "  Diffusion Step" << std::endl;
       if(n % vel_update_prec == 0)
@@ -938,7 +927,7 @@ namespace Step35 {
     TimerOutput::Scope t(time_table, "Interpolate velocity");
 
     for(unsigned int d = 0; d < dim; ++d) {
-      u_star[d].equ(2., u_n[d]);
+      u_star[d].equ(2.0, u_n[d]);
       u_star[d] -= u_n_minus_1[d];
     }
   }
@@ -967,7 +956,7 @@ namespace Step35 {
     assemble_advection_term();
 
     for(unsigned int d = 0; d < dim; ++d) {
-      force[d] = 0.0;
+      force[d] = 0;
       v_tmp.equ(2.0/dt, u_n[d]);
       v_tmp.add(-0.5/dt, u_n_minus_1[d]);
       vel_Mass.vmult_add(force[d], v_tmp);
@@ -980,8 +969,14 @@ namespace Step35 {
 
       vel_exact.set_component(d);
       boundary_values.clear();
-      for(const auto& boundary_id : boundary_ids) {
+      for(const auto& boundary_id: boundary_ids) {
         switch(boundary_id) {
+          case 0:
+            VectorTools::interpolate_boundary_values(dof_handler_velocity,
+                                                     boundary_id,
+                                                     Functions::ZeroFunction<dim>(),
+                                                     boundary_values);
+            break;
           case 1:
             VectorTools::interpolate_boundary_values(dof_handler_velocity,
                                                      boundary_id,
@@ -991,21 +986,14 @@ namespace Step35 {
           case 2:
             VectorTools::interpolate_boundary_values(dof_handler_velocity,
                                                      boundary_id,
-                                                     vel_exact,
+                                                     Functions::ZeroFunction<dim>(),
                                                      boundary_values);
             break;
           case 3:
-            if(d != 0)
-              VectorTools::interpolate_boundary_values(dof_handler_velocity,
-                                                       boundary_id,
-                                                       Functions::ZeroFunction<dim>(),
-                                                       boundary_values);
-            break;
-          case 4:
-              VectorTools::interpolate_boundary_values(dof_handler_velocity,
-                                                       boundary_id,
-                                                       Functions::ZeroFunction<dim>(),
-                                                       boundary_values);
+            VectorTools::interpolate_boundary_values(dof_handler_velocity,
+                                                     boundary_id,
+                                                     vel_exact,
+                                                     boundary_values);
             break;
           default:
             Assert(false, ExcNotImplemented());
@@ -1031,8 +1019,7 @@ namespace Step35 {
 
 
   template <int dim>
-  void
-  NavierStokesProjection<dim>::diffusion_component_solve(const unsigned int d) {
+  void NavierStokesProjection<dim>::diffusion_component_solve(const unsigned int d) {
     TimerOutput::Scope t(time_table, "Solve diffusion");
 
     SolverControl solver_control(vel_max_its, vel_eps*force[d].l2_norm());
@@ -1251,6 +1238,10 @@ namespace Step35 {
     std::vector<std::string> joint_solution_names(dim, "v");
     joint_solution_names.emplace_back("p");
     joint_solution_names.emplace_back("rot_u");
+
+    if(step > 1)
+      compute_streamline(true);
+
     DataOut<dim> data_out;
     data_out.attach_dof_handler(joint_dof_handler);
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
@@ -1258,6 +1249,7 @@ namespace Step35 {
     component_interpretation[dim] = DataComponentInterpretation::component_is_scalar;
     component_interpretation[dim + 1] = DataComponentInterpretation::component_is_scalar;
     data_out.add_data_vector(joint_solution, joint_solution_names, DataOut<dim>::type_dof_data, component_interpretation);
+    data_out.add_data_vector(dof_handler_velocity, streamline_n, "streamline", {DataComponentInterpretation::component_is_scalar});
     data_out.build_patches(deg + 1);
     std::ofstream output("./" + saving_dir + "/solution-" + Utilities::int_to_string(step, 5) + ".vtk");
     data_out.write_vtk(output);
@@ -1308,6 +1300,41 @@ namespace Step35 {
     }
 
     prec_vel_mass.solve(rot_u);
+  }
+
+
+  // Following is the helper function that computes the streamline.
+  // The function is only called whenever we generate graphical output, so not very often,
+  // and as a consequence we didn't bother parallelizing it using the WorkStream concept
+  // as we do for the other assembly functions. That should not be overly complicated,
+  // however, if needed. Moreover, the implementation that we have here only
+  // works for 2d, so we bail if that is not the case.
+  template<int dim>
+  void NavierStokesProjection<dim>::compute_streamline(const bool reinit_prec) {
+    TimerOutput::Scope t(time_table, "Compute streamline");
+
+    Assert(dim == 2, ExcNotImplemented());
+    if(reinit_prec)
+      prec_vel_Laplace.initialize(vel_Laplace);
+
+    vel_Mass.vmult(v_tmp, rot_u);
+
+    boundary_values.clear();
+    for(const auto& boundary_id: boundary_ids) {
+      VectorTools::interpolate_boundary_values(dof_handler_velocity,
+                                               boundary_id,
+                                               Functions::ZeroFunction<dim>(),
+                                               boundary_values);
+    }
+    MatrixTools::apply_boundary_values(boundary_values,
+                                       vel_Laplace,
+                                       streamline_n,
+                                       v_tmp);
+
+
+    SolverControl solvercontrol(vel_max_its, vel_eps*v_tmp.l2_norm());
+    SolverCG<Vector<double>> cg(solvercontrol);
+    cg.solve(vel_Laplace, streamline_n, v_tmp, prec_vel_Laplace);
   }
 } // namespace Step35
 
