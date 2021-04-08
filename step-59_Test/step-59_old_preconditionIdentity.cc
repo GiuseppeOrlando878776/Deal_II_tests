@@ -54,7 +54,6 @@
 
 #include <deal.II/matrix_free/matrix_free.h>
 #include <deal.II/matrix_free/fe_evaluation.h>
-#include <deal.II/matrix_free/operators.h>
 
 #include <iostream>
 #include <fstream>
@@ -157,20 +156,31 @@ namespace Step59 {
   // penalty parameter in the symmetric interior penalty method according to
   // step-39.
   template <int dim, int fe_degree, typename number>
-  class LaplaceOperator : public MatrixFreeOperators::Base<dim, LinearAlgebra::distributed::Vector<number>> {
+  class LaplaceOperator : public Subscriptor {
   public:
     using value_type = number;
 
-    LaplaceOperator();
+    LaplaceOperator() = default;
 
-    void apply_add(LinearAlgebra::distributed::Vector<number>&       dst,
-                   const LinearAlgebra::distributed::Vector<number>& src) const override;
+    void initialize(std::shared_ptr<const MatrixFree<dim, number>> data);
+
+    void clear();
+
+    types::global_dof_index m() const;
+
+    void initialize_dof_vector(LinearAlgebra::distributed::Vector<number>& vec) const;
+
+    std::shared_ptr<const MatrixFree<dim, number>> get_matrix_free() const;
+
+    void vmult(LinearAlgebra::distributed::Vector<number>&       dst,
+               const LinearAlgebra::distributed::Vector<number>& src) const;
+
+    void Tvmult(LinearAlgebra::distributed::Vector<number>&       dst,
+                const LinearAlgebra::distributed::Vector<number>& src) const;
 
     number get_penalty_factor() const {
       return 1.0*fe_degree*(fe_degree + 1);
     }
-
-    virtual void compute_diagonal() override;
 
   private:
     void apply_cell(const MatrixFree<dim, number>&                    data,
@@ -188,41 +198,184 @@ namespace Step59 {
                         const LinearAlgebra::distributed::Vector<number>& src,
                         const std::pair<unsigned int, unsigned int>&      face_range) const;
 
-    void local_compute_cell_diagonal(const MatrixFree<dim, number>&                    data,
-                                     LinearAlgebra::distributed::Vector<number>&       dst,
-                                     const LinearAlgebra::distributed::Vector<number>& src,
-                                     const std::pair<unsigned int, unsigned int>&      cell_range) const;
-
-    void local_compute_face_diagonal(const MatrixFree<dim, number>&                    data,
-                                     LinearAlgebra::distributed::Vector<number>&       dst,
-                                     const LinearAlgebra::distributed::Vector<number>& src,
-                                     const std::pair<unsigned int, unsigned int>&      face_range) const;
-
-    void local_compute_boundary_diagonal(const MatrixFree<dim, number>&                    data,
-                                         LinearAlgebra::distributed::Vector<number>&       dst,
-                                         const LinearAlgebra::distributed::Vector<number>& src,
-                                         const std::pair<unsigned int, unsigned int>&      face_range) const;
+    std::shared_ptr<const MatrixFree<dim, number>> data;
   };
 
-  // Class constructor
-  //
+
+
+  // This free-standing function is used in both the `LaplaceOperator` and
+  // `%PreconditionBlockJacobi` classes to adjust the ghost range. This function
+  // is necessary because some of the vectors that the `vmult()` functions are
+  // supplied with are not initialized properly with
+  // `LaplaceOperator::initialize_dof_vector` that includes the correct layout
+  // of ghost entries, but instead comes from the MGTransferMatrixFree class
+  // that has no notion on the ghost selection of the matrix-free classes. To
+  // avoid index confusion, we must adjust the ghost range before actually
+  // doing something with these vectors. Since the vectors are kept around in
+  // the multigrid smoother and transfer classes, a vector whose ghost range
+  // has once been adjusted will remain in this state throughout the lifetime
+  // of the object, so we can use a shortcut at the start of the function to
+  // see whether the partitioner object of the distributed vector, which is
+  // stored as a shared pointer, is the same as the layout expected by
+  // MatrixFree, which is stored in a data structure accessed by
+  // MatrixFree::get_dof_info(0), where the 0 indicates the DoFHandler number
+  // from which this was extracted; we only use a single DoFHandler in
+  // MatrixFree, so the only valid number is 0 here.
+  template <int dim, typename number>
+  void adjust_ghost_range_if_necessary(const MatrixFree<dim, number>&                    data,
+                                       const LinearAlgebra::distributed::Vector<number>& vec) {
+    if(vec.get_partitioner().get() == data.get_dof_info(0).vector_partitioner.get())
+      return;
+
+    LinearAlgebra::distributed::Vector<number> copy_vec(vec);
+    const_cast<LinearAlgebra::distributed::Vector<number>&>(vec).reinit(data.get_dof_info(0).vector_partitioner);
+    const_cast<LinearAlgebra::distributed::Vector<number>&>(vec).copy_locally_owned_data_from(copy_vec);
+  }
+
+
+  // The next five functions to clear and initialize the `LaplaceOperator`
+  // class, to return the shared pointer holding the MatrixFree data
+  // container, as well as the correct initialization of the vector and
+  // operator sizes are the same as in step-37 or rather
+  // MatrixFreeOperators::Base.
   template <int dim, int fe_degree, typename number>
-  LaplaceOperator<dim, fe_degree, number>::LaplaceOperator() : MatrixFreeOperators::Base<dim, LinearAlgebra::distributed::Vector<number>>() {}
+  void LaplaceOperator<dim, fe_degree, number>::clear() {
+    data.reset();
+  }
+
+
+  template <int dim, int fe_degree, typename number>
+  void LaplaceOperator<dim, fe_degree, number>::initialize(std::shared_ptr<const MatrixFree<dim, number>> data) {
+    this->data = data;
+  }
+
+
+  template <int dim, int fe_degree, typename number>
+  std::shared_ptr<const MatrixFree<dim, number>>
+  LaplaceOperator<dim, fe_degree, number>::get_matrix_free() const {
+    return data;
+  }
+
+
+  template <int dim, int fe_degree, typename number>
+  void LaplaceOperator<dim, fe_degree, number>::initialize_dof_vector(LinearAlgebra::distributed::Vector<number> &vec) const {
+    data->initialize_dof_vector(vec);
+  }
+
+
+  template <int dim, int fe_degree, typename number>
+  types::global_dof_index LaplaceOperator<dim, fe_degree, number>::m() const {
+    Assert(data.get() != nullptr, ExcNotInitialized());
+    return data->get_dof_handler().n_dofs();
+  }
 
 
   // This function implements the action of the LaplaceOperator on a vector
   // `src` and stores the result in the vector `dst`. When compared to
   // step-37, there are four new features present in this call.
   //
+  // The first new feature is the `adjust_ghost_range_if_necessary` function
+  // mentioned above that is needed to fit the vectors to the layout expected
+  // by FEEvaluation and FEFaceEvaluation in the cell and face functions.
+  //
+  // The second new feature is the fact that we do not implement a
+  // `vmult_add()` function as we did in step-37 (through the virtual function
+  // MatrixFreeOperators::Base::vmult_add()), but directly implement a
+  // `vmult()` functionality. Since both cell and face integrals will sum into
+  // the destination vector, we must of course zero the vector somewhere. For
+  // DG elements, we are given two options &ndash; one is to use
+  // FEEvaluation::set_dof_values() instead of
+  // FEEvaluation::distribute_local_to_global() in the `apply_cell` function
+  // below. This works because the loop layout in MatrixFree is such that cell
+  // integrals always touch a given vector entry before the face
+  // integrals. However, this really only works for fully discontinuous bases
+  // where every cell has its own degrees of freedom, without any sharing with
+  // neighboring results. An alternative setup, the one chosen here, is to let
+  // the MatrixFree::loop() take care of zeroing the vector. This can be
+  // thought of as simply calling `dst = 0;` somewhere in the code. The
+  // implementation is more involved for supported vectors such as
+  // `LinearAlgebra::distributed::Vector`, because we aim to not zero the
+  // whole vector at once. Doing the zero operation on a small enough pieces
+  // of a few thousands of vector entries has the advantage that the vector
+  // entries that get zeroed remain in caches before they are accessed again
+  // in FEEvaluation::distribute_local_to_global() and
+  // FEFaceEvaluation::distribute_local_to_global(). Since matrix-free
+  // operator evaluation is really fast, just zeroing a large vector can
+  // amount to up to a 25% of the operator evaluation time, and we obviously
+  // want to avoid this cost. This option of zeroing the vector is also
+  // available for MatrixFree::cell_loop and for continuous bases, even though
+  // it was not used in the step-37 or step-48 tutorial programs.
+  //
+  // The third new feature is the way we provide the functions to compute on
+  // cells, inner faces, and boundary faces: The class MatrixFree has a
+  // function called `loop` that takes three function pointers to the three
+  // cases, allowing to separate the implementations of different things. As
+  // explained in step-37, these function pointers can be `std::function`
+  // objects or member functions of a class. In this case, we use pointers to
+  // member functions.
+  //
+  // The final new feature are the last two arguments of type
+  // MatrixFree::DataAccessOnFaces that can be given to
+  // MatrixFree::loop(). This class passes the type of data access for face
+  // integrals to the MPI data exchange routines
+  // LinearAlgebra::distributed::Vector::update_ghost_values() and
+  // LinearAlgebra::distributed::Vector::compress() of the parallel
+  // vectors. The purpose is to not send all degrees of freedom of a
+  // neighboring element, but to reduce the amount of data to what is really
+  // needed for the computations at hand. The data exchange is a real
+  // bottleneck in particular for high-degree DG methods, therefore a more
+  // restrictive way of exchange is often beneficial. The enum field
+  // MatrixFree::DataAccessOnFaces can take the value `none`, which means that
+  // no face integrals at all are done, which would be analogous to
+  // MatrixFree::cell_loop(), the value `values` meaning that only shape
+  // function values (but no derivatives) are used on faces, and the value
+  // `gradients` when also first derivatives on faces are accessed besides the
+  // values. A value `unspecified` means that all degrees of freedom will be
+  // exchanged for the faces that are located at the processor boundaries and
+  // designated to be worked on at the local processor.
+  //
+  // To see how the data can be reduced, think of the case of the nodal
+  // element FE_DGQ with node points on the element surface, where only
+  // $(k+1)^{d-1}$ degrees of freedom contribute to the values on a face for
+  // polynomial degree $k$ in $d$ space dimensions, out of the $(k+1)^d$
+  // degrees of freedom of a cell. A similar reduction is also possible for
+  // the interior penalty method that evaluates values and first derivatives
+  // on the faces. When using a Hermite-like basis in 1D, only up to two basis
+  // functions contribute to the value and derivative. The class FE_DGQHermite
+  // implements a tensor product of this concept, as discussed in the
+  // introduction. Thus, only $2(k+1)^{d-1}$ degrees of freedom must be
+  // exchanged for each face, which is a clear win once $k$ gets larger than
+  // four or five. Note that this reduced exchange of FE_DGQHermite is valid
+  // also on meshes with curved boundaries, as the derivatives are taken on
+  // the reference element, whereas the geometry only mixes them on the
+  // inside. Thus, this is different from the attempt to obtain $C^1$
+  // continuity with continuous Hermite-type shape functions where the
+  // non-Cartesian case changes the picture significantly. Obviously, on
+  // non-Cartesian meshes the derivatives also include tangential derivatives
+  // of shape functions beyond the normal derivative, but those only need the
+  // function values on the element surface, too. Should the element not
+  // provide any compression, the loop automatically exchanges all entries for
+  // the affected cells.
   template <int dim, int fe_degree, typename number>
-  void LaplaceOperator<dim, fe_degree, number>::apply_add(LinearAlgebra::distributed::Vector<number>&       dst,
-                                                          const LinearAlgebra::distributed::Vector<number>& src) const {
-    this->data->loop(&LaplaceOperator::apply_cell,
-                     &LaplaceOperator::apply_face,
-                     &LaplaceOperator::apply_boundary,
-                     this, dst, src, false,
-                     MatrixFree<dim, number>::DataAccessOnFaces::gradients,
-                     MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+  void LaplaceOperator<dim, fe_degree, number>::vmult(LinearAlgebra::distributed::Vector<number>&       dst,
+                                                      const LinearAlgebra::distributed::Vector<number>& src) const {
+    adjust_ghost_range_if_necessary(*data, dst);
+    adjust_ghost_range_if_necessary(*data, src);
+    data->loop(&LaplaceOperator::apply_cell,
+               &LaplaceOperator::apply_face,
+               &LaplaceOperator::apply_boundary,
+               this, dst, src, true,
+               MatrixFree<dim, number>::DataAccessOnFaces::gradients,
+               MatrixFree<dim, number>::DataAccessOnFaces::gradients);
+  }
+
+
+  // Since the Laplacian is symmetric, the `Tvmult()` (needed by the multigrid
+  // smoother interfaces) operation is simply forwarded to the `vmult()` case.
+  template <int dim, int fe_degree, typename number>
+  void LaplaceOperator<dim, fe_degree, number>::Tvmult(LinearAlgebra::distributed::Vector<number> &      dst,
+                                                       const LinearAlgebra::distributed::Vector<number> &src) const {
+    vmult(dst, src);
   }
 
 
@@ -439,432 +592,6 @@ namespace Step59 {
   }
 
 
-  // The following function implements the computation of the diagonal of the
-  // operator. Computing matrix entries of a matrix-free operator evaluation
-  // turns out to be more complicated than evaluating the
-  // operator. Fundamentally, we could obtain a matrix representation of the
-  // operator by applying the operator on <i>all</i> unit vectors. Of course,
-  // that would be very inefficient since we would need to perform <i>n</i>
-  // operator evaluations to retrieve the whole matrix. Furthermore, this
-  // approach would completely ignore the matrix sparsity. On an individual
-  // cell, however, this is the way to go and actually not that inefficient as
-  // there usually is a coupling between all degrees of freedom inside the
-  // cell.
-  //
-  // We first initialize the diagonal vector to the correct parallel
-  // layout. This vector is encapsulated in a member called
-  // inverse_diagonal_entries of type DiagonalMatrix in the base class
-  // MatrixFreeOperators::Base. This member is a shared pointer that we first
-  // need to initialize and then get the vector representing the diagonal
-  // entries in the matrix. As to the actual diagonal computation, we again
-  // use the cell_loop infrastructure of MatrixFree to invoke a local worker
-  // routine called local_compute_diagonal(). Since we will only write into a
-  // vector but not have any source vector, we put a dummy argument of type
-  // <tt>unsigned int</tt> in place of the source vector to confirm with the
-  // cell_loop interface. After the loop, we need to set the vector entries
-  // subject to Dirichlet boundary conditions to one (either those on the
-  // boundary described by the AffineConstraints object inside MatrixFree or
-  // the indices at the interface between different grid levels in adaptive
-  // multigrid). This is done through the function
-  // MatrixFreeOperators::Base::set_constrained_entries_to_one() and matches
-  // with the setting in the matrix-vector product provided by the Base
-  // operator. Finally, we need to invert the diagonal entries which is the
-  // form required by the Chebyshev smoother based on the Jacobi iteration. In
-  // the loop, we assert that all entries are non-zero, because they should
-  // either have obtained a positive contribution from integrals or be
-  // constrained and treated by @p set_constrained_entries_to_one() following
-  // cell_loop.
-  template <int dim, int fe_degree, typename number>
-  void LaplaceOperator<dim, fe_degree, number>::compute_diagonal() {
-    this->inverse_diagonal_entries.reset(new DiagonalMatrix<LinearAlgebra::distributed::Vector<number>>());
-    LinearAlgebra::distributed::Vector<number>& inverse_diagonal = this->inverse_diagonal_entries->get_vector();
-    this->data->initialize_dof_vector(inverse_diagonal);
-    LinearAlgebra::distributed::Vector<number> dummy;
-    dummy.reinit(inverse_diagonal.local_size());
-    this->data->loop(&LaplaceOperator::local_compute_cell_diagonal,
-                     &LaplaceOperator::local_compute_face_diagonal,
-                     &LaplaceOperator::local_compute_boundary_diagonal,
-                     this, inverse_diagonal, dummy, false,
-                     MatrixFree<dim, number>::DataAccessOnFaces::unspecified,
-                     MatrixFree<dim, number>::DataAccessOnFaces::unspecified);
-    for(unsigned int i = 0; i < inverse_diagonal.local_size(); ++i) {
-      Assert(inverse_diagonal.local_element(i) > 0.,
-             ExcMessage("No diagonal entry in a positive definite operator "
-                        "should be zero"));
-      inverse_diagonal.local_element(i) = 1.0/inverse_diagonal.local_element(i);
-    }
-  }
-
-
-  // In the local compute loop, we compute the diagonal by a loop over all
-  // columns in the local matrix and putting the entry 1 in the <i>i</i>th
-  // slot and a zero entry in all other slots, i.e., we apply the cell-wise
-  // differential operator on one unit vector at a time. The inner part
-  // invoking FEEvaluation::evaluate, the loop over quadrature points, and
-  // FEEvalution::integrate, is exactly the same as in the local_apply
-  // function. Afterwards, we pick out the <i>i</i>th entry of the local
-  // result and put it to a temporary storage (as we overwrite all entries in
-  // the array behind FEEvaluation::get_dof_value() with the next loop
-  // iteration). Finally, the temporary storage is written to the destination
-  // vector. Note how we use FEEvaluation::get_dof_value() and
-  // FEEvaluation::submit_dof_value() to read and write to the data field that
-  // FEEvaluation uses for the integration on the one hand and writes into the
-  // global vector on the other hand.
-  //
-  // Given that we are only interested in the matrix diagonal, we simply throw
-  // away all other entries of the local matrix that have been computed along
-  // the way. While it might seem wasteful to compute the complete cell matrix
-  // and then throw away everything but the diagonal, the integration are so
-  // efficient that the computation does not take too much time. Note that the
-  // complexity of operator evaluation per element is $\mathcal
-  // O((p+1)^{d+1})$ for polynomial degree $k$, so computing the whole matrix
-  // costs us $\mathcal O((p+1)^{2d+1})$ operations, not too far away from
-  // $\mathcal O((p+1)^{2d})$ complexity for computing the diagonal with
-  // FEValues. Since FEEvaluation is also considerably faster due to
-  // vectorization and other optimizations, the diagonal computation with this
-  // function is actually the fastest (simple) variant. (It would be possible
-  // to compute the diagonal with sum factorization techniques in $\mathcal
-  // O((p+1)^{d+1})$ operations involving specifically adapted
-  // kernels&mdash;but since such kernels are only useful in that particular
-  // context and the diagonal computation is typically not on the critical
-  // path, they have not been implemented in deal.II.)
-  //
-  // Note that the code that calls distribute_local_to_global on the vector to
-  // accumulate the diagonal entries into the global matrix has some
-  // limitations. For operators with hanging node constraints that distribute
-  // an integral contribution of a constrained DoF to several other entries
-  // inside the distribute_local_to_global call, the vector interface used
-  // here does not exactly compute the diagonal entries, but lumps some
-  // contributions located on the diagonal of the local matrix that would end
-  // up in a off-diagonal position of the global matrix to the diagonal. The
-  // result is correct up to discretization accuracy as explained in <a
-  // href="http://dx.doi.org/10.4208/cicp.101214.021015a">Kormann (2016),
-  // section 5.3</a>, but not mathematically equal. In this tutorial program,
-  // no harm can happen because the diagonal is only used for the multigrid
-  // level matrices where no hanging node constraints appear.
-  template <int dim, int fe_degree, typename number>
-  void LaplaceOperator<dim, fe_degree, number>::local_compute_cell_diagonal(const MatrixFree<dim, number>&                    data,
-                                                                            LinearAlgebra::distributed::Vector<number>&       dst,
-                                                                            const LinearAlgebra::distributed::Vector<number>& src,
-                                                                            const std::pair<unsigned int, unsigned int>&      cell_range) const {
-    FEEvaluation<dim, fe_degree, fe_degree + 1, 1, number> phi(data);
-
-    AlignedVector<VectorizedArray<number>> diagonal(phi.dofs_per_cell);
-
-    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-      phi.reinit(cell);
-      for(unsigned int i = 0; i < phi.dofs_per_cell; ++i) {
-        for(unsigned int j = 0; j < phi.dofs_per_cell; ++j)
-          phi.submit_dof_value(VectorizedArray<number>(), j);
-        phi.submit_dof_value(make_vectorized_array<number>(1.0), i);
-
-        phi.evaluate(false, true);
-        for(unsigned int q = 0; q < phi.n_q_points; ++q)
-          phi.submit_gradient(phi.get_gradient(q), q);
-        phi.integrate(false, true);
-        diagonal[i] = phi.get_dof_value(i);
-      }
-      for(unsigned int i = 0; i < phi.dofs_per_cell; ++i)
-        phi.submit_dof_value(diagonal[i], i);
-      phi.distribute_local_to_global(dst);
-    }
-  }
-
-
-  template <int dim, int fe_degree, typename number>
-  void LaplaceOperator<dim, fe_degree, number>::local_compute_face_diagonal(const MatrixFree<dim, number>&                    data,
-                                                                            LinearAlgebra::distributed::Vector<number>&       dst,
-                                                                            const LinearAlgebra::distributed::Vector<number>& src,
-                                                                            const std::pair<unsigned int, unsigned int>&      face_range) const {
-    FEFaceEvaluation<dim, fe_degree, fe_degree + 1, 1, number> phi_p(data, true), phi_m(data, false);
-
-    AssertDimension(phi_p.dofs_per_cell, phi_m.dofs_per_cell);
-    AlignedVector<VectorizedArray<number>> diagonal_p(phi_p.dofs_per_cell), diagonal_m(phi_m.dofs_per_cell);
-
-    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-      phi_p.reinit(face);
-      phi_m.reinit(face);
-      for(unsigned int i = 0; i < phi_m.dofs_per_cell; ++i) {
-        for(unsigned int j = 0; j < phi_m.dofs_per_cell; ++j) {
-          phi_p.submit_dof_value(VectorizedArray<number>(), j);
-          phi_m.submit_dof_value(VectorizedArray<number>(), j);
-        }
-        phi_p.submit_dof_value(make_vectorized_array<number>(1.0), i);
-        phi_m.submit_dof_value(make_vectorized_array<number>(1.0), i);
-
-        phi_p.evaluate(true, true);
-        phi_m.evaluate(true, true);
-        const auto& inverse_length_normal_to_face = 0.5*(std::abs((phi_p.get_normal_vector(0) *
-                                                                   phi_p.inverse_jacobian(0))[dim - 1]) +
-                                                         std::abs((phi_m.get_normal_vector(0) *
-                                                                   phi_m.inverse_jacobian(0))[dim - 1]));
-        const auto sigma = inverse_length_normal_to_face*get_penalty_factor();
-        for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
-          const auto& jump_p     = phi_p.get_value(q) - phi_m.get_value(q);
-          const auto& n_plus     = phi_p.get_normal_vector(q);
-          const auto& avg_grad_p = 0.5*(phi_p.get_gradient(q) + phi_m.get_gradient(q));
-          phi_p.submit_value(sigma*jump_p - scalar_product(avg_grad_p, n_plus), q);
-          phi_m.submit_value(-sigma*jump_p + scalar_product(avg_grad_p, n_plus), q);
-          phi_p.submit_gradient(-0.5*jump_p*n_plus, q);
-          phi_m.submit_gradient(-0.5*jump_p*n_plus, q);
-        }
-        phi_p.integrate(true, true);
-        diagonal_p[i] = phi_p.get_dof_value(i);
-        phi_m.integrate(true, true);
-        diagonal_m[i] = phi_m.get_dof_value(i);
-      }
-      for(unsigned int i = 0; i < phi_p.dofs_per_cell; ++i) {
-        phi_p.submit_dof_value(diagonal_p[i], i);
-        phi_m.submit_dof_value(diagonal_m[i], i);
-      }
-      phi_p.distribute_local_to_global(dst);
-      phi_m.distribute_local_to_global(dst);
-    }
-  }
-
-
-  template <int dim, int fe_degree, typename number>
-  void LaplaceOperator<dim, fe_degree, number>::local_compute_boundary_diagonal(const MatrixFree<dim, number>&                     data,
-                                                                                LinearAlgebra::distributed::Vector<number>&        dst,
-                                                                                const LinearAlgebra::distributed::Vector<number>&  src,
-                                                                                const std::pair<unsigned int, unsigned int>& face_range) const {
-    FEFaceEvaluation<dim, fe_degree, fe_degree + 1, 1, number> phi(data, true);
-
-    AlignedVector<VectorizedArray<number>> diagonal(phi.dofs_per_cell);
-
-    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-      phi.reinit(face);
-      for(unsigned int i = 0; i < phi.dofs_per_cell; ++i) {
-        for(unsigned int j = 0; j < phi.dofs_per_cell; ++j)
-          phi.submit_dof_value(VectorizedArray<number>(), j);
-        phi.submit_dof_value(make_vectorized_array<number>(1.0), i);
-        phi.evaluate(true, true);
-        const auto& inverse_length_normal_to_face = std::abs((phi.get_normal_vector(0) * phi.inverse_jacobian(0))[dim - 1]);
-        const auto  sigma = inverse_length_normal_to_face * get_penalty_factor();
-
-        const bool is_dirichlet = (data.get_boundary_id(face) == 0);
-
-        if(is_dirichlet) {
-          for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-            const auto& pres   = phi.get_value(q);
-            const auto& grad_p = phi.get_gradient(q);
-            const auto& n_plus = phi.get_normal_vector(q);
-            phi.submit_gradient(-pres*n_plus, q);
-            phi.submit_value(2.0*sigma*pres - scalar_product(grad_p, n_plus), q);
-          }
-        }
-        else {
-          for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-            phi.submit_normal_derivative(0.0, q);
-            phi.submit_value(0.0, q);
-          }
-        }
-        phi.integrate(true, true);
-        diagonal[i] = phi.get_dof_value(i);
-      }
-      for(unsigned int i = 0; i < phi.dofs_per_cell; ++i)
-        phi.submit_dof_value(diagonal[i], i);
-      phi.distribute_local_to_global(dst);
-    }
-  }
-
-
-  template <int dim, typename number>
-  void adjust_ghost_range_if_necessary(const MatrixFree<dim, number>&                    data,
-                                       const LinearAlgebra::distributed::Vector<number>& vec) {
-    if(vec.get_partitioner().get() == data.get_dof_info(0).vector_partitioner.get())
-      return;
-
-    LinearAlgebra::distributed::Vector<number> copy_vec(vec);
-    const_cast<LinearAlgebra::distributed::Vector<number> &>(vec).reinit(data.get_dof_info(0).vector_partitioner);
-    const_cast<LinearAlgebra::distributed::Vector<number> &>(vec).copy_locally_owned_data_from(copy_vec);
-  }
-
-
-  // The `%PreconditionBlockJacobi` class defines our custom preconditioner for
-  // this problem. As opposed to step-37 which was based on the matrix
-  // diagonal, we here compute an approximate inversion of the diagonal blocks
-  template <int dim, int fe_degree, typename number>
-  class PreconditionBlockJacobi {
-  public:
-    using value_type = number;
-
-    void clear() {
-      cell_matrices.clear();
-    }
-
-    void initialize(const LaplaceOperator<dim, fe_degree, number>& op);
-
-    void vmult(LinearAlgebra::distributed::Vector<number>&       dst,
-               const LinearAlgebra::distributed::Vector<number>& src) const;
-
-  private:
-    std::shared_ptr<const MatrixFree<dim, number>> data;
-    std::vector<TensorProductMatrixSymmetricSum<dim,
-                                                VectorizedArray<number>,
-                                                fe_degree + 1>> cell_matrices;
-  };
-
-
-  template <int dim, int fe_degree, typename number>
-  void PreconditionBlockJacobi<dim, fe_degree, number>::initialize(const LaplaceOperator<dim, fe_degree, number>& op) {
-    data = op.get_matrix_free();
-
-    std::string name = data->get_dof_handler().get_fe().get_name();
-    name.replace(name.find('<') + 1, 1, "1");
-    std::unique_ptr<FiniteElement<1>> fe_1d = FETools::get_fe_by_name<1>(name);
-
-    // As for computing the 1D matrices on the unit element, we simply write
-    // down what a typical assembly procedure over rows and columns of the
-    // matrix as well as the quadrature points would do. We select the same
-    // Laplace matrices once and for all using the coefficients 0.5 for
-    // interior faces (but possibly scaled differently in different directions
-    // as a result of the mesh). Thus, we make a slight mistake at the
-    // Dirichlet boundary (where the correct factor would be 1 for the
-    // derivative terms and 2 for the penalty term, see step-39) or at the
-    // Neumann boundary where the factor should be zero. Since we only use
-    // this class as a smoother inside a multigrid scheme, this error is not
-    // going to have any significant effect and merely affects smoothing
-    // quality.
-    const unsigned int                                 N = fe_degree + 1;
-    FullMatrix<double>                                 laplace_unscaled(N, N);
-    std::array<Table<2, VectorizedArray<number>>, dim> mass_matrices;
-    std::array<Table<2, VectorizedArray<number>>, dim> laplace_matrices;
-    for(unsigned int d = 0; d < dim; ++d) {
-      mass_matrices[d].reinit(N, N);
-      laplace_matrices[d].reinit(N, N);
-    }
-
-    QGauss<1> quadrature(N);
-    for(unsigned int i = 0; i < N; ++i) {
-      for(unsigned int j = 0; j < N; ++j) {
-        double sum_mass = 0, sum_laplace = 0;
-        for(unsigned int q = 0; q < quadrature.size(); ++q) {
-          sum_mass += (fe_1d->shape_value(i, quadrature.point(q)) *
-                       fe_1d->shape_value(j, quadrature.point(q))) *
-                      quadrature.weight(q);
-          sum_laplace += (fe_1d->shape_grad(i, quadrature.point(q))[0] *
-                          fe_1d->shape_grad(j, quadrature.point(q))[0]) *
-                          quadrature.weight(q);
-        }
-        for(unsigned int d = 0; d < dim; ++d)
-          mass_matrices[d](i, j) = sum_mass;
-
-        // The left and right boundary terms assembled by the next two
-        // statements appear to have somewhat arbitrary signs, but those are
-        // correct as can be verified by looking at step-39 and inserting
-        // the value -1 and 1 for the normal vector in the 1D case.
-        sum_laplace += (1. * fe_1d->shape_value(i, Point<1>()) *
-                        fe_1d->shape_value(j, Point<1>()) * op.get_penalty_factor() +
-                        0.5 * fe_1d->shape_grad(i, Point<1>())[0] *
-                        fe_1d->shape_value(j, Point<1>()) +
-                        0.5 * fe_1d->shape_grad(j, Point<1>())[0] *
-                        fe_1d->shape_value(i, Point<1>()));
-
-        sum_laplace += (1. * fe_1d->shape_value(i, Point<1>(1.0)) *
-                        fe_1d->shape_value(j, Point<1>(1.0)) * op.get_penalty_factor() -
-                        0.5 * fe_1d->shape_grad(i, Point<1>(1.0))[0] *
-                        fe_1d->shape_value(j, Point<1>(1.0)) -
-                        0.5 * fe_1d->shape_grad(j, Point<1>(1.0))[0] *
-                        fe_1d->shape_value(i, Point<1>(1.0)));
-
-        laplace_unscaled(i, j) = sum_laplace;
-      }
-    }
-
-    // Next, we go through the cells and pass the scaled matrices to
-    // TensorProductMatrixSymmetricSum to actually compute the generalized
-    // eigenvalue problem for representing the inverse: Since the matrix
-    // approximation is constructed as $A\otimes M + M\otimes A$ and the
-    // weights are constant for each element, we can apply all weights on the
-    // Laplace matrix and simply keep the mass matrices unscaled. In the loop
-    // over cells, we want to make use of the geometry compression provided by
-    // the MatrixFree class and check if the current geometry is the same as
-    // on the last cell batch, in which case there is nothing to do. This
-    // compression can be accessed by
-    // FEEvaluation::get_mapping_data_index_offset() once `reinit()` has been
-    // called.
-    //
-    // Once we have accessed the inverse Jacobian through the FEEvaluation
-    // access function (we take the one for the zeroth quadrature point as
-    // they should be the same on all quadrature points for a Cartesian cell),
-    // we check that it is diagonal and then extract the determinant of the
-    // original Jacobian, i.e., the inverse of the determinant of the inverse
-    // Jacobian, and set the weight as $\text{det}(J) / h_d^2$ according to
-    // the 1D Laplacian times $d-1$ copies of the mass matrix.
-    cell_matrices.clear();
-    FEEvaluation<dim, fe_degree, fe_degree + 1, 1, number> phi(*data);
-    unsigned int old_mapping_data_index = numbers::invalid_unsigned_int;
-    for(unsigned int cell = 0; cell < data->n_cell_batches(); ++cell) {
-      phi.reinit(cell);
-      if(phi.get_mapping_data_index_offset() == old_mapping_data_index)
-        continue;
-
-      Tensor<2, dim, VectorizedArray<number>> inverse_jacobian =  phi.inverse_jacobian(0);
-
-      for(unsigned int d = 0; d < dim; ++d) {
-        for(unsigned int e = 0; e < dim; ++e) {
-          if(d != e) {
-            for(unsigned int v = 0; v < VectorizedArray<number>::size(); ++v)
-              AssertThrow(inverse_jacobian[d][e][v] == 0.0, ExcNotImplemented());
-          }
-        }
-      }
-
-      VectorizedArray<number> jacobian_determinant = inverse_jacobian[0][0];
-      for(unsigned int e = 1; e < dim; ++e)
-        jacobian_determinant *= inverse_jacobian[e][e];
-      jacobian_determinant = 1.0/jacobian_determinant;
-
-      for(unsigned int d = 0; d < dim; ++d) {
-        const VectorizedArray<number> scaling_factor = inverse_jacobian[d][d] * inverse_jacobian[d][d] * jacobian_determinant;
-
-        // Once we know the factor by which we should scale the Laplace
-        // matrix, we apply this weight to the unscaled DG Laplace matrix
-        // and send the array to the class TensorProductMatrixSymmetricSum
-        // for computing the generalized eigenvalue problem mentioned in
-        // the introduction.
-        for(unsigned int i = 0; i < N; ++i) {
-          for(unsigned int j = 0; j < N; ++j)
-            laplace_matrices[d](i, j) = scaling_factor * laplace_unscaled(i, j);
-        }
-      }
-      if(cell_matrices.size() <= phi.get_mapping_data_index_offset())
-        cell_matrices.resize(phi.get_mapping_data_index_offset() + 1);
-      cell_matrices[phi.get_mapping_data_index_offset()].reinit(mass_matrices, laplace_matrices);
-    }
-  }
-
-
-  // The vmult function for the approximate block-Jacobi preconditioner is
-  // very simple in the DG context: We simply need to read the values of the
-  // current cell batch, apply the inverse for the given entry in the array of
-  // tensor product matrix, and write the result back. In this loop, we
-  // overwrite the content in `dst` rather than first setting the entries to
-  // zero. This is legitimate for a DG method because every cell has
-  // independent degrees of freedom. Furthermore, we manually write out the
-  // loop over all cell batches, rather than going through
-  // MatrixFree::cell_loop(). We do this because we know that we are not going
-  // to need data exchange over the MPI network here as all computations are
-  // done on the cells held locally on each processor.
-  template <int dim, int fe_degree, typename number>
-  void PreconditionBlockJacobi<dim, fe_degree, number>::vmult(LinearAlgebra::distributed::Vector<number>&       dst,
-                                                              const LinearAlgebra::distributed::Vector<number>& src) const {
-    adjust_ghost_range_if_necessary(*data, dst);
-    adjust_ghost_range_if_necessary(*data, src);
-
-    FEEvaluation<dim, fe_degree, fe_degree + 1, 1, number> phi(*data);
-    for(unsigned int cell = 0; cell < data->n_cell_batches(); ++cell) {
-      phi.reinit(cell);
-      phi.read_dof_values(src);
-      cell_matrices[phi.get_mapping_data_index_offset()].apply_inverse(ArrayView<VectorizedArray<number>>(phi.begin_dof_values(),
-                                                                                                          phi.dofs_per_cell),
-                                                                       ArrayView<const VectorizedArray<number>>(phi.begin_dof_values(),
-                                                                                                                phi.dofs_per_cell));
-      phi.set_dof_values(dst);
-    }
-  }
-
 
   // The definition of the LaplaceProblem class is very similar to
   // step-37. One difference is the fact that we add the element degree as a
@@ -896,9 +623,6 @@ namespace Step59 {
 
     using SystemMatrixType = LaplaceOperator<dim, fe_degree, double>;
     SystemMatrixType system_matrix;
-
-    using LevelMatrixType = LaplaceOperator<dim, fe_degree, float>;
-    MGLevelObject<LevelMatrixType> mg_matrices;
 
     LinearAlgebra::distributed::Vector<double> solution;
     LinearAlgebra::distributed::Vector<double> system_rhs;
@@ -943,7 +667,6 @@ namespace Step59 {
     setup_time = 0.0;
 
     system_matrix.clear();
-    mg_matrices.clear_elements();
 
     dof_handler.distribute_dofs(fe);
     dof_handler.distribute_mg_dofs();
@@ -974,24 +697,6 @@ namespace Step59 {
 
     setup_time += time.wall_time();
     time_details << "Setup matrix-free system      " << time.wall_time() << " s"
-                 << std::endl;
-    time.restart();
-
-    const unsigned int nlevels = triangulation.n_global_levels();
-    mg_matrices.resize(0, nlevels - 1);
-    for(unsigned int level = 0; level < nlevels; ++level) {
-      typename MatrixFree<dim, float>::AdditionalData additional_data;
-      additional_data.tasks_parallel_scheme = MatrixFree<dim, float>::AdditionalData::none;
-      additional_data.mapping_update_flags  = (update_gradients | update_JxW_values);
-      additional_data.mapping_update_flags_inner_faces = (update_gradients | update_JxW_values);
-      additional_data.mapping_update_flags_boundary_faces = (update_gradients | update_JxW_values);
-      additional_data.mg_level = level;
-      std::shared_ptr<MatrixFree<dim, float>> mg_mf_storage_level(new MatrixFree<dim, float>());
-      mg_mf_storage_level->reinit(dof_handler, dummy, QGauss<1>(fe.degree + 1), additional_data);
-      mg_matrices[level].initialize(mg_mf_storage_level);
-    }
-    setup_time += time.wall_time();
-    time_details << "Setup matrix-free levels      " << time.wall_time() << " s"
                  << std::endl;
   }
 
@@ -1054,7 +759,9 @@ namespace Step59 {
     // MatrixFree::n_inner_face_batches(), whereas the number of boundary face
     // batches is given by MatrixFree::n_boundary_face_batches().
     FEFaceEvaluation<dim, fe_degree> phi_face(data, true);
-    for(unsigned int face = data.n_inner_face_batches(); face < data.n_inner_face_batches() + data.n_boundary_face_batches(); ++face) {
+    for(unsigned int face = data.n_inner_face_batches();
+                     face < data.n_inner_face_batches() + data.n_boundary_face_batches();
+                     ++face) {
       phi_face.reinit(face);
 
       const VectorizedArray<double> inverse_length_normal_to_face = std::abs((phi_face.get_normal_vector(0) *
@@ -1081,7 +788,7 @@ namespace Step59 {
           // Neumann case (where we add something to the normal
           // derivative).
           if(data.get_boundary_id(face) == 0)
-            test_value[v] = 2.0*exact_solution.value(single_point);
+            test_value[v] = 2.0 * exact_solution.value(single_point);
           else {
             Tensor<1, dim> normal;
             for(unsigned int d = 0; d < dim; ++d)
@@ -1089,8 +796,8 @@ namespace Step59 {
             test_normal_derivative[v] = -normal * exact_solution.gradient(single_point);
           }
         }
-        phi_face.submit_value(test_value*sigma - test_normal_derivative, q);
-        phi_face.submit_normal_derivative(-0.5*test_value, q);
+        phi_face.submit_value(test_value * sigma - test_normal_derivative, q);
+        phi_face.submit_normal_derivative(-0.5 * test_value, q);
       }
       phi_face.integrate_scatter(true, true, system_rhs);
     }
@@ -1120,57 +827,15 @@ namespace Step59 {
   template <int dim, int fe_degree>
   void LaplaceProblem<dim, fe_degree>::solve() {
     Timer                            time;
-    MGTransferMatrixFree<dim, float> mg_transfer;
-    mg_transfer.build(dof_handler);
-    setup_time += time.wall_time();
-    time_details << "MG build transfer time        " << time.wall_time()
-                 << " s\n";
-    time.restart();
 
-    using SmootherType = PreconditionChebyshev<LevelMatrixType,
-                                               LinearAlgebra::distributed::Vector<float>>;
-    mg::SmootherRelaxation<SmootherType, LinearAlgebra::distributed::Vector<float>> mg_smoother;
-    MGLevelObject<typename SmootherType::AdditionalData> smoother_data;
-    smoother_data.resize(0, triangulation.n_global_levels() - 1);
-    for(unsigned int level = 0; level < triangulation.n_global_levels(); ++level) {
-      if(level > 0) {
-        smoother_data[level].smoothing_range     = 15.0;
-        smoother_data[level].degree              = 3;
-        smoother_data[level].eig_cg_n_iterations = 10;
-      }
-      else {
-        smoother_data[0].smoothing_range = 2e-2;
-        smoother_data[0].degree          = numbers::invalid_unsigned_int;
-        smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
-      }
-      mg_matrices[level].compute_diagonal();
-      smoother_data[level].preconditioner = mg_matrices[level].get_matrix_diagonal_inverse();
-      /*smoother_data[level].preconditioner = std::make_shared<PreconditionBlockJacobi<dim, fe_degree, float>>();
-      smoother_data[level].preconditioner->initialize(mg_matrices[level]);*/
-    }
-    mg_smoother.initialize(mg_matrices, smoother_data);
-
-    MGCoarseGridApplySmoother<LinearAlgebra::distributed::Vector<float>> mg_coarse;
-    mg_coarse.initialize(mg_smoother);
-
-    mg::Matrix<LinearAlgebra::distributed::Vector<float>> mg_matrix(mg_matrices);
-    Multigrid<LinearAlgebra::distributed::Vector<float>> mg(mg_matrix, mg_coarse, mg_transfer, mg_smoother, mg_smoother);
-    PreconditionMG<dim,
-                   LinearAlgebra::distributed::Vector<float>,
-                   MGTransferMatrixFree<dim, float>> preconditioner(dof_handler, mg, mg_transfer);
-
-    /*PreconditionJacobi<LaplaceOperator<dim, fe_degree, double>> preconditioner_Jacobi;
-    system_matrix.compute_diagonal();
-    preconditioner_Jacobi.initialize(system_matrix);*/
-
-    SolverControl solver_control(10000, 1e-12*system_rhs.l2_norm());
+    SolverControl solver_control(10000, 1e-12 * system_rhs.l2_norm());
     SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
     setup_time += time.wall_time();
     pcout << "Total setup time              " << setup_time << " s\n";
 
     time.reset();
     time.start();
-    cg.solve(system_matrix, solution, system_rhs, preconditioner);
+    cg.solve(system_matrix, solution, system_rhs, PreconditionIdentity());
 
     pcout << "Time solve (" << solver_control.last_step() << " iterations)    "
           << time.wall_time() << " s" << std::endl;
