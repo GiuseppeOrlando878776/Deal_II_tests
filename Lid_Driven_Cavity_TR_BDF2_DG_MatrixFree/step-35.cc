@@ -1926,7 +1926,6 @@ namespace Step35 {
 
   private:
     std::shared_ptr<MatrixFree<dim, double>> matrix_free_storage;
-    std::shared_ptr<MatrixFree<dim, float>>  mg_mf_storage_level;
 
     NavierStokesProjectionOperator<dim, EquationData::degree_p, EquationData::degree_p + 1,
                                    EquationData::degree_p + 1, EquationData::degree_p + 2,
@@ -2017,7 +2016,6 @@ namespace Step35 {
       AssertThrow(!((dt <= 0.0) || (dt > 0.5*T)), ExcInvalidTimeStep(dt, 0.5*T));
 
       matrix_free_storage = std::make_shared<MatrixFree<dim, double>>();
-      mg_mf_storage_level = std::make_shared<MatrixFree<dim, float>>();
 
       constraints_velocity.clear();
       constraints_pressure.clear();
@@ -2043,8 +2041,8 @@ namespace Step35 {
       triangulation.refine_global(4);
     }
     else*/
-    GridGenerator::subdivided_hyper_cube(triangulation, n_cells, 0.0, 1.0, true);
-    const unsigned int n_refines = std::log2(n_cells/n_cells);
+    GridGenerator::subdivided_hyper_cube(triangulation, 8, 0.0, 1.0, true);
+    const unsigned int n_refines = std::log2(n_cells/8);
     triangulation.refine_global(n_refines);
 
     pcout << "Number of initial cells = " << n_cells << std::endl;
@@ -2133,23 +2131,6 @@ namespace Step35 {
     const unsigned int nlevels = triangulation.n_global_levels();
     mg_matrices.resize(0, nlevels - 1);
     for(unsigned int level = 0; level < nlevels; ++level) {
-      typename MatrixFree<dim, float>::AdditionalData additional_data_mg;
-      additional_data_mg.tasks_parallel_scheme = MatrixFree<dim, float>::AdditionalData::none;
-      additional_data_mg.mapping_update_flags  = (update_gradients | update_JxW_values);
-      additional_data_mg.mapping_update_flags_inner_faces = (update_gradients | update_JxW_values);
-      additional_data_mg.mapping_update_flags_boundary_faces = (update_gradients | update_JxW_values);
-      additional_data_mg.mg_level = level;
-      std::vector<const AffineConstraints<float>*> constraints_mg;
-      AffineConstraints<float> constraints_velocity_mg;
-      constraints_velocity_mg.clear();
-      constraints_mg.push_back(&constraints_velocity_mg);
-      AffineConstraints<float> constraints_pressure_mg;
-      constraints_pressure_mg.clear();
-      constraints_mg.push_back(&constraints_pressure_mg);
-      AffineConstraints<float> constraints_streamline_mg;
-      constraints_streamline_mg.clear();
-      constraints_mg.push_back(&constraints_streamline_mg);
-      mg_mf_storage_level->reinit(dof_handlers, constraints_mg, quadratures, additional_data_mg);
       mg_matrices[level].set_dt(dt);
       mg_matrices[level].set_Reynolds(Re);
     }
@@ -2240,6 +2221,31 @@ namespace Step35 {
     mg_transfer.interpolate_to_mg(dof_handler_velocity, level_projection, u_extr);
 
     for(unsigned int level = 0; level < triangulation.n_global_levels(); ++level) {
+      typename MatrixFree<dim, float>::AdditionalData additional_data_mg;
+      additional_data_mg.tasks_parallel_scheme = MatrixFree<dim, float>::AdditionalData::none;
+      additional_data_mg.mapping_update_flags  = (update_gradients | update_JxW_values);
+      additional_data_mg.mapping_update_flags_inner_faces = (update_gradients | update_JxW_values);
+      additional_data_mg.mapping_update_flags_boundary_faces = (update_gradients | update_JxW_values);
+      additional_data_mg.mg_level = level;
+      std::vector<const AffineConstraints<float>*> constraints_mg;
+      AffineConstraints<float> constraints_velocity_mg;
+      constraints_velocity_mg.clear();
+      constraints_mg.push_back(&constraints_velocity_mg);
+      AffineConstraints<float> constraints_pressure_mg;
+      constraints_pressure_mg.clear();
+      constraints_mg.push_back(&constraints_pressure_mg);
+      AffineConstraints<float> constraints_streamline_mg;
+      constraints_streamline_mg.clear();
+      constraints_mg.push_back(&constraints_streamline_mg);
+      std::vector<const DoFHandler<dim>*> dof_handlers;
+      dof_handlers.push_back(&dof_handler_velocity);
+      dof_handlers.push_back(&dof_handler_pressure);
+      dof_handlers.push_back(&dof_handler_streamline);
+      std::vector<QGauss<1>> quadratures;
+      quadratures.push_back(QGauss<1>(EquationData::degree_p + 2));
+      quadratures.push_back(QGauss<1>(EquationData::degree_p + 1));
+      std::shared_ptr<MatrixFree<dim, float>> mg_mf_storage_level(new MatrixFree<dim, float>());
+      mg_mf_storage_level->reinit(dof_handlers, constraints_mg, quadratures, additional_data_mg);
       mg_matrices[level].initialize(mg_mf_storage_level, tmp, tmp);
       mg_matrices[level].set_NS_stage(1);
       mg_matrices[level].set_u_extr(level_projection[level]);
@@ -2260,7 +2266,7 @@ namespace Step35 {
                                                           EquationData::degree_p + 2,
                                                           LinearAlgebra::distributed::Vector<float>,
                                                           float>,
-                            SmootherType,
+                            PreconditionIdentity,
                             LinearAlgebra::distributed::Vector<float>> mg_smoother;
     mg_smoother.initialize(mg_matrices);
 
@@ -2333,6 +2339,36 @@ namespace Step35 {
 
     navier_stokes_matrix.set_NS_stage(2);
 
+    for(unsigned int level = 0; level < triangulation.n_global_levels(); ++level) {
+      typename MatrixFree<dim, float>::AdditionalData additional_data_mg;
+      additional_data_mg.tasks_parallel_scheme = MatrixFree<dim, float>::AdditionalData::none;
+      additional_data_mg.mapping_update_flags  = (update_gradients | update_JxW_values);
+      additional_data_mg.mapping_update_flags_inner_faces = (update_gradients | update_JxW_values);
+      additional_data_mg.mapping_update_flags_boundary_faces = (update_gradients | update_JxW_values);
+      additional_data_mg.mg_level = level;
+      std::vector<const AffineConstraints<float>*> constraints_mg;
+      AffineConstraints<float> constraints_velocity_mg;
+      constraints_velocity_mg.clear();
+      constraints_mg.push_back(&constraints_velocity_mg);
+      AffineConstraints<float> constraints_pressure_mg;
+      constraints_pressure_mg.clear();
+      constraints_mg.push_back(&constraints_pressure_mg);
+      AffineConstraints<float> constraints_streamline_mg;
+      constraints_streamline_mg.clear();
+      constraints_mg.push_back(&constraints_streamline_mg);
+      std::vector<const DoFHandler<dim>*> dof_handlers;
+      dof_handlers.push_back(&dof_handler_velocity);
+      dof_handlers.push_back(&dof_handler_pressure);
+      dof_handlers.push_back(&dof_handler_streamline);
+      std::vector<QGauss<1>> quadratures;
+      quadratures.push_back(QGauss<1>(EquationData::degree_p + 2));
+      quadratures.push_back(QGauss<1>(EquationData::degree_p + 1));
+      std::shared_ptr<MatrixFree<dim, float>> mg_mf_storage_level(new MatrixFree<dim, float>());
+      mg_mf_storage_level->reinit(dof_handlers, constraints_mg, quadratures, additional_data_mg);
+      mg_matrices[level].initialize(mg_mf_storage_level, tmp, tmp);
+      mg_matrices[level].set_NS_stage(2);
+    }
+
     SolverControl solver_control(vel_max_its, vel_eps*rhs_p.l2_norm());
     SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
 
@@ -2351,9 +2387,7 @@ namespace Step35 {
     MGLevelObject<typename SmootherType::AdditionalData> smoother_data;
     smoother_data.resize(0, triangulation.n_global_levels() - 1);
     for(unsigned int level = 0; level < triangulation.n_global_levels(); ++level) {
-      mg_matrices[level].initialize(mg_mf_storage_level, tmp, tmp);
-      mg_matrices[level].set_NS_stage(2);
-        if(level > 0) {
+      if(level > 0) {
         smoother_data[level].smoothing_range     = 15.0;
         smoother_data[level].degree              = 3;
         smoother_data[level].eig_cg_n_iterations = 10;
