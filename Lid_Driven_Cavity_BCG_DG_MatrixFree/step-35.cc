@@ -58,6 +58,13 @@
 #include <deal.II/distributed/solution_transfer.h>
 #include <deal.II/numerics/error_estimator.h>
 
+#include <deal.II/multigrid/multigrid.h>
+#include <deal.II/multigrid/mg_transfer_matrix_free.h>
+#include <deal.II/multigrid/mg_tools.h>
+#include <deal.II/multigrid/mg_coarse.h>
+#include <deal.II/multigrid/mg_smoother.h>
+#include <deal.II/multigrid/mg_matrix.h>
+
 // Finally this is as in all previous programs:
 namespace Step35 {
   using namespace dealii;
@@ -427,8 +434,6 @@ namespace Step35 {
     virtual void compute_diagonal() override;
 
   protected:
-    RunTimeParameters::Data_Storage& eq_data;
-
     double       Re;
     double       dt;
 
@@ -559,7 +564,8 @@ namespace Step35 {
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
   NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   NavierStokesProjectionOperator():
-    MatrixFreeOperators::Base<dim, Vec>(), Re(), dt(), gamma(), a31(), a32(), a33(), TR_BDF2_stage(), NS_stage(1), u_extr() {}
+    MatrixFreeOperators::Base<dim, Vec>(), Re(), dt(), gamma(1.0), a31((1.0 - gamma)/(2.0*(2.0 - gamma))),
+                                           a32(a31), a33(1.0/(2.0 - gamma)), TR_BDF2_stage(1), NS_stage(1), u_extr() {}
 
 
   // Constructor with runtime parameters storage
@@ -567,7 +573,7 @@ namespace Step35 {
   template<int dim, int fe_degree_p, int fe_degree_v, int n_q_points_1d_p, int n_q_points_1d_v, typename Vec, typename Number>
   NavierStokesProjectionOperator<dim, fe_degree_p, fe_degree_v, n_q_points_1d_p, n_q_points_1d_v, Vec, Number>::
   NavierStokesProjectionOperator(RunTimeParameters::Data_Storage& data):
-    MatrixFreeOperators::Base<dim, Vec>(), eq_data(data), Re(data.Reynolds), dt(data.dt),
+    MatrixFreeOperators::Base<dim, Vec>(), Re(data.Reynolds), dt(data.dt),
                                            gamma(1.0), a31((1.0 - gamma)/(2.0*(2.0 - gamma))),
                                            a32(a31), a33(1.0/(2.0 - gamma)), TR_BDF2_stage(1), NS_stage(1), u_extr(),
                                            vel_boundary(data.initial_time) {}
@@ -1953,12 +1959,18 @@ namespace Step35 {
 
     void interpolate_max_res(const unsigned int level);
 
+    void save_max_res();
+
   private:
     std::shared_ptr<MatrixFree<dim, double>> matrix_free_storage;
 
     NavierStokesProjectionOperator<dim, EquationData::degree_p, EquationData::degree_p + 1,
                                    EquationData::degree_p + 1, EquationData::degree_p + 2,
                                    LinearAlgebra::distributed::Vector<double>, double> navier_stokes_matrix;
+
+    MGLevelObject<NavierStokesProjectionOperator<dim, EquationData::degree_p, EquationData::degree_p + 1,
+                                                 EquationData::degree_p + 1, EquationData::degree_p + 2,
+                                                 LinearAlgebra::distributed::Vector<float>, float>> mg_matrices;
 
     AffineConstraints<double> constraints_velocity, constraints_pressure, constraints_streamline;
 
@@ -2004,7 +2016,8 @@ namespace Step35 {
     Re(data.Reynolds),
     dt(data.dt),
     pres_init(data.initial_time),
-    triangulation(MPI_COMM_WORLD),
+    triangulation(MPI_COMM_WORLD, Triangulation<dim>::limit_level_difference_at_vertices,
+                  parallel::distributed::Triangulation<dim>::construct_multigrid_hierarchy),
     fe_velocity(FE_DGQ<dim>(EquationData::degree_p + 1), dim),
     fe_pressure(FE_DGQ<dim>(EquationData::degree_p), 1),
     fe_streamline(FE_Q<dim>(EquationData::degree_p + 1), 1),
@@ -2062,7 +2075,9 @@ namespace Step35 {
   void NavierStokesProjection<dim>::create_triangulation(const unsigned int n_cells) {
     TimerOutput::Scope t(time_table, "Create triangulation");
 
-    GridGenerator::subdivided_hyper_cube(triangulation, n_cells, 0.0, 1.0, true);
+    GridGenerator::subdivided_hyper_cube(triangulation, 8, 0.0, 1.0, true);
+    const unsigned int n_refines = std::log2(n_cells/8);
+    triangulation.refine_global(n_refines);
 
     pcout << "Number of initial cells = " << n_cells << std::endl;
   }
@@ -2080,9 +2095,16 @@ namespace Step35 {
     pcout << "Number of active cells: " << triangulation.n_global_active_cells() << std::endl;
     pcout << "Number of levels: "       << triangulation.n_global_levels()       << std::endl;
 
+    navier_stokes_matrix.clear();
+    mg_matrices.clear_elements();
+
     dof_handler_velocity.distribute_dofs(fe_velocity);
     dof_handler_pressure.distribute_dofs(fe_pressure);
     dof_handler_streamline.distribute_dofs(fe_streamline);
+
+    dof_handler_velocity.distribute_mg_dofs();
+    dof_handler_pressure.distribute_mg_dofs();
+    dof_handler_streamline.distribute_mg_dofs();
 
     pcout << "dim (X_h) = " << dof_handler_velocity.n_dofs()
           << std::endl
@@ -2145,6 +2167,33 @@ namespace Step35 {
     matrix_free_storage->initialize_dof_vector(streamline, 2);
     matrix_free_storage->initialize_dof_vector(streamline_old, 2);
     matrix_free_storage->initialize_dof_vector(omega, 2);
+
+    const unsigned int nlevels = triangulation.n_global_levels();
+    mg_matrices.resize(0, nlevels - 1);
+    for(unsigned int level = 0; level < nlevels; ++level) {
+      typename MatrixFree<dim, float>::AdditionalData additional_data_mg;
+      additional_data_mg.tasks_parallel_scheme = MatrixFree<dim, float>::AdditionalData::none;
+      additional_data_mg.mapping_update_flags  = (update_gradients | update_JxW_values);
+      additional_data_mg.mapping_update_flags_inner_faces = (update_gradients | update_JxW_values);
+      additional_data_mg.mapping_update_flags_boundary_faces = (update_gradients | update_JxW_values);
+      additional_data_mg.mg_level = level;
+      std::vector<const AffineConstraints<float>*> constraints_mg;
+      AffineConstraints<float> constraints_velocity_mg;
+      constraints_velocity_mg.clear();
+      constraints_mg.push_back(&constraints_velocity_mg);
+      AffineConstraints<float> constraints_pressure_mg;
+      constraints_pressure_mg.clear();
+      constraints_mg.push_back(&constraints_pressure_mg);
+      AffineConstraints<float> constraints_streamline_mg;
+      constraints_streamline_mg.clear();
+      constraints_mg.push_back(&constraints_streamline_mg);
+      std::shared_ptr<MatrixFree<dim, float>> mg_mf_storage_level(new MatrixFree<dim, float>());
+      mg_mf_storage_level->reinit(dof_handlers, constraints_mg, quadratures, additional_data_mg);
+      const std::vector<unsigned int> tmp = {1};
+      mg_matrices[level].initialize(mg_mf_storage_level, tmp, tmp);
+      mg_matrices[level].set_dt(dt);
+      mg_matrices[level].set_NS_stage(2);
+    }
   }
 
 
@@ -2287,7 +2336,62 @@ namespace Step35 {
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_p.l2_norm());
     SolverCG<LinearAlgebra::distributed::Vector<double>> cg(solver_control);
-    PreconditionJacobi<NavierStokesProjectionOperator<dim,
+
+    MGTransferMatrixFree<dim, float> mg_transfer;
+    mg_transfer.build(dof_handler_pressure);
+
+    using SmootherType = PreconditionChebyshev<NavierStokesProjectionOperator<dim,
+                                                                              EquationData::degree_p,
+                                                                              EquationData::degree_p + 1,
+                                                                              EquationData::degree_p + 1,
+                                                                              EquationData::degree_p + 2,
+                                                                              LinearAlgebra::distributed::Vector<float>,
+                                                                              float>,
+                                               LinearAlgebra::distributed::Vector<float>>;
+    mg::SmootherRelaxation<SmootherType, LinearAlgebra::distributed::Vector<float>> mg_smoother;
+    MGLevelObject<typename SmootherType::AdditionalData> smoother_data;
+    smoother_data.resize(0, triangulation.n_global_levels() - 1);
+    for(unsigned int level = 0; level < triangulation.n_global_levels(); ++level) {
+      if(level > 0) {
+        smoother_data[level].smoothing_range     = 15.0;
+        smoother_data[level].degree              = 3;
+        smoother_data[level].eig_cg_n_iterations = 10;
+      }
+      else {
+        smoother_data[0].smoothing_range = 2e-2;
+        smoother_data[0].degree          = numbers::invalid_unsigned_int;
+        smoother_data[0].eig_cg_n_iterations = mg_matrices[0].m();
+      }
+      mg_matrices[level].compute_diagonal();
+      smoother_data[level].preconditioner = mg_matrices[level].get_matrix_diagonal_inverse();
+    }
+    mg_smoother.initialize(mg_matrices, smoother_data);
+
+    PreconditionIdentity                                identity;
+    SolverCG<LinearAlgebra::distributed::Vector<float>> cg_mg(solver_control);
+    MGCoarseGridIterativeSolver<LinearAlgebra::distributed::Vector<float>,
+                                SolverCG<LinearAlgebra::distributed::Vector<float>>,
+                                NavierStokesProjectionOperator<dim,
+                                                               EquationData::degree_p,
+                                                               EquationData::degree_p + 1,
+                                                               EquationData::degree_p + 1,
+                                                               EquationData::degree_p + 2,
+                                                               LinearAlgebra::distributed::Vector<float>,
+                                                               float>,
+                                PreconditionIdentity> mg_coarse(cg_mg, mg_matrices[0], identity);
+
+    /*MGCoarseGridApplySmoother<LinearAlgebra::distributed::Vector<float>> mg_coarse;
+    mg_coarse.initialize(mg_smoother);*/
+
+    mg::Matrix<LinearAlgebra::distributed::Vector<float>> mg_matrix(mg_matrices);
+
+    Multigrid<LinearAlgebra::distributed::Vector<float>> mg(mg_matrix, mg_coarse, mg_transfer, mg_smoother, mg_smoother);
+
+    PreconditionMG<dim,
+                   LinearAlgebra::distributed::Vector<float>,
+                   MGTransferMatrixFree<dim, float>> preconditioner(dof_handler_pressure, mg, mg_transfer);
+
+    /*PreconditionJacobi<NavierStokesProjectionOperator<dim,
                                                       EquationData::degree_p,
                                                       EquationData::degree_p + 1,
                                                       EquationData::degree_p + 1,
@@ -2295,7 +2399,8 @@ namespace Step35 {
                                                       LinearAlgebra::distributed::Vector<double>,
                                                       double>> preconditioner;
     navier_stokes_matrix.compute_diagonal();
-    preconditioner.initialize(navier_stokes_matrix);
+    preconditioner.initialize(navier_stokes_matrix);*/
+
     if(TR_BDF2_stage == 1) {
       pres_int = pres_n;
       cg.solve(navier_stokes_matrix, pres_int, rhs_p, preconditioner);
@@ -2605,33 +2710,67 @@ namespace Step35 {
     pres_n         = transfer_pressure;
     streamline     = transfer_streamline;
     streamline_old = transfer_streamline_old;
+  }
+
+
+  // @sect4{ <code>NavierStokesProjection::save_max_res</code>}
+  //
+  // Save maximum resolution to a mesh adapted for paraview
+  // in order to perform the difference
+  //
+  template<int dim>
+  void NavierStokesProjection<dim>::save_max_res() {
+    parallel::distributed::Triangulation<dim> triangulation_tmp(MPI_COMM_WORLD);
+    GridGenerator::subdivided_hyper_cube(triangulation_tmp, n_cells, 0.0, 1.0, true);
+    triangulation_tmp.refine_global(triangulation.n_global_levels() - 1);
+    DoFHandler<dim> dof_handler_velocity_tmp(triangulation_tmp);
+    DoFHandler<dim> dof_handler_pressure_tmp(triangulation_tmp);
+    DoFHandler<dim> dof_handler_streamline_tmp(triangulation_tmp);
+    dof_handler_velocity_tmp.distribute_dofs(fe_velocity);
+    dof_handler_pressure_tmp.distribute_dofs(fe_pressure);
+    dof_handler_streamline_tmp.distribute_dofs(fe_streamline);
+
+    LinearAlgebra::distributed::Vector<double> u_n_tmp, u_n_minus_1_tmp,
+                                               pres_n_tmp,
+                                               streamline_tmp, streamline_old_tmp;
+    u_n_tmp.reinit(dof_handler_velocity_tmp.n_dofs());
+    u_n_minus_1_tmp.reinit(dof_handler_velocity_tmp.n_dofs());
+    pres_n_tmp.reinit(dof_handler_pressure_tmp.n_dofs());
+    streamline_tmp.reinit(dof_handler_streamline_tmp.n_dofs());
+    streamline_old_tmp.reinit(dof_handler_streamline_tmp.n_dofs());
 
     DataOut<dim> data_out;
     std::vector<std::string> velocity_names(dim, "v");
     std::vector<DataComponentInterpretation::DataComponentInterpretation>
     component_interpretation_velocity(dim, DataComponentInterpretation::component_is_part_of_vector);
-    u_n.update_ghost_values();
-    data_out.add_data_vector(dof_handler_velocity, u_n, velocity_names, component_interpretation_velocity);
-    pres_n.update_ghost_values();
-    data_out.add_data_vector(dof_handler_pressure, pres_n, "p", {DataComponentInterpretation::component_is_scalar});
+    VectorTools::interpolate_to_different_mesh(dof_handler_velocity, u_n, dof_handler_velocity_tmp, u_n_tmp);
+    u_n_tmp.update_ghost_values();
+    data_out.add_data_vector(dof_handler_velocity_tmp, u_n_tmp, velocity_names, component_interpretation_velocity);
+    VectorTools::interpolate_to_different_mesh(dof_handler_pressure, pres_n, dof_handler_pressure_tmp, pres_n_tmp);
+    pres_n_tmp.update_ghost_values();
+    data_out.add_data_vector(dof_handler_pressure_tmp, pres_n_tmp, "p", {DataComponentInterpretation::component_is_scalar});
     PostprocessorVorticity<dim> postprocessor;
-    data_out.add_data_vector(dof_handler_velocity, u_n, postprocessor);
-    streamline.update_ghost_values();
-    data_out.add_data_vector(dof_handler_streamline, streamline, "streamline", {DataComponentInterpretation::component_is_scalar});
+    data_out.add_data_vector(dof_handler_velocity_tmp, u_n_tmp, postprocessor);
+    VectorTools::interpolate_to_different_mesh(dof_handler_streamline, streamline, dof_handler_streamline_tmp, streamline_tmp);
+    streamline_tmp.update_ghost_values();
+    std::vector<DataComponentInterpretation::DataComponentInterpretation> interpretation;
+    std::vector<std::string> streamline_names;
+    interpretation.push_back(DataComponentInterpretation::component_is_scalar);
+    streamline_names.push_back("streamline");
+    data_out.add_data_vector(dof_handler_streamline_tmp, streamline_tmp, streamline_names, interpretation);
     data_out.build_patches();
     const std::string output = "./" + saving_dir + "/solution_max_res_end.vtu";
     data_out.write_vtu_in_parallel(output, MPI_COMM_WORLD);
 
     DataOut<dim> data_out_old;
-    std::vector<std::string> velocity_names_old(dim, "v");
-    std::vector<DataComponentInterpretation::DataComponentInterpretation>
-    component_interpretation_old(dim, DataComponentInterpretation::component_is_part_of_vector);
-    u_n_minus_1.update_ghost_values();
-    data_out_old.add_data_vector(dof_handler_velocity, u_n_minus_1, velocity_names_old, component_interpretation_old);
+    VectorTools::interpolate_to_different_mesh(dof_handler_velocity, u_n_minus_1, dof_handler_velocity_tmp, u_n_minus_1_tmp);
+    u_n_minus_1_tmp.update_ghost_values();
+    data_out_old.add_data_vector(dof_handler_velocity_tmp, u_n_minus_1_tmp, velocity_names, component_interpretation_velocity);
     PostprocessorVorticity<dim> postprocessor_old;
-    data_out_old.add_data_vector(dof_handler_velocity, u_n_minus_1, postprocessor_old);
-    streamline_old.update_ghost_values();
-    data_out_old.add_data_vector(dof_handler_streamline, streamline_old, "streamline", {DataComponentInterpretation::component_is_scalar});
+    data_out_old.add_data_vector(dof_handler_velocity_tmp, u_n_minus_1_tmp, postprocessor_old);
+    VectorTools::interpolate_to_different_mesh(dof_handler_streamline, streamline_old, dof_handler_streamline_tmp, streamline_old_tmp);
+    streamline_old_tmp.update_ghost_values();
+    data_out_old.add_data_vector(dof_handler_streamline_tmp, streamline_old_tmp, streamline_names, interpretation);
     data_out_old.build_patches();
     const std::string output_old = "./" + saving_dir + "/solution_max_res_end_minus_1.vtu";
     data_out_old.write_vtu_in_parallel(output_old, MPI_COMM_WORLD);
@@ -2661,6 +2800,8 @@ namespace Step35 {
       pcout << "Step = " << n << " Time = " << time << std::endl;
       //--- First stage of TR-BDF2
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
+      for(unsigned int level = 0; level < triangulation.n_global_levels(); ++level)
+        mg_matrices[level].set_TR_BDF2_stage(TR_BDF2_stage);
       verbose_cout << "  Interpolating the velocity stage 1" << std::endl;
       interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 1 " << std::endl;
@@ -2682,6 +2823,8 @@ namespace Step35 {
       TR_BDF2_stage = 2; //--- Flag to pass at second stage
       //--- Second stage of TR-BDF2
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
+      for(unsigned int level = 0; level < triangulation.n_global_levels(); ++level)
+        mg_matrices[level].set_TR_BDF2_stage(TR_BDF2_stage);
       verbose_cout << "  Interpolating the velocity stage 2" << std::endl;
       interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 2 " << std::endl;
@@ -2722,8 +2865,11 @@ namespace Step35 {
       streamline_old = streamline;
       output_results(n);
     }
-    for(unsigned int lev = 0; lev < triangulation.n_global_levels() - 1; ++ lev)
-      interpolate_max_res(lev);
+    if(refinement_iterations > 0) {
+      for(unsigned int lev = 0; lev < triangulation.n_global_levels() - 1; ++ lev)
+        interpolate_max_res(lev);
+      save_max_res();
+    }
   }
 
 } // namespace Step35
