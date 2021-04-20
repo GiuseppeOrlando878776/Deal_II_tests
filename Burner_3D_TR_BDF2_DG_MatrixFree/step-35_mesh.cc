@@ -100,9 +100,9 @@ namespace Step35 {
     std::string curr_line;
     std::getline(inlet_data, curr_line);
     std::getline(inlet_data, curr_line);
-    std::vector<double> xx(609), yy(609), zz(609);
+    std::vector<double> xx(315), yy(315), zz(315);
     double index, x, y, z;
-    for(unsigned int i = 0; i < 609; ++i) {
+    for(unsigned int i = 0; i < 315; ++i) {
       std::getline(inlet_data, curr_line);
       std::istringstream iss(curr_line);
       iss.precision(16);
@@ -117,14 +117,14 @@ namespace Step35 {
           bool of_interest = true;
           for(unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_face; ++v) {
             unsigned int i = 0;
-            while(i < 609) {
+            while(i < 315) {
               if(std::abs(cell->face(f)->vertex(v)(0) - xx[i]) < 1e-9 &&
                  std::abs(cell->face(f)->vertex(v)(1) - yy[i]) < 1e-9 &&
                  std::abs(cell->face(f)->vertex(v)(2) - zz[i]) < 1e-9)
                  break;
               i++;
             }
-            if(i == 609) {
+            if(i == 315) {
               of_interest = false;
               break;
             }
@@ -138,10 +138,10 @@ namespace Step35 {
     std::ifstream outlet_data("OUTLET_AIR_0.ucd");
     std::getline(outlet_data, curr_line);
     std::getline(outlet_data, curr_line);
-    xx.resize(3973);
-    yy.resize(3973);
-    zz.resize(3973);
-    for(unsigned int i = 0; i < 3973; ++i) {
+    xx.resize(1035);
+    yy.resize(1035);
+    zz.resize(1035);
+    for(unsigned int i = 0; i < 1035; ++i) {
       std::getline(outlet_data, curr_line);
       std::istringstream iss(curr_line);
       iss.precision(16);
@@ -156,14 +156,14 @@ namespace Step35 {
           bool of_interest = true;
           for(unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_face; ++v) {
             unsigned int i = 0;
-            while(i < 3973) {
+            while(i < 1035) {
               if(std::abs(cell->face(f)->vertex(v)(0) - xx[i]) < 1e-8 &&
                  std::abs(cell->face(f)->vertex(v)(1) - yy[i]) < 1e-8 &&
                  std::abs(cell->face(f)->vertex(v)(2) - zz[i]) < 1e-8)
                  break;
               i++;
             }
-            if(i == 3973) {
+            if(i == 1035) {
               of_interest = false;
               break;
             }
@@ -188,22 +188,22 @@ namespace Step35 {
     pcout<<"Number of boundary cells = "<<number_of_boundary_cells<<std::endl;
 
     GridOut grid_out;
-    std::ofstream out_file("full_1.ucd");
-    grid_out.write_ucd(triangulation, out_file);
+    /*std::ofstream out_file("full_1.ucd");
+    grid_out.write_ucd(triangulation, out_file);*/
 
     parallel::distributed::Triangulation<dim - 1, dim> triangulation_inlet(MPI_COMM_WORLD);
     GridGenerator::extract_boundary_mesh(triangulation, triangulation_inlet, {1});
     std::ofstream out_file_inlet("INLET_AIR_1.vtu");
-    std::ofstream out_file_inlet_ucd("INLET_AIR_1.ucd");
+    //std::ofstream out_file_inlet_ucd("INLET_AIR_1.ucd");
     grid_out.write_vtu(triangulation_inlet, out_file_inlet);
-    grid_out.write_ucd(triangulation_inlet, out_file_inlet_ucd);
+    //grid_out.write_ucd(triangulation_inlet, out_file_inlet_ucd);
 
     parallel::distributed::Triangulation<dim - 1, dim> triangulation_outlet(MPI_COMM_WORLD);
     GridGenerator::extract_boundary_mesh(triangulation, triangulation_outlet, {2});
     std::ofstream out_file_outlet("OUTLET_AIR_1.vtu");
-    std::ofstream out_file_outlet_ucd("OUTLET_AIR_1.ucd");
+    //std::ofstream out_file_outlet_ucd("OUTLET_AIR_1.ucd");
     grid_out.write_vtu(triangulation_outlet, out_file_outlet);
-    grid_out.write_ucd(triangulation_outlet, out_file_outlet_ucd);
+    //grid_out.write_ucd(triangulation_outlet, out_file_outlet_ucd);
   }
 
 } // namespace Step35

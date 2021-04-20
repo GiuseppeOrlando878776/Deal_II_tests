@@ -291,7 +291,7 @@ namespace Step35 {
     double Velocity<dim>::value(const Point<dim>& p, const unsigned int component) const {
       AssertIndexRange(component, 3);
       if(component == 1)
-        return -1.0;
+        return -24.3125555326;
       else
         return 0.0;
     }
@@ -1944,9 +1944,9 @@ namespace Step35 {
     std::string curr_line;
     std::getline(inlet_data, curr_line);
     std::getline(inlet_data, curr_line);
-    std::vector<double> xx(609), yy(609), zz(609);
+    std::vector<double> xx(315), yy(315), zz(315);
     double index, x, y, z;
-    for(unsigned int i = 0; i < 609; ++i) {
+    for(unsigned int i = 0; i < 315; ++i) {
       std::getline(inlet_data, curr_line);
       std::istringstream iss(curr_line);
       iss.precision(16);
@@ -1962,14 +1962,14 @@ namespace Step35 {
             bool of_interest = true;
             for(unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_face; ++v) {
               unsigned int i = 0;
-              while(i < 609) {
+              while(i < 315) {
                 if(std::abs(cell->face(f)->vertex(v)(0) - xx[i]) < 1e-9 &&
                    std::abs(cell->face(f)->vertex(v)(1) - yy[i]) < 1e-9 &&
                    std::abs(cell->face(f)->vertex(v)(2) - zz[i]) < 1e-9)
                    break;
                 i++;
               }
-              if(i == 609) {
+              if(i == 315) {
                 of_interest = false;
                 break;
               }
@@ -1984,10 +1984,10 @@ namespace Step35 {
     std::ifstream outlet_data("OUTLET_AIR_0.ucd");
     std::getline(outlet_data, curr_line);
     std::getline(outlet_data, curr_line);
-    xx.resize(3973);
-    yy.resize(3973);
-    zz.resize(3973);
-    for(unsigned int i = 0; i < 3973; ++i) {
+    xx.resize(1035);
+    yy.resize(1035);
+    zz.resize(1035);
+    for(unsigned int i = 0; i < 1035; ++i) {
       std::getline(outlet_data, curr_line);
       std::istringstream iss(curr_line);
       iss.precision(16);
@@ -2003,14 +2003,14 @@ namespace Step35 {
             bool of_interest = true;
             for(unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_face; ++v) {
               unsigned int i = 0;
-              while(i < 3973) {
+              while(i < 1035) {
                 if(std::abs(cell->face(f)->vertex(v)(0) - xx[i]) < 1e-8 &&
                   std::abs(cell->face(f)->vertex(v)(1) - yy[i]) < 1e-8 &&
                   std::abs(cell->face(f)->vertex(v)(2) - zz[i]) < 1e-8)
                   break;
                  i++;
               }
-              if(i == 3973) {
+              if(i == 1035) {
                 of_interest = false;
                 break;
               }
