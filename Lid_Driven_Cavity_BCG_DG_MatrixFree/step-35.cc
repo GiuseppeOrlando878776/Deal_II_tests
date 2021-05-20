@@ -1939,8 +1939,6 @@ namespace Step35 {
 
     void initialize();
 
-    void interpolate_velocity();
-
     void diffusion_step();
 
     void projection_step();
@@ -2212,29 +2210,6 @@ namespace Step35 {
   }
 
 
-  // @sect4{<code>NavierStokesProjection::interpolate_velocity</code>}
-
-  // This function computes the extrapolated velocity to be used in the momentum predictor
-  //
-  template<int dim>
-  void NavierStokesProjection<dim>::interpolate_velocity() {
-    TimerOutput::Scope t(time_table, "Interpolate velocity");
-
-    //--- TR-BDF2 first step
-    if(TR_BDF2_stage == 1) {
-      u_extr.equ(1.5 + 0.0*1.5, u_n);
-      u_tmp.equ(0.5 + 0.0*0.5, u_n_minus_1);
-      u_extr -= u_tmp;
-    }
-    //--- TR-BDF2 second step
-    else {
-      u_extr.equ(1.0 + (1.0 - gamma)/gamma, u_n_gamma);
-      u_tmp.equ((1.0 - gamma)/gamma, u_n);
-      u_extr -= u_tmp;
-    }
-  }
-
-
   // @sect4{<code>NavierStokesProjection::diffusion_step</code>}
 
   // The implementation of a diffusion step. Note that the expensive operation
@@ -2263,7 +2238,7 @@ namespace Step35 {
       u_n_k = u_n;
     }
     else {
-      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_extr});
+      navier_stokes_matrix.vmult_rhs_velocity(rhs_u, {u_n, u_n_gamma, pres_int, u_n_gamma});
       u_n_gamma_k = u_extr;
     }
 
@@ -2802,8 +2777,6 @@ namespace Step35 {
       navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
       for(unsigned int level = 0; level < triangulation.n_global_levels(); ++level)
         mg_matrices[level].set_TR_BDF2_stage(TR_BDF2_stage);
-      verbose_cout << "  Interpolating the velocity stage 1" << std::endl;
-      interpolate_velocity();
       verbose_cout << "  Diffusion Step stage 1 " << std::endl;
       diffusion_step();
       verbose_cout << "  Projection Step stage 1" << std::endl;
@@ -2820,26 +2793,8 @@ namespace Step35 {
       u_tmp.equ(-gamma*dt, u_tmp);
       u_n_gamma += u_tmp;
       u_n_minus_1 = u_n;
-      TR_BDF2_stage = 2; //--- Flag to pass at second stage
-      //--- Second stage of TR-BDF2
-      navier_stokes_matrix.set_TR_BDF2_stage(TR_BDF2_stage);
-      for(unsigned int level = 0; level < triangulation.n_global_levels(); ++level)
-        mg_matrices[level].set_TR_BDF2_stage(TR_BDF2_stage);
-      verbose_cout << "  Interpolating the velocity stage 2" << std::endl;
-      interpolate_velocity();
-      verbose_cout << "  Diffusion Step stage 2 " << std::endl;
-      diffusion_step();
-      verbose_cout << "  Projection Step stage 2" << std::endl;
-      project_grad(2);
-      u_tmp.equ((1.0 - gamma)*dt, u_tmp);
-      u_star += u_tmp;
-      projection_step();
-      verbose_cout << "  Updating the Velocity stage 2" << std::endl;
-      u_n.equ(1.0, u_star);
-      project_grad(1);
-      u_tmp.equ((gamma - 1.0)*dt, u_tmp);
-      u_n += u_tmp;
-      TR_BDF2_stage = 1; //--- Flag to pass at first stage at next step
+      u_n = u_n_gamma;
+      pres_n = pres_int;
       const double max_vel = get_maximal_velocity();
       pcout<< "Maximal velocity = " << max_vel << std::endl;
       pcout << "CFL = " << dt*max_vel*(EquationData::degree_p + 1)*
