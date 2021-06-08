@@ -510,6 +510,8 @@ namespace Step35 {
 
     void vmult_enthalpy(Vec& dst, const Vec& src) const;
 
+    Number compute_max_celerity(const std::vector<Vec>& src) const;
+
     virtual void compute_diagonal() override {}
 
   protected:
@@ -652,7 +654,7 @@ namespace Step35 {
   HYPERBOLICOperator(): MatrixFreeOperators::Base<dim, Vec>(), Ma(), Fr(), dt(), gamma(2.0 - std::sqrt(2.0)),
                         a21(gamma), a22(0.0), a31((2.0*gamma - 1.0)/6.0), a32((7.0 - 2.0*gamma)/6.0), a33(0.0),
                         a21_tilde(0.5*gamma), a22_tilde(0.5*gamma), a31_tilde(std::sqrt(2)/4.0), a32_tilde(std::sqrt(2)/4.0),
-                        a33_tilde(1.0 - std::sqrt(2)/4.0), HYPERBOLIC_stage(1), NS_stage(1), rho_boundary(), pres_boundary(),
+                        a33_tilde(1.0 - std::sqrt(2)/2.0), HYPERBOLIC_stage(1), NS_stage(1), rho_boundary(), pres_boundary(),
                         u_boundary() {}
 
 
@@ -667,7 +669,7 @@ namespace Step35 {
                                                              a32((7.0 - 2.0*gamma)/6.0), a33(0.0),
                                                              a21_tilde(0.5*gamma), a22_tilde(0.5*gamma),
                                                              a31_tilde(std::sqrt(2)/4.0), a32_tilde(std::sqrt(2)/4.0),
-                                                             a33_tilde(1.0 - std::sqrt(2)/4.0), HYPERBOLIC_stage(1), NS_stage(1),
+                                                             a33_tilde(1.0 - std::sqrt(2)/2.0), HYPERBOLIC_stage(1), NS_stage(1),
                                                              rho_boundary(data.initial_time), pres_boundary(data.initial_time),
                                                              u_boundary(data.initial_time) {}
 
@@ -1163,9 +1165,12 @@ namespace Step35 {
                                   const std::vector<Vec>&                      src,
                                   const std::pair<unsigned int, unsigned int>& cell_range) const {
     if(HYPERBOLIC_stage == 1) {
-      FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi(data, 1), phi_pres_old(data, 1);
-      FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_u_old(data, 0), phi_u_fixed(data, 0);
-      FEEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_old(data, 2), phi_rho_tmp_2(data, 2);
+      FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi(data, 1),
+                                                                 phi_pres_old(data, 1);
+      FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_u_old(data, 0),
+                                                                   phi_u_fixed(data, 0);
+      FEEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_old(data, 2),
+                                                                     phi_rho_tmp_2(data, 2);
 
       for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
         phi_rho_old.reinit(cell);
@@ -1180,12 +1185,12 @@ namespace Step35 {
         phi_u_fixed.gather_evaluate(src[4], true, false);
         phi.reinit(cell);
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          const auto& rho_old       = phi_rho_old.get_value(q);
-          const auto& u_old         = phi_u_old.get_value(q);
-          const auto& pres_old      = phi_pres_old.get_value(q);
-          const auto& rho_tmp_2     = phi_rho_tmp_2.get_value(q);
-          const auto& u_fixed       = phi_u_fixed.get_value(q);
-          const auto& E_old         = 1.0/(EquationData::Cp_Cv - 1.0)*(pres_old/rho_old) + 0.5*scalar_product(u_old, u_old);
+          const auto& rho_old   = phi_rho_old.get_value(q);
+          const auto& u_old     = phi_u_old.get_value(q);
+          const auto& pres_old  = phi_pres_old.get_value(q);
+          const auto& rho_tmp_2 = phi_rho_tmp_2.get_value(q);
+          const auto& u_fixed   = phi_u_fixed.get_value(q);
+          const auto& E_old     = 1.0/(EquationData::Cp_Cv - 1.0)*(pres_old/rho_old) + 0.5*scalar_product(u_old, u_old);
 
           phi.submit_value(rho_old*E_old -
                            0.5*rho_tmp_2*scalar_product(u_fixed, u_fixed) -
@@ -1197,7 +1202,57 @@ namespace Step35 {
       }
     }
     else {
-      //TODO Implement this
+      FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi(data, 1),
+                                                                 phi_pres_old(data, 1),
+                                                                 phi_pres_tmp_2(data, 1);
+      FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_u_old(data, 0),
+                                                                   phi_u_tmp_2(data, 0),
+                                                                   phi_u_fixed(data, 0);
+      FEEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_old(data, 2),
+                                                                     phi_rho_tmp_2(data, 2),
+                                                                     phi_rho_curr(data, 2);
+
+      for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+        phi_rho_old.reinit(cell);
+        phi_rho_old.gather_evaluate(src[0], true, false);
+        phi_u_old.reinit(cell);
+        phi_u_old.gather_evaluate(src[1], true, false);
+        phi_pres_old.reinit(cell);
+        phi_pres_old.gather_evaluate(src[2], true, false);
+        phi_rho_tmp_2.reinit(cell);
+        phi_rho_tmp_2.gather_evaluate(src[3], true, false);
+        phi_u_tmp_2.reinit(cell);
+        phi_u_tmp_2.gather_evaluate(src[4], true, false);
+        phi_pres_tmp_2.reinit(cell);
+        phi_pres_tmp_2.gather_evaluate(src[5], true, false);
+        phi_rho_curr.reinit(cell);
+        phi_rho_curr.gather_evaluate(src[6], true, false);
+        phi_u_fixed.reinit(cell);
+        phi_u_fixed.gather_evaluate(src[7], true, false);
+        phi.reinit(cell);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& rho_old    = phi_rho_old.get_value(q);
+          const auto& u_old      = phi_u_old.get_value(q);
+          const auto& pres_old   = phi_pres_old.get_value(q);
+          const auto& rho_tmp_2  = phi_rho_tmp_2.get_value(q);
+          const auto& u_tmp_2    = phi_u_tmp_2.get_value(q);
+          const auto& pres_tmp_2 = phi_pres_old.get_value(q);
+          const auto& rho_curr   = phi_rho_curr.get_value(q);
+          const auto& u_fixed    = phi_u_fixed.get_value(q);
+          const auto& E_old      = 1.0/(EquationData::Cp_Cv - 1.0)*(pres_old/rho_old) + 0.5*scalar_product(u_old, u_old);
+          const auto& E_tmp_2    = 1.0/(EquationData::Cp_Cv - 1.0)*(pres_tmp_2/rho_tmp_2) + 0.5*scalar_product(u_tmp_2, u_tmp_2);
+
+          phi.submit_value(rho_old*E_old -
+                           0.5*rho_curr*scalar_product(u_fixed, u_fixed) -
+                           0.0*a31*dt*Ma*Ma/(Fr*Fr)*rho_old*u_old[dim - 1] -
+                           0.0*a32*dt*Ma*Ma/(Fr*Fr)*rho_tmp_2*u_tmp_2[dim - 1], q);
+          phi.submit_gradient(0.5*a31*dt*Ma*Ma*scalar_product(u_old, u_old)*rho_old*u_old +
+                              a31_tilde*dt*((rho_old*(E_old - 0.5*scalar_product(u_old, u_old)) + pres_old)*u_old) +
+                              0.5*a32*dt*Ma*Ma*scalar_product(u_tmp_2, u_tmp_2)*rho_tmp_2*u_tmp_2 +
+                              a32_tilde*dt*((rho_tmp_2*(E_tmp_2 - 0.5*scalar_product(u_tmp_2, u_tmp_2)) + pres_tmp_2)*u_tmp_2), q);
+        }
+        phi.integrate_scatter(true, true, dst);
+      }
     }
   }
 
@@ -1275,6 +1330,7 @@ namespace Step35 {
                                                   scalar_product(u_old_m, u_old_m) +
                                                   std::sqrt(EquationData::Cp_Cv*pres_old_m/rho_old_m));
           const auto& jump_rhoE_old    = rho_old_p*E_old_p - rho_old_m*E_old_m;
+
           const auto& rho_tmp_2_p      = phi_rho_tmp_2_p.get_value(q);
           const auto& rho_tmp_2_m      = phi_rho_tmp_2_m.get_value(q);
           const auto& u_fixed_p        = phi_u_fixed_p.get_value(q);
@@ -1287,6 +1343,7 @@ namespace Step35 {
                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_tmp_2_m));
           const auto& jump_rhok_fixed  = rho_tmp_2_p*0.5*scalar_product(u_fixed_p, u_fixed_p) -
                                          rho_tmp_2_m*0.5*scalar_product(u_fixed_m, u_fixed_m);
+
           phi_p.submit_value(-a21*dt*Ma*Ma*scalar_product(avg_kinetic_old, n_plus)
                              -a21_tilde*dt*scalar_product(avg_enthalpy_old, n_plus)
                              -a21*dt*0.5*lambda_old*jump_rhoE_old
@@ -1301,7 +1358,139 @@ namespace Step35 {
       }
     }
     else {
-      //TODO Implement this
+      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_p(data, true, 1),
+                                                                     phi_m(data, false, 1),
+                                                                     phi_pres_old_p(data, true, 1),
+                                                                     phi_pres_old_m(data, false, 1),
+                                                                     phi_pres_tmp_2_p(data, true, 1),
+                                                                     phi_pres_tmp_2_m(data, false, 1),
+                                                                     phi_pres_fixed_p(data, true, 1),
+                                                                     phi_pres_fixed_m(data, false, 1);
+      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_u_old_p(data, true, 0),
+                                                                       phi_u_old_m(data, false, 0),
+                                                                       phi_u_tmp_2_p(data, true, 0),
+                                                                       phi_u_tmp_2_m(data, false, 0),
+                                                                       phi_u_fixed_p(data, true, 0),
+                                                                       phi_u_fixed_m(data, false, 0);
+      FEFaceEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_old_p(data, true, 2),
+                                                                         phi_rho_old_m(data, false, 2),
+                                                                         phi_rho_tmp_2_p(data, true, 2),
+                                                                         phi_rho_tmp_2_m(data, false, 2),
+                                                                         phi_rho_curr_p(data, true, 2),
+                                                                         phi_rho_curr_m(data, false, 2);
+
+      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+        phi_rho_old_p.reinit(face);
+        phi_rho_old_p.gather_evaluate(src[0], true, false);
+        phi_rho_old_m.reinit(face);
+        phi_rho_old_m.gather_evaluate(src[0], true, false);
+        phi_u_old_p.reinit(face);
+        phi_u_old_p.gather_evaluate(src[1], true, false);
+        phi_u_old_m.reinit(face);
+        phi_u_old_m.gather_evaluate(src[1], true, false);
+        phi_pres_old_p.reinit(face);
+        phi_pres_old_p.gather_evaluate(src[2], true, false);
+        phi_pres_old_m.reinit(face);
+        phi_pres_old_m.gather_evaluate(src[2], true, false);
+        phi_rho_tmp_2_p.reinit(face);
+        phi_rho_tmp_2_p.gather_evaluate(src[3], true, false);
+        phi_rho_tmp_2_m.reinit(face);
+        phi_rho_tmp_2_m.gather_evaluate(src[3], true, false);
+        phi_u_tmp_2_p.reinit(face);
+        phi_u_tmp_2_p.gather_evaluate(src[4], true, false);
+        phi_u_tmp_2_m.reinit(face);
+        phi_u_tmp_2_m.gather_evaluate(src[4], true, false);
+        phi_pres_tmp_2_p.reinit(face);
+        phi_pres_tmp_2_p.gather_evaluate(src[5], true, false);
+        phi_pres_tmp_2_m.reinit(face);
+        phi_pres_tmp_2_m.gather_evaluate(src[5], true, false);
+        phi_rho_curr_p.reinit(face);
+        phi_rho_curr_p.gather_evaluate(src[6], true, false);
+        phi_rho_curr_m.reinit(face);
+        phi_rho_curr_m.gather_evaluate(src[6], true, false);
+        phi_u_fixed_p.reinit(face);
+        phi_u_fixed_p.gather_evaluate(src[7], true, false);
+        phi_u_fixed_m.reinit(face);
+        phi_u_fixed_m.gather_evaluate(src[7], true, false);
+        phi_pres_fixed_p.reinit(face);
+        phi_pres_fixed_p.gather_evaluate(src[8], true, false);
+        phi_pres_fixed_m.reinit(face);
+        phi_pres_fixed_m.gather_evaluate(src[8], true, false);
+        phi_p.reinit(face);
+        phi_m.reinit(face);
+        for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
+          const auto& n_plus           = phi_p.get_normal_vector(q);
+
+          const auto& rho_old_p        = phi_rho_old_p.get_value(q);
+          const auto& rho_old_m        = phi_rho_old_m.get_value(q);
+          const auto& u_old_p          = phi_u_old_p.get_value(q);
+          const auto& u_old_m          = phi_u_old_m.get_value(q);
+          const auto& avg_kinetic_old  = 0.5*(0.5*scalar_product(u_old_p,u_old_p)*rho_old_p*u_old_p +
+                                              0.5*scalar_product(u_old_m,u_old_m)*rho_old_m*u_old_m);
+          const auto& pres_old_p       = phi_pres_old_p.get_value(q);
+          const auto& pres_old_m       = phi_pres_old_m.get_value(q);
+          const auto& E_old_p          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_p/rho_old_p + 0.5*scalar_product(u_old_p, u_old_p);
+          const auto& E_old_m          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_m/rho_old_m + 0.5*scalar_product(u_old_m, u_old_m);
+          const auto& avg_enthalpy_old = 0.5*(((E_old_p - 0.5*scalar_product(u_old_p,u_old_p))*rho_old_p + pres_old_p)*u_old_p +
+                                              ((E_old_m - 0.5*scalar_product(u_old_m,u_old_m))*rho_old_m + pres_old_m)*u_old_m);
+          const auto& lambda_old       = std::max(scalar_product(u_old_p, u_old_p) +
+                                                  std::sqrt(EquationData::Cp_Cv*pres_old_p/rho_old_p),
+                                                  scalar_product(u_old_m, u_old_m) +
+                                                  std::sqrt(EquationData::Cp_Cv*pres_old_m/rho_old_m));
+          const auto& jump_rhoE_old    = rho_old_p*E_old_p - rho_old_m*E_old_m;
+
+          const auto& rho_tmp_2_p        = phi_rho_tmp_2_p.get_value(q);
+          const auto& rho_tmp_2_m        = phi_rho_tmp_2_m.get_value(q);
+          const auto& u_tmp_2_p          = phi_u_tmp_2_p.get_value(q);
+          const auto& u_tmp_2_m          = phi_u_tmp_2_m.get_value(q);
+          const auto& avg_kinetic_tmp_2  = 0.5*(0.5*scalar_product(u_tmp_2_p,u_tmp_2_p)*rho_tmp_2_p*u_tmp_2_p +
+                                                0.5*scalar_product(u_tmp_2_m,u_tmp_2_m)*rho_tmp_2_m*u_tmp_2_m);
+          const auto& pres_tmp_2_p       = phi_pres_tmp_2_p.get_value(q);
+          const auto& pres_tmp_2_m       = phi_pres_tmp_2_m.get_value(q);
+          const auto& E_tmp_2_p          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2_p/rho_tmp_2_p
+                                         + 0.5*scalar_product(u_tmp_2_p, u_tmp_2_p);
+          const auto& E_tmp_2_m          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2_m/rho_tmp_2_m
+                                         + 0.5*scalar_product(u_tmp_2_m, u_tmp_2_m);
+          const auto& avg_enthalpy_tmp_2 = 0.5*
+                                           (((E_tmp_2_p - 0.5*scalar_product(u_tmp_2_p,u_tmp_2_p))*rho_tmp_2_p + pres_tmp_2_p)*u_tmp_2_p +
+                                            ((E_tmp_2_m - 0.5*scalar_product(u_tmp_2_m,u_tmp_2_m))*rho_tmp_2_m + pres_tmp_2_m)*u_tmp_2_m);
+          const auto& lambda_tmp_2       = std::max(scalar_product(u_tmp_2_p, u_tmp_2_p) +
+                                                    std::sqrt(EquationData::Cp_Cv*pres_tmp_2_p/rho_tmp_2_p),
+                                                    scalar_product(u_tmp_2_m, u_tmp_2_m) +
+                                                    std::sqrt(EquationData::Cp_Cv*pres_tmp_2_m/rho_tmp_2_m));
+          const auto& jump_rhoE_tmp_2    = rho_tmp_2_p*E_tmp_2_p - rho_tmp_2_m*E_tmp_2_m;
+
+          const auto& rho_curr_p         = phi_rho_curr_p.get_value(q);
+          const auto& rho_curr_m         = phi_rho_curr_m.get_value(q);
+          const auto& u_fixed_p          = phi_u_fixed_p.get_value(q);
+          const auto& u_fixed_m          = phi_u_fixed_m.get_value(q);
+          const auto& pres_fixed_p       = phi_pres_fixed_p.get_value(q);
+          const auto& pres_fixed_m       = phi_pres_fixed_m.get_value(q);
+          const auto& lambda_fixed       = std::max(scalar_product(u_fixed_p, u_fixed_p) +
+                                                    std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_curr_p),
+                                                    scalar_product(u_fixed_m, u_fixed_m) +
+                                                    std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_curr_m));
+          const auto& jump_rhok_fixed    = rho_curr_p*0.5*scalar_product(u_fixed_p, u_fixed_p) -
+                                           rho_curr_m*0.5*scalar_product(u_fixed_m, u_fixed_m);
+
+          phi_p.submit_value(-a31*dt*Ma*Ma*scalar_product(avg_kinetic_old, n_plus)
+                             -a31_tilde*dt*scalar_product(avg_enthalpy_old, n_plus)
+                             -a31*dt*0.5*lambda_old*jump_rhoE_old
+                             -a32*dt*Ma*Ma*scalar_product(avg_kinetic_tmp_2, n_plus)
+                             -a32_tilde*dt*scalar_product(avg_enthalpy_tmp_2, n_plus)
+                             -a32*dt*0.5*lambda_tmp_2*jump_rhoE_tmp_2
+                             -a33_tilde*dt*0.5*lambda_fixed*jump_rhok_fixed, q);
+          phi_m.submit_value(a31*dt*Ma*Ma*scalar_product(avg_kinetic_old, n_plus) +
+                             a31_tilde*dt*scalar_product(avg_enthalpy_old, n_plus) +
+                             a31*dt*0.5*lambda_old*jump_rhoE_old +
+                             a32*dt*Ma*Ma*scalar_product(avg_kinetic_tmp_2, n_plus) +
+                             a32_tilde*dt*scalar_product(avg_enthalpy_tmp_2, n_plus) +
+                             a32*dt*0.5*lambda_tmp_2*jump_rhoE_tmp_2 +
+                             a33_tilde*dt*0.5*lambda_fixed*jump_rhok_fixed, q);
+        }
+        phi_p.integrate_scatter(true, false, dst);
+        phi_m.integrate_scatter(true, false, dst);
+      }
     }
   }
 
@@ -1360,9 +1549,9 @@ namespace Step35 {
             Point<dim> point;
             for(unsigned int d = 0; d < dim; ++d)
               point[d] = point_vectorized[d][v];
-            pres_old_D[v] = pres_boundary.value(point);
+            pres_old_D[v]   = pres_boundary.value(point);
             pres_tmp_2_D[v] = pres_boundary_tmp_2.value(point);
-            rho_old_D[v]  = rho_boundary.value(point);
+            rho_old_D[v]    = rho_boundary.value(point);
             rho_tmp_2_D[v]  = rho_boundary_tmp_2.value(point);
             for(unsigned int d = 0; d < dim; ++d) {
               u_old_D[d][v]   = u_boundary.value(point, d);
@@ -1384,6 +1573,7 @@ namespace Step35 {
                                                   scalar_product(u_old_D, u_old_D) +
                                                   std::sqrt(EquationData::Cp_Cv*pres_old_D/rho_old_D));
           const auto& jump_rhoE_old    = rho_old*E_old - rho_old_D*E_old_D;
+
           const auto& rho_tmp_2        = phi_rho_tmp_2.get_value(q);
           const auto& u_fixed          = phi_u_fixed.get_value(q);
           const auto& pres_fixed       = phi_pres_fixed.get_value(q);
@@ -1391,11 +1581,12 @@ namespace Step35 {
                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_tmp_2),
                                                   scalar_product(u_tmp_2_D, u_tmp_2_D) +
                                                   std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
-          const auto& E_tmp_2_D        = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2_D/rho_tmp_2
+          const auto& E_tmp_2_D        = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2_D/rho_tmp_2_D
                                        + 0.5*rho_tmp_2_D*scalar_product(u_tmp_2_D, u_tmp_2_D);
           const auto& jump_rhok_fixed  = rho_tmp_2*0.5*scalar_product(u_fixed, u_fixed) -
                                          rho_tmp_2_D*E_tmp_2_D;
           const auto& enthalpy_fixed   = ((E_tmp_2_D - 0.5*scalar_product(u_tmp_2_D,u_tmp_2_D))*rho_tmp_2_D + pres_tmp_2_D)*u_tmp_2_D;
+
           phi.submit_value(-a21*dt*Ma*Ma*scalar_product(avg_kinetic_old, n_plus)
                            -a21_tilde*dt*scalar_product(avg_enthalpy_old, n_plus)
                            -a21*dt*0.5*lambda_old*jump_rhoE_old
@@ -1406,7 +1597,136 @@ namespace Step35 {
       }
     }
     else {
-      //TODO Implement this
+      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi(data, true, 1),
+                                                                     phi_pres_old(data, true, 1),
+                                                                     phi_pres_tmp_2(data, true, 1),
+                                                                     phi_pres_fixed(data, true, 1);
+      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_u_old(data, true, 0),
+                                                                       phi_u_tmp_2(data, true, 0),
+                                                                       phi_u_fixed(data, true, 0);
+      FEFaceEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_old(data, true, 2),
+                                                                         phi_rho_tmp_2(data, true, 2),
+                                                                         phi_rho_curr(data, true, 2);
+
+      auto pres_boundary_tmp_2 = pres_boundary;
+      auto rho_boundary_tmp_2  = rho_boundary;
+      auto u_boundary_tmp_2    = u_boundary;
+      pres_boundary_tmp_2.advance_time(gamma*dt);
+      rho_boundary_tmp_2.advance_time(gamma*dt);
+      u_boundary_tmp_2.advance_time(gamma*dt);
+      auto pres_boundary_curr = pres_boundary;
+      auto rho_boundary_curr  = rho_boundary;
+      auto u_boundary_curr    = u_boundary;
+      pres_boundary_curr.advance_time(dt);
+      rho_boundary_curr.advance_time(dt);
+      u_boundary_curr.advance_time(dt);
+
+      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+        phi_rho_old.reinit(face);
+        phi_rho_old.gather_evaluate(src[0], true, false);
+        phi_u_old.reinit(face);
+        phi_u_old.gather_evaluate(src[1], true, false);
+        phi_pres_old.reinit(face);
+        phi_pres_old.gather_evaluate(src[2], true, false);
+        phi_rho_tmp_2.reinit(face);
+        phi_rho_tmp_2.gather_evaluate(src[3], true, false);
+        phi_u_tmp_2.reinit(face);
+        phi_u_tmp_2.gather_evaluate(src[4], true, false);
+        phi_pres_tmp_2.reinit(face);
+        phi_pres_tmp_2.gather_evaluate(src[5], true, false);
+        phi_rho_curr.reinit(face);
+        phi_rho_curr.gather_evaluate(src[6], true, false);
+        phi_u_fixed.reinit(face);
+        phi_u_fixed.gather_evaluate(src[7], true, false);
+        phi_pres_fixed.reinit(face);
+        phi_pres_fixed.gather_evaluate(src[8], true, false);
+        phi.reinit(face);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& n_plus           = phi.get_normal_vector(q);
+
+          const auto& point_vectorized = phi.quadrature_point(q);
+          auto        rho_old_D        = VectorizedArray<Number>();
+          auto        pres_old_D       = VectorizedArray<Number>();
+          auto        u_old_D          = Tensor<1, dim, VectorizedArray<Number>>();
+          auto        rho_tmp_2_D      = VectorizedArray<Number>();
+          auto        pres_tmp_2_D     = VectorizedArray<Number>();
+          auto        u_tmp_2_D        = Tensor<1, dim, VectorizedArray<Number>>();
+          auto        rho_curr_D       = VectorizedArray<Number>();
+          auto        pres_curr_D      = VectorizedArray<Number>();
+          auto        u_curr_D         = Tensor<1, dim, VectorizedArray<Number>>();
+          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
+            Point<dim> point;
+            for(unsigned int d = 0; d < dim; ++d)
+              point[d] = point_vectorized[d][v];
+            pres_old_D[v]   = pres_boundary.value(point);
+            pres_tmp_2_D[v] = pres_boundary_tmp_2.value(point);
+            pres_curr_D[v]  = pres_boundary_curr.value(point);
+            rho_old_D[v]    = rho_boundary.value(point);
+            rho_tmp_2_D[v]  = rho_boundary_tmp_2.value(point);
+            rho_curr_D[v]   = rho_boundary_curr.value(point);
+            for(unsigned int d = 0; d < dim; ++d) {
+              u_old_D[d][v]   = u_boundary.value(point, d);
+              u_tmp_2_D[d][v] = u_boundary_tmp_2.value(point, d);
+              u_curr_D[d][v]  = u_boundary_curr.value(point, d);
+            }
+          }
+
+          const auto& rho_old          = phi_rho_old.get_value(q);
+          const auto& u_old            = phi_u_old.get_value(q);
+          const auto& avg_kinetic_old  = 0.5*(0.5*scalar_product(u_old,u_old)*rho_old*u_old +
+                                              0.5*scalar_product(u_old_D,u_old_D)*rho_old_D*u_old_D);
+          const auto& pres_old         = phi_pres_old.get_value(q);
+          const auto& E_old            = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old/rho_old + 0.5*scalar_product(u_old, u_old);
+          const auto& E_old_D          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_D/rho_old_D + 0.5*scalar_product(u_old_D, u_old_D);
+          const auto& avg_enthalpy_old = 0.5*(((E_old - 0.5*scalar_product(u_old,u_old))*rho_old + pres_old)*u_old +
+                                              ((E_old_D - 0.5*scalar_product(u_old_D,u_old_D))*rho_old_D + pres_old_D)*u_old_D);
+          const auto& lambda_old       = std::max(scalar_product(u_old, u_old) +
+                                                  std::sqrt(EquationData::Cp_Cv*pres_old/rho_old),
+                                                  scalar_product(u_old_D, u_old_D) +
+                                                  std::sqrt(EquationData::Cp_Cv*pres_old_D/rho_old_D));
+          const auto& jump_rhoE_old    = rho_old*E_old - rho_old_D*E_old_D;
+
+          const auto& rho_tmp_2          = phi_rho_tmp_2.get_value(q);
+          const auto& u_tmp_2            = phi_u_tmp_2.get_value(q);
+          const auto& avg_kinetic_tmp_2  = 0.5*(0.5*scalar_product(u_tmp_2,u_old)*rho_tmp_2*u_tmp_2 +
+                                                0.5*scalar_product(u_tmp_2_D,u_tmp_2_D)*rho_tmp_2_D*u_tmp_2_D);
+          const auto& pres_tmp_2         = phi_pres_tmp_2.get_value(q);
+          const auto& E_tmp_2            = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2/rho_tmp_2
+                                         + 0.5*scalar_product(u_tmp_2, u_tmp_2);
+          const auto& E_tmp_2_D          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2_D/rho_tmp_2_D
+                                         + 0.5*scalar_product(u_tmp_2_D, u_tmp_2_D);
+          const auto& avg_enthalpy_tmp_2 = 0.5*
+                                           (((E_tmp_2 - 0.5*scalar_product(u_tmp_2,u_tmp_2))*rho_tmp_2 + pres_tmp_2)*u_tmp_2 +
+                                            ((E_tmp_2_D - 0.5*scalar_product(u_tmp_2_D,u_tmp_2_D))*rho_tmp_2_D + pres_tmp_2_D)*u_tmp_2_D);
+          const auto& lambda_tmp_2       = std::max(scalar_product(u_tmp_2, u_tmp_2) +
+                                                    std::sqrt(EquationData::Cp_Cv*pres_tmp_2/rho_tmp_2),
+                                                    scalar_product(u_tmp_2_D, u_tmp_2_D) +
+                                                    std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
+          const auto& jump_rhoE_tmp_2    = rho_tmp_2*E_tmp_2 - rho_tmp_2_D*E_tmp_2_D;
+
+          const auto& rho_curr        = phi_rho_curr.get_value(q);
+          const auto& u_fixed         = phi_u_fixed.get_value(q);
+          const auto& pres_fixed      = phi_pres_fixed.get_value(q);
+          const auto& lambda_fixed    = std::max(scalar_product(u_fixed, u_fixed) +
+                                                std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_curr),
+                                                scalar_product(u_curr_D, u_curr_D) +
+                                                std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
+          const auto& E_curr_D        = 1.0/(EquationData::Cp_Cv - 1.0)*pres_curr_D/rho_curr_D
+                                      + 0.5*rho_curr_D*scalar_product(u_curr_D, u_curr_D);
+          const auto& jump_rhok_fixed = rho_curr*0.5*scalar_product(u_fixed, u_fixed) -
+                                       rho_curr_D*E_curr_D;
+          const auto& enthalpy_fixed  = ((E_curr_D - 0.5*scalar_product(u_curr_D,u_tmp_2_D))*rho_curr_D + pres_curr_D)*u_curr_D;
+          phi.submit_value(-a31*dt*Ma*Ma*scalar_product(avg_kinetic_old, n_plus)
+                           -a31_tilde*dt*scalar_product(avg_enthalpy_old, n_plus)
+                           -a31*dt*0.5*lambda_old*jump_rhoE_old
+                           -a32*dt*Ma*Ma*scalar_product(avg_kinetic_tmp_2, n_plus)
+                           -a32_tilde*dt*scalar_product(avg_enthalpy_tmp_2, n_plus)
+                           -a32*dt*0.5*lambda_tmp_2*jump_rhoE_tmp_2
+                           -a33_tilde*dt*0.5*lambda_fixed*jump_rhok_fixed
+                           -a33_tilde*dt*0.5*scalar_product(enthalpy_fixed, n_plus), q);
+        }
+        phi.integrate_scatter(true, false, dst);
+      }
     }
   }
 
@@ -1439,19 +1759,14 @@ namespace Step35 {
                                      Vec&                                         dst,
                                      const Vec&                                   src,
                                      const std::pair<unsigned int, unsigned int>& cell_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi(data, 1);
+    FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi(data, 1);
 
-      for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-        phi.reinit(cell);
-        phi.gather_evaluate(src, true, false);
-        for(unsigned int q = 0; q < phi.n_q_points; ++q)
-          phi.submit_value(1.0/(EquationData::Cp_Cv - 1.0)*phi.get_value(q), q);
-        phi.integrate_scatter(true, false, dst);
-      }
-    }
-    else {
-      //TODO Implement this
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi.reinit(cell);
+      phi.gather_evaluate(src, true, false);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q)
+        phi.submit_value(1.0/(EquationData::Cp_Cv - 1.0)*phi.get_value(q), q);
+      phi.integrate_scatter(true, false, dst);
     }
   }
 
@@ -1466,60 +1781,57 @@ namespace Step35 {
                                      Vec&                                         dst,
                                      const Vec&                                   src,
                                      const std::pair<unsigned int, unsigned int>& face_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_p(data, true, 1),
-                                                                     phi_m(data, false, 1),
-                                                                     phi_pres_fixed_p(data, true, 1),
-                                                                     phi_pres_fixed_m(data, false, 1);
-      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_u_fixed_p(data, true, 0),
-                                                                       phi_u_fixed_m(data, false, 0);
-      FEFaceEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_for_fixed_p(data, true, 2),
-                                                                         phi_rho_for_fixed_m(data, false, 2);
+    FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_p(data, true, 1),
+                                                                   phi_m(data, false, 1),
+                                                                   phi_pres_fixed_p(data, true, 1),
+                                                                   phi_pres_fixed_m(data, false, 1);
+    FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_u_fixed_p(data, true, 0),
+                                                                     phi_u_fixed_m(data, false, 0);
+    FEFaceEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_for_fixed_p(data, true, 2),
+                                                                       phi_rho_for_fixed_m(data, false, 2);
 
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_pres_fixed_p.reinit(face);
-        phi_pres_fixed_p.gather_evaluate(pres_fixed, true, false);
-        phi_pres_fixed_m.reinit(face);
-        phi_pres_fixed_m.gather_evaluate(pres_fixed, true, false);
-        phi_rho_for_fixed_p.reinit(face);
-        phi_rho_for_fixed_p.gather_evaluate(rho_for_fixed, true, false);
-        phi_rho_for_fixed_m.reinit(face);
-        phi_rho_for_fixed_m.gather_evaluate(rho_for_fixed, true, false);
-        phi_u_fixed_p.reinit(face);
-        phi_u_fixed_p.gather_evaluate(u_fixed, true, false);
-        phi_u_fixed_m.reinit(face);
-        phi_u_fixed_m.gather_evaluate(u_fixed, true, false);
-        phi_p.reinit(face);
-        phi_p.gather_evaluate(src, true, false);
-        phi_m.reinit(face);
-        phi_m.gather_evaluate(src, true, false);
-        for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
-          const auto& u_fixed_p       = phi_u_fixed_p.get_value(q);
-          const auto& u_fixed_m       = phi_u_fixed_m.get_value(q);
-          const auto& pres_fixed_p    = phi_pres_fixed_p.get_value(q);
-          const auto& pres_fixed_m    = phi_pres_fixed_m.get_value(q);
-          const auto& rho_for_fixed_p = phi_rho_for_fixed_p.get_value(q);
-          const auto& rho_for_fixed_m = phi_rho_for_fixed_m.get_value(q);
-          const auto& lambda_fixed    = std::max(scalar_product(u_fixed_p, u_fixed_p) +
-                                                 std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_for_fixed_p),
-                                                 scalar_product(u_fixed_m, u_fixed_m) +
-                                                 std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_for_fixed_m));
-          const auto& jump_src        = phi_p.get_value(q) - phi_m.get_value(q);
+    const double coeff = (HYPERBOLIC_stage == 1) ? a22_tilde : a33_tilde;
 
-          phi_p.submit_value(a22_tilde*dt*1.0/(EquationData::Cp_Cv - 1.0)*0.5*lambda_fixed*jump_src, q);
-          phi_m.submit_value(-a22_tilde*dt*1.0/(EquationData::Cp_Cv - 1.0)*0.5*lambda_fixed*jump_src, q);
-        }
-        phi_p.integrate_scatter(true, false, dst);
-        phi_m.integrate_scatter(true, false, dst);
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      phi_pres_fixed_p.reinit(face);
+      phi_pres_fixed_p.gather_evaluate(pres_fixed, true, false);
+      phi_pres_fixed_m.reinit(face);
+      phi_pres_fixed_m.gather_evaluate(pres_fixed, true, false);
+      phi_rho_for_fixed_p.reinit(face);
+      phi_rho_for_fixed_p.gather_evaluate(rho_for_fixed, true, false);
+      phi_rho_for_fixed_m.reinit(face);
+      phi_rho_for_fixed_m.gather_evaluate(rho_for_fixed, true, false);
+      phi_u_fixed_p.reinit(face);
+      phi_u_fixed_p.gather_evaluate(u_fixed, true, false);
+      phi_u_fixed_m.reinit(face);
+      phi_u_fixed_m.gather_evaluate(u_fixed, true, false);
+      phi_p.reinit(face);
+      phi_p.gather_evaluate(src, true, false);
+      phi_m.reinit(face);
+      phi_m.gather_evaluate(src, true, false);
+      for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
+        const auto& u_fixed_p       = phi_u_fixed_p.get_value(q);
+        const auto& u_fixed_m       = phi_u_fixed_m.get_value(q);
+        const auto& pres_fixed_p    = phi_pres_fixed_p.get_value(q);
+        const auto& pres_fixed_m    = phi_pres_fixed_m.get_value(q);
+        const auto& rho_for_fixed_p = phi_rho_for_fixed_p.get_value(q);
+        const auto& rho_for_fixed_m = phi_rho_for_fixed_m.get_value(q);
+        const auto& lambda_fixed    = std::max(scalar_product(u_fixed_p, u_fixed_p) +
+                                               std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_for_fixed_p),
+                                               scalar_product(u_fixed_m, u_fixed_m) +
+                                               std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_for_fixed_m));
+        const auto& jump_src        = phi_p.get_value(q) - phi_m.get_value(q);
+
+        phi_p.submit_value(coeff*dt*1.0/(EquationData::Cp_Cv - 1.0)*0.5*lambda_fixed*jump_src, q);
+        phi_m.submit_value(-coeff*dt*1.0/(EquationData::Cp_Cv - 1.0)*0.5*lambda_fixed*jump_src, q);
       }
-    }
-    else {
-      //TODO Implement this
+      phi_p.integrate_scatter(true, false, dst);
+      phi_m.integrate_scatter(true, false, dst);
     }
   }
 
 
-  // Assemble face term for the contribution due to internal energy
+  // Assemble boundary term for the contribution due to internal energy
   //
   template<int dim, int fe_degree_rho, int fe_degree_T, int fe_degree_u,
            int n_q_points_1d_rho, int n_q_points_1d_T, int n_q_points_1d_u, typename Vec, typename Number>
@@ -1580,7 +1892,54 @@ namespace Step35 {
       }
     }
     else {
-      //TODO Implement this
+      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi(data, true, 1),
+                                                                     phi_pres_fixed(data, true, 1);
+      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_u_fixed(data, true, 0);
+      FEFaceEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_for_fixed(data, true, 2);
+
+      auto pres_boundary_curr = pres_boundary;
+      auto rho_boundary_curr  = rho_boundary;
+      auto u_boundary_curr    = u_boundary;
+      pres_boundary_curr.advance_time(dt);
+      rho_boundary_curr.advance_time(dt);
+      u_boundary_curr.advance_time(dt);
+
+      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+        phi_pres_fixed.reinit(face);
+        phi_pres_fixed.gather_evaluate(pres_fixed, true, false);
+        phi_rho_for_fixed.reinit(face);
+        phi_rho_for_fixed.gather_evaluate(rho_for_fixed, true, false);
+        phi_u_fixed.reinit(face);
+        phi_u_fixed.gather_evaluate(u_fixed, true, false);
+        phi.reinit(face);
+        phi.gather_evaluate(src, true, false);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& point_vectorized = phi.quadrature_point(q);
+          auto        rho_curr_D      = VectorizedArray<Number>();
+          auto        pres_curr_D     = VectorizedArray<Number>();
+          auto        u_curr_D        = Tensor<1, dim, VectorizedArray<Number>>();
+          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
+            Point<dim> point;
+            for(unsigned int d = 0; d < dim; ++d)
+              point[d] = point_vectorized[d][v];
+            pres_curr_D[v] = pres_boundary_curr.value(point);
+            rho_curr_D[v]  = rho_boundary_curr.value(point);
+            for(unsigned int d = 0; d < dim; ++d)
+              u_curr_D[d][v] = u_boundary_curr.value(point, d);
+          }
+
+          const auto& u_fixed       = phi_u_fixed.get_value(q);
+          const auto& pres_fixed    = phi_pres_fixed.get_value(q);
+          const auto& rho_for_fixed = phi_rho_for_fixed.get_value(q);
+          const auto& lambda_fixed  = std::max(scalar_product(u_fixed, u_fixed) +
+                                               std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_for_fixed),
+                                               scalar_product(u_curr_D, u_curr_D) +
+                                               std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
+
+          phi.submit_value(a33_tilde*dt*1.0/(EquationData::Cp_Cv - 1.0)*0.5*lambda_fixed*phi.get_value(q), q);
+        }
+        phi.integrate_scatter(true, false, dst);
+      }
     }
   }
 
@@ -1595,27 +1954,24 @@ namespace Step35 {
                               Vec&                                         dst,
                               const Vec&                                   src,
                               const std::pair<unsigned int, unsigned int>& cell_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi(data, 1),
-                                                                 phi_pres_fixed(data, 1);
-      FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_src(data, 0);
+    FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi(data, 1),
+                                                               phi_pres_fixed(data, 1);
+    FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_src(data, 0);
 
-      for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-        phi_pres_fixed.reinit(cell);
-        phi_pres_fixed.gather_evaluate(pres_fixed, true, false);
-        phi_src.reinit(cell);
-        phi_src.gather_evaluate(src, true, false);
-        phi.reinit(cell);
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          const auto& pres_fixed = phi_pres_fixed.get_value(q);
+    const double coeff = (HYPERBOLIC_stage == 1) ? a22_tilde : a33_tilde;
 
-          phi.submit_gradient(-a22_tilde*dt*EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)*pres_fixed*phi_src.get_value(q), q);
-        }
-        phi.integrate_scatter(false, true, dst);
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi_pres_fixed.reinit(cell);
+      phi_pres_fixed.gather_evaluate(pres_fixed, true, false);
+      phi_src.reinit(cell);
+      phi_src.gather_evaluate(src, true, false);
+      phi.reinit(cell);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        const auto& pres_fixed = phi_pres_fixed.get_value(q);
+
+        phi.submit_gradient(-coeff*dt*EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)*pres_fixed*phi_src.get_value(q), q);
       }
-    }
-    else {
-      //TODO Implement this
+      phi.integrate_scatter(false, true, dst);
     }
   }
 
@@ -1630,42 +1986,39 @@ namespace Step35 {
                               Vec&                                         dst,
                               const Vec&                                   src,
                               const std::pair<unsigned int, unsigned int>& face_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_p(data, true, 1),
-                                                                     phi_m(data, false, 1),
-                                                                     phi_pres_fixed_p(data, true, 1),
-                                                                     phi_pres_fixed_m(data, false, 1);
-      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_src_p(data, true, 0),
-                                                                       phi_src_m(data, false, 0);
+    FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_p(data, true, 1),
+                                                                   phi_m(data, false, 1),
+                                                                   phi_pres_fixed_p(data, true, 1),
+                                                                   phi_pres_fixed_m(data, false, 1);
+    FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_src_p(data, true, 0),
+                                                                     phi_src_m(data, false, 0);
 
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_pres_fixed_p.reinit(face);
-        phi_pres_fixed_p.gather_evaluate(pres_fixed, true, false);
-        phi_pres_fixed_m.reinit(face);
-        phi_pres_fixed_m.gather_evaluate(pres_fixed, true, false);
-        phi_src_p.reinit(face);
-        phi_src_p.gather_evaluate(src, true, false);
-        phi_src_m.reinit(face);
-        phi_src_m.gather_evaluate(src, true, false);
-        phi_p.reinit(face);
-        phi_m.reinit(face);
-        for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
-          const auto& n_plus            = phi_p.get_normal_vector(q);
+    const double coeff = (HYPERBOLIC_stage == 1) ? a22_tilde : a33_tilde;
 
-          const auto& pres_fixed_p      = phi_pres_fixed_p.get_value(q);
-          const auto& pres_fixed_m      = phi_pres_fixed_m.get_value(q);
-          const auto& avg_flux_enthalpy = 0.5*EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)*
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      phi_pres_fixed_p.reinit(face);
+      phi_pres_fixed_p.gather_evaluate(pres_fixed, true, false);
+      phi_pres_fixed_m.reinit(face);
+      phi_pres_fixed_m.gather_evaluate(pres_fixed, true, false);
+      phi_src_p.reinit(face);
+      phi_src_p.gather_evaluate(src, true, false);
+      phi_src_m.reinit(face);
+      phi_src_m.gather_evaluate(src, true, false);
+      phi_p.reinit(face);
+      phi_m.reinit(face);
+      for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
+        const auto& n_plus            = phi_p.get_normal_vector(q);
+
+        const auto& pres_fixed_p      = phi_pres_fixed_p.get_value(q);
+        const auto& pres_fixed_m      = phi_pres_fixed_m.get_value(q);
+        const auto& avg_flux_enthalpy = 0.5*EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)*
                                           (pres_fixed_p*phi_src_p.get_value(q) + pres_fixed_m*phi_src_m.get_value(q));
 
-          phi_p.submit_value(a22_tilde*dt*scalar_product(avg_flux_enthalpy, n_plus), q);
-          phi_m.submit_value(-a22_tilde*dt*scalar_product(avg_flux_enthalpy, n_plus), q);
-        }
-        phi_p.integrate_scatter(true, false, dst);
-        phi_m.integrate_scatter(true, false, dst);
+        phi_p.submit_value(coeff*dt*scalar_product(avg_flux_enthalpy, n_plus), q);
+        phi_m.submit_value(-coeff*dt*scalar_product(avg_flux_enthalpy, n_plus), q);
       }
-    }
-    else {
-      //TODO Implement this
+      phi_p.integrate_scatter(true, false, dst);
+      phi_m.integrate_scatter(true, false, dst);
     }
   }
 
@@ -1680,32 +2033,30 @@ namespace Step35 {
                                   Vec&                                         dst,
                                   const Vec&                                   src,
                                   const std::pair<unsigned int, unsigned int>& face_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi(data, true, 1),
-                                                                     phi_pres_fixed(data, true, 1);
-      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_src(data, true, 0);
+    FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi(data, true, 1),
+                                                                   phi_pres_fixed(data, true, 1);
+    FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_src(data, true, 0);
 
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_pres_fixed.reinit(face);
-        phi_pres_fixed.gather_evaluate(pres_fixed, true, false);
-        phi_src.reinit(face);
-        phi_src.gather_evaluate(src, true, false);
-        phi.reinit(face);
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          const auto& n_plus            = phi.get_normal_vector(q);
+    const double coeff = (HYPERBOLIC_stage == 1) ? a22_tilde : a33_tilde;
 
-          const auto& pres_fixed        = phi_pres_fixed.get_value(q);
-          const auto& avg_flux_enthalpy = 0.5*EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)*pres_fixed*phi_src.get_value(q);
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      phi_pres_fixed.reinit(face);
+      phi_pres_fixed.gather_evaluate(pres_fixed, true, false);
+      phi_src.reinit(face);
+      phi_src.gather_evaluate(src, true, false);
+      phi.reinit(face);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        const auto& n_plus            = phi.get_normal_vector(q);
 
-          phi.submit_value(a22_tilde*dt*scalar_product(avg_flux_enthalpy, n_plus), q);
-        }
-        phi.integrate_scatter(true, false, dst);
+        const auto& pres_fixed        = phi_pres_fixed.get_value(q);
+        const auto& avg_flux_enthalpy = 0.5*EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)*pres_fixed*phi_src.get_value(q);
+
+        phi.submit_value(coeff*dt*scalar_product(avg_flux_enthalpy, n_plus), q);
       }
-    }
-    else {
-      //TODO Implement this
+      phi.integrate_scatter(true, false, dst);
     }
   }
+
 
 
   // Assemble cell term for the pressure
@@ -1718,21 +2069,18 @@ namespace Step35 {
                               Vec&                                         dst,
                               const Vec&                                   src,
                               const std::pair<unsigned int, unsigned int>& cell_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi(data, 0);
-      FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_src(data, 1);
+    FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi(data, 0);
+    FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_src(data, 1);
 
-      for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-        phi_src.reinit(cell);
-        phi_src.gather_evaluate(src, true, false);
-        phi.reinit(cell);
-        for(unsigned int q = 0; q < phi.n_q_points; ++q)
-          phi.submit_divergence(-a22_tilde*dt/(Ma*Ma)*phi_src.get_value(q), q);
-        phi.integrate_scatter(false, true, dst);
-      }
-    }
-    else {
-      //TODO Implement this
+    const double coeff = (HYPERBOLIC_stage == 1) ? a22_tilde : a33_tilde;
+
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi_src.reinit(cell);
+      phi_src.gather_evaluate(src, true, false);
+      phi.reinit(cell);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q)
+        phi.submit_divergence(-coeff*dt/(Ma*Ma)*phi_src.get_value(q), q);
+      phi.integrate_scatter(false, true, dst);
     }
   }
 
@@ -1747,33 +2095,30 @@ namespace Step35 {
                               Vec&                                         dst,
                               const Vec&                                   src,
                               const std::pair<unsigned int, unsigned int>& face_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_p(data, true, 0),
-                                                                       phi_m(data, false, 0);
-      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_src_p(data, true, 1),
-                                                                     phi_src_m(data, false, 1);
+    FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_p(data, true, 0),
+                                                                     phi_m(data, false, 0);
+    FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_src_p(data, true, 1),
+                                                                   phi_src_m(data, false, 1);
 
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_src_p.reinit(face);
-        phi_src_p.gather_evaluate(src, true, false);
-        phi_src_m.reinit(face);
-        phi_src_m.gather_evaluate(src, true, false);
-        phi_p.reinit(face);
-        phi_m.reinit(face);
-        for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
-          const auto& n_plus     = phi_p.get_normal_vector(q);
+    const double coeff = (HYPERBOLIC_stage == 1) ? a22_tilde : a33_tilde;
 
-          const auto& avg_term   = 0.5*(phi_src_p.get_value(q) + phi_src_m.get_value(q));
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      phi_src_p.reinit(face);
+      phi_src_p.gather_evaluate(src, true, false);
+      phi_src_m.reinit(face);
+      phi_src_m.gather_evaluate(src, true, false);
+      phi_p.reinit(face);
+      phi_m.reinit(face);
+      for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
+        const auto& n_plus     = phi_p.get_normal_vector(q);
 
-          phi_p.submit_value(a22_tilde*dt/(Ma*Ma)*avg_term*n_plus, q);
-          phi_m.submit_value(-a22_tilde*dt/(Ma*Ma)*avg_term*n_plus, q);
-        }
-        phi_p.integrate_scatter(true, false, dst);
-        phi_m.integrate_scatter(true, false, dst);
+        const auto& avg_term   = 0.5*(phi_src_p.get_value(q) + phi_src_m.get_value(q));
+
+        phi_p.submit_value(coeff*dt/(Ma*Ma)*avg_term*n_plus, q);
+        phi_m.submit_value(-coeff*dt/(Ma*Ma)*avg_term*n_plus, q);
       }
-    }
-    else {
-      //TODO Implement this
+      phi_p.integrate_scatter(true, false, dst);
+      phi_m.integrate_scatter(true, false, dst);
     }
   }
 
@@ -1788,26 +2133,23 @@ namespace Step35 {
                                   Vec&                                         dst,
                                   const Vec&                                   src,
                                   const std::pair<unsigned int, unsigned int>& face_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi(data, true, 0);
-      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_src(data, true, 1);
+    FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi(data, true, 0);
+    FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_src(data, true, 1);
 
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_src.reinit(face);
-        phi_src.gather_evaluate(src, true, true);
-        phi.reinit(face);
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          const auto& n_plus   = phi.get_normal_vector(q);
+    const double coeff = (HYPERBOLIC_stage == 1) ? a22_tilde : a33_tilde;
 
-          const auto& avg_term = 0.5*phi_src.get_value(q);
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      phi_src.reinit(face);
+      phi_src.gather_evaluate(src, true, true);
+      phi.reinit(face);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+        const auto& n_plus   = phi.get_normal_vector(q);
 
-          phi.submit_value(a22_tilde*dt/(Ma*Ma)*avg_term*n_plus, q);
-        }
-        phi.integrate_scatter(true, false, dst);
+        const auto& avg_term = 0.5*phi_src.get_value(q);
+
+        phi.submit_value(coeff*dt/(Ma*Ma)*avg_term*n_plus, q);
       }
-    }
-    else {
-      //TODO Implement this
+      phi.integrate_scatter(true, false, dst);
     }
   }
 
@@ -1857,7 +2199,52 @@ namespace Step35 {
       }
     }
     else {
-      //TODO Implement this
+      FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi(data, 0),
+                                                                   phi_u_old(data, 0),
+                                                                   phi_u_tmp_2(data, 0);
+      FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_pres_old(data, 1),
+                                                                 phi_pres_tmp_2(data, 1);
+      FEEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_old(data, 2),
+                                                                     phi_rho_tmp_2(data, 2);
+      for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+        phi_rho_old.reinit(cell);
+        phi_rho_old.gather_evaluate(src[0], true, true);
+        phi_u_old.reinit(cell);
+        phi_u_old.gather_evaluate(src[1], true, true);
+        phi_pres_old.reinit(cell);
+        phi_pres_old.gather_evaluate(src[2], true, false);
+        phi_rho_tmp_2.reinit(cell);
+        phi_rho_tmp_2.gather_evaluate(src[3], true, true);
+        phi_u_tmp_2.reinit(cell);
+        phi_u_tmp_2.gather_evaluate(src[4], true, true);
+        phi_pres_tmp_2.reinit(cell);
+        phi_pres_tmp_2.gather_evaluate(src[5], true, false);
+        phi.reinit(cell);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& rho_old            = phi_rho_old.get_value(q);
+          const auto& u_old              = phi_u_old.get_value(q);
+          const auto& pres_old           = phi_pres_old.get_value(q);
+          const auto& tensor_product_u_n = outer_product(u_old, u_old);
+          auto p_n_times_identity        = tensor_product_u_n;
+          p_n_times_identity = 0;
+          for(unsigned int d = 0; d < dim; ++d)
+            p_n_times_identity[d][d] = pres_old;
+
+          const auto& rho_tmp_2              = phi_rho_tmp_2.get_value(q);
+          const auto& u_tmp_2                = phi_u_tmp_2.get_value(q);
+          const auto& pres_tmp_2             = phi_pres_tmp_2.get_value(q);
+          const auto& tensor_product_u_tmp_2 = outer_product(u_tmp_2, u_tmp_2);
+          auto p_tmp_2_times_identity        = tensor_product_u_tmp_2;
+          p_tmp_2_times_identity = 0;
+          for(unsigned int d = 0; d < dim; ++d)
+            p_tmp_2_times_identity[d][d] = pres_tmp_2;
+
+          phi.submit_value(rho_old*u_old - 0.0*a31*dt/(Fr*Fr)*rho_old*e_k - 0.0*a32*dt/(Fr*Fr)*rho_tmp_2*e_k, q);
+          phi.submit_gradient(a31*dt*rho_old*tensor_product_u_n + a31_tilde*dt/(Ma*Ma)*p_n_times_identity +
+                              a32*dt*rho_tmp_2*tensor_product_u_tmp_2 + a32_tilde*dt/(Ma*Ma)*p_tmp_2_times_identity, q);
+        }
+        phi.integrate_scatter(true, true, dst);
+      }
     }
   }
 
@@ -1926,7 +2313,96 @@ namespace Step35 {
       }
     }
     else {
-      //TODO Implement this
+      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_p(data, true, 0),
+                                                                       phi_m(data, false, 0),
+                                                                       phi_u_old_p(data, true, 0),
+                                                                       phi_u_old_m(data, false, 0),
+                                                                       phi_u_tmp_2_p(data, true, 0),
+                                                                       phi_u_tmp_2_m(data, false, 0);
+      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_pres_old_p(data, true, 1),
+                                                                     phi_pres_old_m(data, false, 1),
+                                                                     phi_pres_tmp_2_p(data, true, 1),
+                                                                     phi_pres_tmp_2_m(data, false, 1);
+      FEFaceEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_old_p(data, true, 2),
+                                                                         phi_rho_old_m(data, false, 2),
+                                                                         phi_rho_tmp_2_p(data, true, 2),
+                                                                         phi_rho_tmp_2_m(data, false, 2);
+      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+        phi_rho_old_p.reinit(face);
+        phi_rho_old_p.gather_evaluate(src[0], true, false);
+        phi_rho_old_m.reinit(face);
+        phi_rho_old_m.gather_evaluate(src[0], true, false);
+        phi_u_old_p.reinit(face);
+        phi_u_old_p.gather_evaluate(src[1], true, false);
+        phi_u_old_m.reinit(face);
+        phi_u_old_m.gather_evaluate(src[1], true, false);
+        phi_pres_old_p.reinit(face);
+        phi_pres_old_p.gather_evaluate(src[2], true, false);
+        phi_pres_old_m.reinit(face);
+        phi_pres_old_m.gather_evaluate(src[2], true, false);
+        phi_rho_tmp_2_p.reinit(face);
+        phi_rho_tmp_2_p.gather_evaluate(src[3], true, false);
+        phi_rho_tmp_2_m.reinit(face);
+        phi_rho_tmp_2_m.gather_evaluate(src[3], true, false);
+        phi_u_tmp_2_p.reinit(face);
+        phi_u_tmp_2_p.gather_evaluate(src[4], true, false);
+        phi_u_tmp_2_m.reinit(face);
+        phi_u_tmp_2_m.gather_evaluate(src[4], true, false);
+        phi_pres_tmp_2_p.reinit(face);
+        phi_pres_tmp_2_p.gather_evaluate(src[5], true, false);
+        phi_pres_tmp_2_m.reinit(face);
+        phi_pres_tmp_2_m.gather_evaluate(src[5], true, false);
+        phi_p.reinit(face);
+        phi_m.reinit(face);
+        for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
+          const auto& n_plus                 = phi_p.get_normal_vector(q);
+
+          const auto& rho_old_p              = phi_rho_old_p.get_value(q);
+          const auto& rho_old_m              = phi_rho_old_m.get_value(q);
+          const auto& u_old_p                = phi_u_old_p.get_value(q);
+          const auto& u_old_m                = phi_u_old_m.get_value(q);
+          const auto& pres_old_p             = phi_pres_old_p.get_value(q);
+          const auto& pres_old_m             = phi_pres_old_m.get_value(q);
+          const auto& avg_tensor_product_u_n = 0.5*(outer_product(rho_old_p*u_old_p, u_old_p) +
+                                                    outer_product(rho_old_m*u_old_m, u_old_m));
+          const auto& avg_pres_old           = 0.5*(pres_old_p + pres_old_m);
+          const auto& jump_rhou_old          = rho_old_p*u_old_p - rho_old_m*u_old_m;
+          const auto& lambda_old             = std::max(scalar_product(u_old_p, u_old_p) +
+                                                        std::sqrt(EquationData::Cp_Cv*pres_old_p/rho_old_p),
+                                                        scalar_product(u_old_m, u_old_m) +
+                                                        std::sqrt(EquationData::Cp_Cv*pres_old_m/rho_old_m));
+
+          const auto& rho_tmp_2_p                = phi_rho_tmp_2_p.get_value(q);
+          const auto& rho_tmp_2_m                = phi_rho_tmp_2_m.get_value(q);
+          const auto& u_tmp_2_p                  = phi_u_tmp_2_p.get_value(q);
+          const auto& u_tmp_2_m                  = phi_u_tmp_2_m.get_value(q);
+          const auto& pres_tmp_2_p               = phi_pres_tmp_2_p.get_value(q);
+          const auto& pres_tmp_2_m               = phi_pres_tmp_2_m.get_value(q);
+          const auto& avg_tensor_product_u_tmp_2 = 0.5*(outer_product(rho_tmp_2_p*u_tmp_2_p, u_tmp_2_p) +
+                                                        outer_product(rho_tmp_2_m*u_tmp_2_m, u_tmp_2_m));
+          const auto& avg_pres_tmp_2             = 0.5*(pres_tmp_2_p + pres_tmp_2_m);
+          const auto& jump_rhou_tmp_2            = rho_tmp_2_p*u_tmp_2_p - rho_tmp_2_m*u_tmp_2_m;
+          const auto& lambda_tmp_2               = std::max(scalar_product(u_tmp_2_p, u_tmp_2_p) +
+                                                            std::sqrt(EquationData::Cp_Cv*pres_tmp_2_p/rho_tmp_2_p),
+                                                            scalar_product(u_tmp_2_m, u_tmp_2_m) +
+                                                            std::sqrt(EquationData::Cp_Cv*pres_tmp_2_m/rho_tmp_2_m));
+
+          phi_p.submit_value(-a31*dt*avg_tensor_product_u_n*n_plus
+                             -a31_tilde*dt/(Ma*Ma)*avg_pres_old*n_plus
+                             -a31*dt*0.5*lambda_old*jump_rhou_old
+                             -a32*dt*avg_tensor_product_u_tmp_2*n_plus
+                             -a32_tilde*dt/(Ma*Ma)*avg_pres_tmp_2*n_plus
+                             -a32*dt*0.5*lambda_tmp_2*jump_rhou_tmp_2, q);
+          phi_m.submit_value(a31*dt*avg_tensor_product_u_n*n_plus +
+                             a31_tilde*dt/(Ma*Ma)*avg_pres_old*n_plus +
+                             a31*dt*0.5*lambda_old*jump_rhou_old +
+                             a32*dt*avg_tensor_product_u_tmp_2*n_plus +
+                             a32_tilde*dt/(Ma*Ma)*avg_pres_tmp_2*n_plus +
+                             a32*dt*0.5*lambda_tmp_2*jump_rhou_tmp_2, q);
+        }
+        phi_p.integrate_scatter(true, false, dst);
+        phi_m.integrate_scatter(true, false, dst);
+      }
     }
   }
 
@@ -2025,7 +2501,123 @@ namespace Step35 {
       }
     }
     else {
-      //TODO Implement this
+      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi(data, true, 0),
+                                                                       phi_u_old(data, true, 0),
+                                                                       phi_u_tmp_2(data, true, 0),
+                                                                       phi_u_fixed(data, true, 0);
+      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_pres_old(data, true, 1),
+                                                                     phi_pres_tmp_2(data, true, 1),
+                                                                     phi_pres_fixed(data, true, 1);
+      FEFaceEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_old(data, true, 2),
+                                                                         phi_rho_tmp_2(data, true, 2),
+                                                                         phi_rho_curr(data, true, 2);
+
+      auto pres_boundary_tmp_2 = pres_boundary;
+      auto rho_boundary_tmp_2  = rho_boundary;
+      auto u_boundary_tmp_2    = u_boundary;
+      pres_boundary_tmp_2.advance_time(gamma*dt);
+      rho_boundary_tmp_2.advance_time(gamma*dt);
+      u_boundary_tmp_2.advance_time(gamma*dt);
+      auto pres_boundary_curr = pres_boundary;
+      auto rho_boundary_curr  = rho_boundary;
+      auto u_boundary_curr    = u_boundary;
+      pres_boundary_curr.advance_time(dt);
+      rho_boundary_curr.advance_time(dt);
+      u_boundary_curr.advance_time(dt);
+
+      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+        phi_rho_old.reinit(face);
+        phi_rho_old.gather_evaluate(src[0], true, false);
+        phi_u_old.reinit(face);
+        phi_u_old.gather_evaluate(src[1], true, false);
+        phi_pres_old.reinit(face);
+        phi_pres_old.gather_evaluate(src[2], true, false);
+        phi_rho_tmp_2.reinit(face);
+        phi_rho_tmp_2.gather_evaluate(src[3], true, false);
+        phi_u_tmp_2.reinit(face);
+        phi_u_tmp_2.gather_evaluate(src[4], true, false);
+        phi_pres_tmp_2.reinit(face);
+        phi_pres_tmp_2.gather_evaluate(src[5], true, false);
+        phi_rho_curr.reinit(face);
+        phi_rho_curr.gather_evaluate(src[6], true, false);
+        phi_u_fixed.reinit(face);
+        phi_u_fixed.gather_evaluate(src[7], true, false);
+        phi_pres_fixed.reinit(face);
+        phi_pres_fixed.gather_evaluate(src[8], true, false);
+        phi.reinit(face);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& n_plus           = phi.get_normal_vector(q);
+
+          const auto& point_vectorized = phi.quadrature_point(q);
+          auto        rho_old_D        = VectorizedArray<Number>();
+          auto        pres_old_D       = VectorizedArray<Number>();
+          auto        u_old_D          = Tensor<1, dim, VectorizedArray<Number>>();
+          auto        rho_tmp_2_D      = VectorizedArray<Number>();
+          auto        pres_tmp_2_D     = VectorizedArray<Number>();
+          auto        u_tmp_2_D        = Tensor<1, dim, VectorizedArray<Number>>();
+          auto        rho_curr_D       = VectorizedArray<Number>();
+          auto        pres_curr_D      = VectorizedArray<Number>();
+          auto        u_curr_D         = Tensor<1, dim, VectorizedArray<Number>>();
+          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
+            Point<dim> point;
+            for(unsigned int d = 0; d < dim; ++d)
+              point[d] = point_vectorized[d][v];
+            pres_old_D[v]   = pres_boundary.value(point);
+            pres_tmp_2_D[v] = pres_boundary_tmp_2.value(point);
+            pres_curr_D[v]  = pres_boundary_curr.value(point);
+            rho_old_D[v]    = rho_boundary.value(point);
+            rho_tmp_2_D[v]  = rho_boundary_tmp_2.value(point);
+            rho_curr_D[v]   = rho_boundary_curr.value(point);
+            for(unsigned int d = 0; d < dim; ++d) {
+              u_old_D[d][v]   = u_boundary.value(point, d);
+              u_tmp_2_D[d][v] = u_boundary_tmp_2.value(point, d);
+              u_curr_D[d][v]  = u_boundary_curr.value(point, d);
+            }
+          }
+
+          const auto& rho_old                = phi_rho_old.get_value(q);
+          const auto& u_old                  = phi_u_old.get_value(q);
+          const auto& pres_old               = phi_pres_old.get_value(q);
+          const auto& avg_tensor_product_u_n = 0.5*(outer_product(rho_old*u_old, u_old) +
+                                                    outer_product(rho_old_D*u_old_D, u_old_D));
+          const auto& avg_pres_old           = 0.5*(pres_old + pres_old_D);
+          const auto& jump_rhou_old          = rho_old*u_old - rho_old_D*u_old_D;
+          const auto& lambda_old             = std::max(scalar_product(u_old, u_old) +
+                                                        std::sqrt(EquationData::Cp_Cv*pres_old/rho_old),
+                                                        scalar_product(u_old_D, u_old_D) +
+                                                        std::sqrt(EquationData::Cp_Cv*pres_old_D/rho_old_D));
+
+          const auto& rho_tmp_2                  = phi_rho_tmp_2.get_value(q);
+          const auto& u_tmp_2                    = phi_u_tmp_2.get_value(q);
+          const auto& pres_tmp_2                 = phi_pres_tmp_2.get_value(q);
+          const auto& avg_tensor_product_u_tmp_2 = 0.5*(outer_product(rho_tmp_2*u_tmp_2, u_tmp_2) +
+                                                        outer_product(rho_tmp_2_D*u_tmp_2_D, u_tmp_2_D));
+          const auto& avg_pres_tmp_2             = 0.5*(pres_tmp_2 + pres_tmp_2_D);
+          const auto& jump_rhou_tmp_2            = rho_tmp_2*u_tmp_2 - rho_tmp_2_D*u_tmp_2_D;
+          const auto& lambda_tmp_2               = std::max(scalar_product(u_tmp_2, u_tmp_2) +
+                                                            std::sqrt(EquationData::Cp_Cv*pres_tmp_2/rho_tmp_2),
+                                                            scalar_product(u_tmp_2_D, u_tmp_2_D) +
+                                                            std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
+
+          const auto& rho_curr     = phi_rho_curr.get_value(q);
+          const auto& u_fixed      = phi_u_fixed.get_value(q);
+          const auto& pres_fixed   = phi_pres_fixed.get_value(q);
+          const auto& lambda_fixed = std::max(scalar_product(u_fixed, u_fixed) +
+                                              std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_curr),
+                                              scalar_product(u_curr_D, u_curr_D) +
+                                              std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
+
+          phi.submit_value(-a31*dt*avg_tensor_product_u_n*n_plus
+                           -a31_tilde*dt/(Ma*Ma)*avg_pres_old*n_plus
+                           -a31*dt*0.5*lambda_old*jump_rhou_old
+                           -a32*dt*avg_tensor_product_u_tmp_2*n_plus
+                           -a32_tilde*dt/(Ma*Ma)*avg_pres_tmp_2*n_plus
+                           -a32*dt*0.5*lambda_tmp_2*jump_rhou_tmp_2
+                           -a33_tilde*dt/(Ma*Ma)*0.5*pres_curr_D*n_plus
+                           +a33_tilde*dt*0.5*lambda_fixed*rho_curr_D*u_curr_D, q);
+        }
+        phi.integrate_scatter(true, false, dst);
+      }
     }
   }
 
@@ -2058,22 +2650,17 @@ namespace Step35 {
                                      Vec&                                         dst,
                                      const Vec&                                   src,
                                      const std::pair<unsigned int, unsigned int>& cell_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi(data, 0);
-      FEEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_for_fixed(data, 2);
+    FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi(data, 0);
+    FEEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_for_fixed(data, 2);
 
-      for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
-        phi_rho_for_fixed.reinit(cell);
-        phi_rho_for_fixed.gather_evaluate(rho_for_fixed, true, false);
-        phi.reinit(cell);
-        phi.gather_evaluate(src, true, false);
-        for(unsigned int q = 0; q < phi.n_q_points; ++q)
-          phi.submit_value(phi_rho_for_fixed.get_value(q)*phi.get_value(q), q);
-        phi.integrate_scatter(true, false, dst);
-      }
-    }
-    else {
-      //TODO Implement this
+    for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+      phi_rho_for_fixed.reinit(cell);
+      phi_rho_for_fixed.gather_evaluate(rho_for_fixed, true, false);
+      phi.reinit(cell);
+      phi.gather_evaluate(src, true, false);
+      for(unsigned int q = 0; q < phi.n_q_points; ++q)
+        phi.submit_value(phi_rho_for_fixed.get_value(q)*phi.get_value(q), q);
+      phi.integrate_scatter(true, false, dst);
     }
   }
 
@@ -2088,61 +2675,58 @@ namespace Step35 {
                                      Vec&                                         dst,
                                      const Vec&                                   src,
                                      const std::pair<unsigned int, unsigned int>& face_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_p(data, true, 0),
-                                                                       phi_m(data, false, 0),
-                                                                       phi_u_fixed_p(data, true, 0),
-                                                                       phi_u_fixed_m(data, false, 0);
-      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_pres_fixed_p(data, true, 1),
-                                                                     phi_pres_fixed_m(data, false, 1);
-      FEFaceEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_for_fixed_p(data, true, 2),
-                                                                         phi_rho_for_fixed_m(data, false, 2);
+    FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_p(data, true, 0),
+                                                                     phi_m(data, false, 0),
+                                                                     phi_u_fixed_p(data, true, 0),
+                                                                     phi_u_fixed_m(data, false, 0);
+    FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_pres_fixed_p(data, true, 1),
+                                                                   phi_pres_fixed_m(data, false, 1);
+    FEFaceEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_for_fixed_p(data, true, 2),
+                                                                       phi_rho_for_fixed_m(data, false, 2);
 
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_u_fixed_p.reinit(face);
-        phi_u_fixed_p.gather_evaluate(u_fixed, true, false);
-        phi_u_fixed_m.reinit(face);
-        phi_u_fixed_m.gather_evaluate(u_fixed, true, false);
-        phi_rho_for_fixed_p.reinit(face);
-        phi_rho_for_fixed_p.gather_evaluate(rho_for_fixed, true, false);
-        phi_rho_for_fixed_m.reinit(face);
-        phi_rho_for_fixed_m.gather_evaluate(rho_for_fixed, true, false);
-        phi_pres_fixed_p.reinit(face);
-        phi_pres_fixed_p.gather_evaluate(pres_fixed, true, false);
-        phi_pres_fixed_m.reinit(face);
-        phi_pres_fixed_m.gather_evaluate(pres_fixed, true, false);
-        phi_p.reinit(face);
-        phi_p.gather_evaluate(src, true, false);
-        phi_m.reinit(face);
-        phi_m.gather_evaluate(src, true, false);
-        for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
-          const auto& u_fixed_p       = phi_u_fixed_p.get_value(q);
-          const auto& u_fixed_m       = phi_u_fixed_m.get_value(q);
-          const auto& pres_fixed_p    = phi_pres_fixed_p.get_value(q);
-          const auto& pres_fixed_m    = phi_pres_fixed_m.get_value(q);
-          const auto& rho_for_fixed_p = phi_rho_for_fixed_p.get_value(q);
-          const auto& rho_for_fixed_m = phi_rho_for_fixed_m.get_value(q);
-          const auto& lambda_fixed    = std::max(scalar_product(u_fixed_p, u_fixed_p) +
-                                                 std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_for_fixed_p),
-                                                 scalar_product(u_fixed_m, u_fixed_m) +
-                                                 std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_for_fixed_m));
-          const auto& jump_term       = (rho_for_fixed_p*phi_p.get_value(q) -
-                                         rho_for_fixed_m*phi_m.get_value(q));
+    const double coeff = (HYPERBOLIC_stage == 1) ? a22_tilde : a33_tilde;
 
-          phi_p.submit_value(a22_tilde*dt*0.5*lambda_fixed*jump_term, q);
-          phi_m.submit_value(-a22_tilde*dt*0.5*lambda_fixed*jump_term, q);
-        }
-        phi_p.integrate_scatter(true, false, dst);
-        phi_m.integrate_scatter(true, false, dst);
+    for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+      phi_u_fixed_p.reinit(face);
+      phi_u_fixed_p.gather_evaluate(u_fixed, true, false);
+      phi_u_fixed_m.reinit(face);
+      phi_u_fixed_m.gather_evaluate(u_fixed, true, false);
+      phi_rho_for_fixed_p.reinit(face);
+      phi_rho_for_fixed_p.gather_evaluate(rho_for_fixed, true, false);
+      phi_rho_for_fixed_m.reinit(face);
+      phi_rho_for_fixed_m.gather_evaluate(rho_for_fixed, true, false);
+      phi_pres_fixed_p.reinit(face);
+      phi_pres_fixed_p.gather_evaluate(pres_fixed, true, false);
+      phi_pres_fixed_m.reinit(face);
+      phi_pres_fixed_m.gather_evaluate(pres_fixed, true, false);
+      phi_p.reinit(face);
+      phi_p.gather_evaluate(src, true, false);
+      phi_m.reinit(face);
+      phi_m.gather_evaluate(src, true, false);
+      for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
+        const auto& u_fixed_p       = phi_u_fixed_p.get_value(q);
+        const auto& u_fixed_m       = phi_u_fixed_m.get_value(q);
+        const auto& pres_fixed_p    = phi_pres_fixed_p.get_value(q);
+        const auto& pres_fixed_m    = phi_pres_fixed_m.get_value(q);
+        const auto& rho_for_fixed_p = phi_rho_for_fixed_p.get_value(q);
+        const auto& rho_for_fixed_m = phi_rho_for_fixed_m.get_value(q);
+        const auto& lambda_fixed    = std::max(scalar_product(u_fixed_p, u_fixed_p) +
+                                               std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_for_fixed_p),
+                                               scalar_product(u_fixed_m, u_fixed_m) +
+                                               std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_for_fixed_m));
+        const auto& jump_term       = (rho_for_fixed_p*phi_p.get_value(q) -
+                                       rho_for_fixed_m*phi_m.get_value(q));
+
+        phi_p.submit_value(coeff*dt*0.5*lambda_fixed*jump_term, q);
+        phi_m.submit_value(-coeff*dt*0.5*lambda_fixed*jump_term, q);
       }
-    }
-    else {
-      //TODO Implement this
+      phi_p.integrate_scatter(true, false, dst);
+      phi_m.integrate_scatter(true, false, dst);
     }
   }
 
 
-  // Assemble face term for the velocity update
+  // Assemble boundary term for the velocity update
   //
   template<int dim, int fe_degree_rho, int fe_degree_T, int fe_degree_u,
            int n_q_points_1d_rho, int n_q_points_1d_T, int n_q_points_1d_u, typename Vec, typename Number>
@@ -2203,7 +2787,54 @@ namespace Step35 {
       }
     }
     else {
-      //TODO Implement this
+      FEFaceEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi(data, true, 0),
+                                                                       phi_u_fixed(data, true, 0);
+      FEFaceEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_pres_fixed(data, true, 1);
+      FEFaceEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_for_fixed(data, true, 2);
+
+      auto pres_boundary_curr = pres_boundary;
+      auto rho_boundary_curr  = rho_boundary;
+      auto u_boundary_curr    = u_boundary;
+      pres_boundary_curr.advance_time(dt);
+      rho_boundary_curr.advance_time(dt);
+      u_boundary_curr.advance_time(dt);
+
+      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
+        phi_u_fixed.reinit(face);
+        phi_u_fixed.gather_evaluate(u_fixed, true, false);
+        phi_rho_for_fixed.reinit(face);
+        phi_rho_for_fixed.gather_evaluate(rho_for_fixed, true, false);
+        phi_pres_fixed.reinit(face);
+        phi_pres_fixed.gather_evaluate(pres_fixed, true, false);
+        phi.reinit(face);
+        phi.gather_evaluate(src, true, false);
+        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
+          const auto& point_vectorized = phi.quadrature_point(q);
+          auto        rho_curr_D      = VectorizedArray<Number>();
+          auto        pres_curr_D     = VectorizedArray<Number>();
+          auto        u_curr_D        = Tensor<1, dim, VectorizedArray<Number>>();
+          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
+            Point<dim> point;
+            for(unsigned int d = 0; d < dim; ++d)
+              point[d] = point_vectorized[d][v];
+            pres_curr_D[v] = pres_boundary_curr.value(point);
+            rho_curr_D[v]  = rho_boundary_curr.value(point);
+            for(unsigned int d = 0; d < dim; ++d)
+              u_curr_D[d][v] = u_boundary_curr.value(point, d);
+          }
+
+          const auto& u_fixed       = phi_u_fixed.get_value(q);
+          const auto& pres_fixed    = phi_pres_fixed.get_value(q);
+          const auto& rho_for_fixed = phi_rho_for_fixed.get_value(q);
+          const auto& lambda_fixed  = std::max(scalar_product(u_fixed, u_fixed) +
+                                               std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_for_fixed),
+                                               scalar_product(u_curr_D, u_curr_D) +
+                                               std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
+
+          phi.submit_value(a33_tilde*dt*0.5*lambda_fixed*rho_for_fixed*phi.get_value(q), q);
+        }
+        phi.integrate_scatter(true, false, dst);
+      }
     }
   }
 
@@ -2298,6 +2929,53 @@ namespace Step35 {
   }
 
 
+  // Compute max celerity
+  //
+  template<int dim, int fe_degree_rho, int fe_degree_T, int fe_degree_u,
+           int n_q_points_1d_rho, int n_q_points_1d_T, int n_q_points_1d_u, typename Vec, typename Number>
+  Number HYPERBOLICOperator<dim, fe_degree_rho, fe_degree_T, fe_degree_u,
+                            n_q_points_1d_rho, n_q_points_1d_T, n_q_points_1d_u, Vec, Number>::
+  compute_max_celerity(const std::vector<Vec>& src) const {
+    for(unsigned int d = 0; d < src.size(); ++d)
+      src[d].update_ghost_values();
+
+    FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_u(*(this->data), 0);
+    FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_pres(*(this->data), 1);
+    FEEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho(*(this->data), 2);
+
+    Number max_celerity = 0.0;
+
+    for(unsigned int cell = 0; cell < this->data->n_cell_batches(); ++cell) {
+      phi_rho.reinit(cell);
+      phi_rho.gather_evaluate(src[0], true, false);
+      phi_u.reinit(cell);
+      phi_u.gather_evaluate(src[1], true, false);
+      phi_pres.reinit(cell);
+      phi_pres.gather_evaluate(src[2], true, false);
+
+      VectorizedArray<Number> local_max = 0.;
+
+      for(unsigned int q = 0; q < phi_u.n_q_points; ++q) {
+        const auto& rho  = phi_rho.get_value(q);
+        const auto& u    = phi_u.get_value(q);
+        const auto& pres = phi_pres.get_value(q);
+
+        VectorizedArray<Number> convective_speed = 0.;
+        for(unsigned int d = 0; d < dim; ++d)
+          convective_speed = std::max(convective_speed, std::abs(u[d]));
+        const auto& speed_of_sound = std::sqrt(EquationData::Cp_Cv*pres/rho);
+
+        local_max = std::max(local_max, convective_speed + speed_of_sound);
+      }
+      for(unsigned int v = 0; v < this->data->n_active_entries_per_cell_batch(cell); ++v)
+        max_celerity = std::max(max_celerity, local_max[v]);
+    }
+
+    max_celerity = Utilities::MPI::max(max_celerity, MPI_COMM_WORLD);
+
+    return max_celerity;
+  }
+
   // @sect3{The <code>NavierStokesProjection</code> class}
 
   // Now for the main class of the program. It implements the various versions
@@ -2379,7 +3057,6 @@ namespace Step35 {
     EquationData::Density<dim>  rho_exact;
     EquationData::Velocity<dim> u_exact;
     EquationData::Pressure<dim> pres_exact;
-    EquationData::Energy<dim>   E_exact;
 
     std::shared_ptr<MatrixFree<dim, double>> matrix_free_storage;
 
@@ -2467,7 +3144,6 @@ namespace Step35 {
     rho_exact(data.initial_time),
     u_exact(data.initial_time),
     pres_exact(data.initial_time),
-    E_exact(data.initial_time),
     navier_stokes_matrix(data),
     vel_max_its(data.vel_max_iterations),
     vel_Krylov_size(data.vel_Krylov_size),
@@ -2687,31 +3363,40 @@ namespace Step35 {
     navier_stokes_matrix.set_pres_fixed(pres_fixed_old);
     navier_stokes_matrix.set_u_fixed(u_fixed);
     if(HYPERBOLIC_stage == 1) {
-      navier_stokes_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
-                                                             rho_tmp_2, u_fixed, pres_fixed_old});
-
-      SolverControl solver_control(vel_max_its, 1e-12*rhs_u.l2_norm());
-      SolverGMRES<LinearAlgebra::distributed::Vector<double>> gmres(solver_control);
-      const std::vector<unsigned int> tmp_reinit = {0};
-      navier_stokes_matrix.initialize(matrix_free_storage, tmp_reinit, tmp_reinit);
-      LinearAlgebra::distributed::Vector<double> tmp_1;
-      matrix_free_storage->initialize_dof_vector(tmp_1, 0);
-      tmp_1 = 0;
-      navier_stokes_matrix.set_NS_stage(3);
-      gmres.solve(navier_stokes_matrix, tmp_1, rhs_u, PreconditionIdentity());
-
-      LinearAlgebra::distributed::Vector<double> tmp_2;
-      matrix_free_storage->initialize_dof_vector(tmp_2, 1);
-      navier_stokes_matrix.vmult_enthalpy(tmp_2, tmp_1);
-
       navier_stokes_matrix.vmult_rhs_pressure(rhs_pres, {rho_old, u_old, pres_old,
                                                          rho_tmp_2, u_fixed, pres_fixed_old});
 
-      rhs_pres.add(-1.0, tmp_2);
-
-      navier_stokes_matrix.set_NS_stage(2);
-      navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
+      navier_stokes_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
+                                                             rho_tmp_2, u_fixed, pres_fixed_old});
     }
+    else {
+      navier_stokes_matrix.vmult_rhs_pressure(rhs_pres, {rho_old, u_old, pres_old,
+                                                         rho_tmp_2, u_tmp_2, pres_tmp_2,
+                                                         rho_curr, u_fixed, pres_fixed_old});
+
+      navier_stokes_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
+                                                             rho_tmp_2, u_tmp_2, pres_tmp_2,
+                                                             rho_curr, u_fixed, pres_fixed_old});
+    }
+
+    SolverControl solver_control_schur(vel_max_its, 1e-12*rhs_u.l2_norm());
+    SolverGMRES<LinearAlgebra::distributed::Vector<double>> gmres_schur(solver_control_schur);
+    const std::vector<unsigned int> tmp_reinit = {0};
+    navier_stokes_matrix.initialize(matrix_free_storage, tmp_reinit, tmp_reinit);
+    LinearAlgebra::distributed::Vector<double> tmp_1;
+    matrix_free_storage->initialize_dof_vector(tmp_1, 0);
+    tmp_1 = 0;
+    navier_stokes_matrix.set_NS_stage(3);
+    gmres_schur.solve(navier_stokes_matrix, tmp_1, rhs_u, PreconditionIdentity());
+
+    LinearAlgebra::distributed::Vector<double> tmp_2;
+    matrix_free_storage->initialize_dof_vector(tmp_2, 1);
+    navier_stokes_matrix.vmult_enthalpy(tmp_2, tmp_1);
+
+    rhs_pres.add(-1.0, tmp_2);
+
+    navier_stokes_matrix.set_NS_stage(2);
+    navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_pres.l2_norm());
     SolverGMRES<LinearAlgebra::distributed::Vector<double>> gmres(solver_control);
@@ -2735,8 +3420,15 @@ namespace Step35 {
     navier_stokes_matrix.set_NS_stage(3);
 
     if(HYPERBOLIC_stage == 1) {
-      /*navier_stokes_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
-                                                             rho_tmp_2, u_fixed, pres_fixed_old});*/
+      LinearAlgebra::distributed::Vector<double> tmp_1;
+      matrix_free_storage->initialize_dof_vector(tmp_1, 0);
+      navier_stokes_matrix.vmult_pressure(tmp_1, pres_fixed);
+      rhs_u.add(-1.0, tmp_1);
+    }
+    else {
+      navier_stokes_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
+                                                             rho_tmp_2, u_tmp_2, pres_tmp_2,
+                                                             rho_curr, u_fixed, pres_fixed_old});
 
       LinearAlgebra::distributed::Vector<double> tmp_1;
       matrix_free_storage->initialize_dof_vector(tmp_1, 0);
@@ -2808,36 +3500,36 @@ namespace Step35 {
   void NavierStokesProjection<dim>::analyze_results() {
     TimerOutput::Scope t(time_table, "Analysis results: computing errrors");
 
-    u_curr = 0;
+    u_tmp_2 = 0;
 
-    VectorTools::integrate_difference(dof_handler_velocity, u_tmp_2, u_exact,
+    VectorTools::integrate_difference(dof_handler_velocity, u_old, u_exact,
                                       L2_error_per_cell_vel, quadrature_velocity, VectorTools::L2_norm);
     const double error_vel_L2 = VectorTools::compute_global_error(triangulation, L2_error_per_cell_vel, VectorTools::L2_norm);
-    VectorTools::integrate_difference(dof_handler_velocity, u_curr, u_exact,
+    VectorTools::integrate_difference(dof_handler_velocity, u_tmp_2, u_exact,
                                       L2_rel_error_per_cell_vel, quadrature_velocity, VectorTools::L2_norm);
     const double L2_vel = VectorTools::compute_global_error(triangulation, L2_rel_error_per_cell_vel, VectorTools::L2_norm);
     const double error_rel_vel_L2 = error_vel_L2/L2_vel;
     pcout << "Verification via L2 error velocity:    "<< error_vel_L2 << std::endl;
     pcout << "Verification via L2 relative error velocity:    "<< error_rel_vel_L2 << std::endl;
 
-    rho_curr = 0;
+    rho_tmp_2 = 0;
 
-    VectorTools::integrate_difference(dof_handler_density, rho_tmp_2, rho_exact,
+    VectorTools::integrate_difference(dof_handler_density, rho_old, rho_exact,
                                       L2_error_per_cell_rho, quadrature_density, VectorTools::L2_norm);
     const double error_rho_L2 = VectorTools::compute_global_error(triangulation, L2_error_per_cell_rho, VectorTools::L2_norm);
-    VectorTools::integrate_difference(dof_handler_density, rho_curr, rho_exact,
+    VectorTools::integrate_difference(dof_handler_density, rho_tmp_2, rho_exact,
                                       L2_rel_error_per_cell_rho, quadrature_density, VectorTools::L2_norm);
     const double L2_rho = VectorTools::compute_global_error(triangulation, L2_rel_error_per_cell_rho, VectorTools::L2_norm);
     const double error_rel_rho_L2 = error_rho_L2/L2_rho;
     pcout << "Verification via L2 error density:    "<< error_rho_L2 << std::endl;
     pcout << "Verification via L2 relative error density:    "<< error_rel_rho_L2 << std::endl;
 
-    pres_old = 0;
+    pres_tmp_2 = 0;
 
-    VectorTools::integrate_difference(dof_handler_temperature, pres_tmp_2, pres_exact,
+    VectorTools::integrate_difference(dof_handler_temperature, pres_old, pres_exact,
                                       L2_error_per_cell_pres, quadrature_temperature, VectorTools::L2_norm);
     const double error_pres_L2 = VectorTools::compute_global_error(triangulation, L2_error_per_cell_pres, VectorTools::L2_norm);
-    VectorTools::integrate_difference(dof_handler_temperature, pres_old, pres_exact,
+    VectorTools::integrate_difference(dof_handler_temperature, pres_tmp_2, pres_exact,
                                       L2_rel_error_per_cell_pres, quadrature_temperature, VectorTools::L2_norm);
     const double L2_pres = VectorTools::compute_global_error(triangulation, L2_rel_error_per_cell_pres, VectorTools::L2_norm);
     const double error_rel_pres_L2 = error_pres_L2/L2_pres;
@@ -2882,7 +3574,7 @@ namespace Step35 {
   void NavierStokesProjection<dim>::run(const bool verbose, const unsigned int output_interval) {
     ConditionalOStream verbose_cout(std::cout, verbose && Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0);
 
-    //analyze_results();
+    analyze_results();
     output_results(0);
     double time = t_0;
     unsigned int n = 0;
@@ -2924,28 +3616,21 @@ namespace Step35 {
       }
       pres_tmp_2.equ(1.0, pres_fixed);
       u_tmp_2.equ(1.0, u_fixed);
-      analyze_results();
       HYPERBOLIC_stage = 2; //--- Flag to pass at second stage
+
       //--- Second stage of HYPERBOLIC operator
       navier_stokes_matrix.set_HYPERBOLIC_stage(HYPERBOLIC_stage);
       rho_exact.advance_time((1.0 - gamma)*dt);
       u_exact.advance_time((1.0 - gamma)*dt);
       pres_exact.advance_time((1.0 - gamma)*dt);
-      E_exact.advance_time(dt);
       verbose_cout << "  Update density stage 2" << std::endl;
       update_density();
       verbose_cout << "  Fixed point pressure stage 2" << std::endl;
+      navier_stokes_matrix.set_rho_for_fixed(rho_curr);
       pres_fixed_old.equ(1.0, pres_tmp_2);
-      u_fixed.zero_out_ghosts();
-      VectorTools::interpolate(dof_handler_velocity, u_exact, u_fixed);
-      /*u_fixed.equ(1.0, u_tmp_2);
+      u_fixed.equ(1.0, u_tmp_2);
       for(unsigned int iter = 0; iter < 100; ++iter) {
         pressure_fixed_point();
-        /*u_fixed = 0;
-        for(const std::pair<const types::global_dof_index, double>& pair : boundary_values_velocity) {
-          if(u_fixed.locally_owned_elements().is_element(pair.first))
-            u_fixed(pair.first) = pair.second;
-        }
         update_velocity();
 
         //Compute the relative error
@@ -2963,26 +3648,25 @@ namespace Step35 {
 
         pres_fixed_old.equ(1.0, pres_fixed);
       }
-      pres_old.equ(1.0, pres_fixed);*/
+      pres_old.equ(1.0, pres_fixed);
       u_curr.equ(1.0, u_fixed);
-      pres_old.zero_out_ghosts();
-      VectorTools::interpolate(dof_handler_temperature, pres_exact, pres_old);
       HYPERBOLIC_stage = 1; //--- Flag to pass at first stage at next step
+
       //--- Update for next step
       navier_stokes_matrix.advance_rho_boundary_time(dt);
       navier_stokes_matrix.advance_pres_boundary_time(dt);
       navier_stokes_matrix.advance_u_boundary_time(dt);
       rho_old.equ(1.0, rho_curr);
       u_old.equ(1.0, u_curr);
-      const double max_vel = get_maximal_velocity();
-      pcout<< "Maximal velocity = " << max_vel << std::endl;
-      pcout << "CFL = " << dt*max_vel*(EquationData::degree_u)*
+      const double max_celerity = navier_stokes_matrix.compute_max_celerity({rho_old, u_old, pres_old});
+      pcout<< "Maximal celerity = " << max_celerity << std::endl;
+      pcout << "CFL = " << dt*max_celerity*std::pow((EquationData::degree_u), 1.5)*
                            std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
-      /*analyze_results();
+      analyze_results();
       if(n % output_interval == 0) {
         verbose_cout << "Plotting Solution final" << std::endl;
         output_results(n);
-      }*/
+      }
       //if(time > 0.1*T && get_maximal_difference() < 1e-7)
       //  break;
       if(T - time < dt && T - time > 1e-10) {
