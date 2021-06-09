@@ -1582,7 +1582,7 @@ namespace Step35 {
                                                   scalar_product(u_tmp_2_D, u_tmp_2_D) +
                                                   std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
           const auto& E_tmp_2_D        = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2_D/rho_tmp_2_D
-                                       + 0.5*rho_tmp_2_D*scalar_product(u_tmp_2_D, u_tmp_2_D);
+                                       + 0.5*scalar_product(u_tmp_2_D, u_tmp_2_D);
           const auto& jump_rhok_fixed  = rho_tmp_2*0.5*scalar_product(u_fixed, u_fixed) -
                                          rho_tmp_2_D*E_tmp_2_D;
           const auto& enthalpy_fixed   = ((E_tmp_2_D - 0.5*scalar_product(u_tmp_2_D,u_tmp_2_D))*rho_tmp_2_D + pres_tmp_2_D)*u_tmp_2_D;
@@ -1712,7 +1712,7 @@ namespace Step35 {
                                                 scalar_product(u_curr_D, u_curr_D) +
                                                 std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
           const auto& E_curr_D        = 1.0/(EquationData::Cp_Cv - 1.0)*pres_curr_D/rho_curr_D
-                                      + 0.5*rho_curr_D*scalar_product(u_curr_D, u_curr_D);
+                                      + 0.5*scalar_product(u_curr_D, u_curr_D);
           const auto& jump_rhok_fixed = rho_curr*0.5*scalar_product(u_fixed, u_fixed) -
                                        rho_curr_D*E_curr_D;
           const auto& enthalpy_fixed  = ((E_curr_D - 0.5*scalar_product(u_curr_D,u_tmp_2_D))*rho_curr_D + pres_curr_D)*u_curr_D;
@@ -3111,6 +3111,12 @@ namespace Step35 {
                    Linfty_error_per_cell_pres;
 
     double get_maximal_velocity();
+
+    double get_minimal_density();
+
+    double get_minimal_pressure();
+
+    double get_maximal_pressure();
   };
 
 
@@ -3419,22 +3425,10 @@ namespace Step35 {
 
     navier_stokes_matrix.set_NS_stage(3);
 
-    if(HYPERBOLIC_stage == 1) {
-      LinearAlgebra::distributed::Vector<double> tmp_1;
-      matrix_free_storage->initialize_dof_vector(tmp_1, 0);
-      navier_stokes_matrix.vmult_pressure(tmp_1, pres_fixed);
-      rhs_u.add(-1.0, tmp_1);
-    }
-    else {
-      navier_stokes_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
-                                                             rho_tmp_2, u_tmp_2, pres_tmp_2,
-                                                             rho_curr, u_fixed, pres_fixed_old});
-
-      LinearAlgebra::distributed::Vector<double> tmp_1;
-      matrix_free_storage->initialize_dof_vector(tmp_1, 0);
-      navier_stokes_matrix.vmult_pressure(tmp_1, pres_fixed);
-      rhs_u.add(-1.0, tmp_1);
-    }
+    LinearAlgebra::distributed::Vector<double> tmp_1;
+    matrix_free_storage->initialize_dof_vector(tmp_1, 0);
+    navier_stokes_matrix.vmult_pressure(tmp_1, pres_fixed);
+    rhs_u.add(-1.0, tmp_1);
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
     SolverGMRES<LinearAlgebra::distributed::Vector<double>> gmres(solver_control);
@@ -3560,6 +3554,72 @@ namespace Step35 {
   }
 
 
+  // The following function is used in determining the minimal density
+  //
+  template<int dim>
+  double NavierStokesProjection<dim>::get_minimal_density() {
+    FEValues<dim> fe_values(fe_density, quadrature_density, update_values);
+    std::vector<double> solution_values(quadrature_density.size());
+
+    double min_local_density = std::numeric_limits<double>::max();
+
+    for(const auto& cell: dof_handler_density.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        fe_values.reinit(cell);
+        fe_values.get_function_values(HYPERBOLIC_stage == 1 ? rho_tmp_2 : rho_curr, solution_values);
+        for(unsigned int q = 0; q < quadrature_density.size(); ++q)
+          min_local_density = std::min(min_local_density, solution_values[q]);
+      }
+    }
+
+    return Utilities::MPI::min(min_local_density, MPI_COMM_WORLD);
+  }
+
+
+  // The following function is used in determining the minimal pressure
+  //
+  template<int dim>
+  double NavierStokesProjection<dim>::get_minimal_pressure() {
+    FEValues<dim> fe_values(fe_temperature, quadrature_temperature, update_values);
+    std::vector<double> solution_values(quadrature_temperature.size());
+
+    double min_local_pressure = std::numeric_limits<double>::max();
+
+    for(const auto& cell: dof_handler_density.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        fe_values.reinit(cell);
+        fe_values.get_function_values(HYPERBOLIC_stage == 1 ? pres_tmp_2 : pres_old, solution_values);
+        for(unsigned int q = 0; q < quadrature_density.size(); ++q)
+          min_local_pressure = std::min(min_local_pressure, solution_values[q]);
+      }
+    }
+
+    return Utilities::MPI::min(min_local_pressure, MPI_COMM_WORLD);
+  }
+
+
+  // The following function is used in determining the maximal pressure
+  //
+  template<int dim>
+  double NavierStokesProjection<dim>::get_maximal_pressure() {
+    FEValues<dim> fe_values(fe_temperature, quadrature_temperature, update_values);
+    std::vector<double> solution_values(quadrature_temperature.size());
+
+    double max_local_pressure = std::numeric_limits<double>::min();
+
+    for(const auto& cell: dof_handler_density.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        fe_values.reinit(cell);
+        fe_values.get_function_values(HYPERBOLIC_stage == 1 ? pres_tmp_2 : pres_old, solution_values);
+        for(unsigned int q = 0; q < quadrature_density.size(); ++q)
+          max_local_pressure = std::max(max_local_pressure, solution_values[q]);
+      }
+    }
+
+    return Utilities::MPI::max(max_local_pressure, MPI_COMM_WORLD);
+  }
+
+
   // @sect4{ <code>NavierStokesProjection::run</code> }
 
   // This is the time marching function, which starting at <code>t_0</code>
@@ -3592,8 +3652,6 @@ namespace Step35 {
       verbose_cout << "  Fixed point pressure stage 1" << std::endl;
       navier_stokes_matrix.set_rho_for_fixed(rho_tmp_2);
       pres_fixed_old.equ(1.0, pres_old);
-      u_fixed.zero_out_ghosts();
-      VectorTools::interpolate(dof_handler_velocity, u_exact, u_fixed);
       u_fixed.equ(1.0, u_old);
       for(unsigned int iter = 0; iter < 100; ++iter) {
         pressure_fixed_point();
