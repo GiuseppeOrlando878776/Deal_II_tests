@@ -2939,7 +2939,6 @@ namespace Step35 {
     for(unsigned int d = 0; d < src.size(); ++d)
       src[d].update_ghost_values();
 
-    FEEvaluation<dim, fe_degree_u, n_q_points_1d_u, dim, Number> phi_u(*(this->data), 0);
     FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_pres(*(this->data), 1);
     FEEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho(*(this->data), 2);
 
@@ -2948,24 +2947,18 @@ namespace Step35 {
     for(unsigned int cell = 0; cell < this->data->n_cell_batches(); ++cell) {
       phi_rho.reinit(cell);
       phi_rho.gather_evaluate(src[0], true, false);
-      phi_u.reinit(cell);
-      phi_u.gather_evaluate(src[1], true, false);
       phi_pres.reinit(cell);
-      phi_pres.gather_evaluate(src[2], true, false);
+      phi_pres.gather_evaluate(src[1], true, false);
 
       VectorizedArray<Number> local_max = 0.;
 
-      for(unsigned int q = 0; q < phi_u.n_q_points; ++q) {
+      for(unsigned int q = 0; q < phi_rho.n_q_points; ++q) {
         const auto& rho  = phi_rho.get_value(q);
-        const auto& u    = phi_u.get_value(q);
         const auto& pres = phi_pres.get_value(q);
 
-        VectorizedArray<Number> convective_speed = 0.;
-        for(unsigned int d = 0; d < dim; ++d)
-          convective_speed = std::max(convective_speed, std::abs(u[d]));
         const auto& speed_of_sound = std::sqrt(EquationData::Cp_Cv*pres/rho);
 
-        local_max = std::max(local_max, convective_speed + speed_of_sound);
+        local_max = std::max(local_max, speed_of_sound);
       }
       for(unsigned int v = 0; v < this->data->n_active_entries_per_cell_batch(cell); ++v)
         max_celerity = std::max(max_celerity, local_max[v]);
@@ -3649,6 +3642,7 @@ namespace Step35 {
       navier_stokes_matrix.set_HYPERBOLIC_stage(HYPERBOLIC_stage);
       verbose_cout << "  Update density stage 1" << std::endl;
       update_density();
+      pcout<<"Minimal density "<<get_minimal_density()<<std::endl;
       verbose_cout << "  Fixed point pressure stage 1" << std::endl;
       navier_stokes_matrix.set_rho_for_fixed(rho_tmp_2);
       pres_fixed_old.equ(1.0, pres_old);
@@ -3671,9 +3665,15 @@ namespace Step35 {
           break;
 
         pres_fixed_old.equ(1.0, pres_fixed);
+        pres_tmp_2.equ(1.0, pres_fixed);
+        pcout<<"Minimal pressure "<<get_minimal_pressure()<<std::endl;
       }
       pres_tmp_2.equ(1.0, pres_fixed);
       u_tmp_2.equ(1.0, u_fixed);
+      /*pres_tmp_2.zero_out_ghosts();
+      VectorTools::interpolate(dof_handler_temperature, pres_exact, pres_tmp_2);
+      u_tmp_2.zero_out_ghosts();
+      VectorTools::interpolate(dof_handler_velocity, u_exact, u_tmp_2);*/
       HYPERBOLIC_stage = 2; //--- Flag to pass at second stage
 
       //--- Second stage of HYPERBOLIC operator
@@ -3683,6 +3683,7 @@ namespace Step35 {
       pres_exact.advance_time((1.0 - gamma)*dt);
       verbose_cout << "  Update density stage 2" << std::endl;
       update_density();
+      pcout<<"Minimal density "<<get_minimal_density()<<std::endl;
       verbose_cout << "  Fixed point pressure stage 2" << std::endl;
       navier_stokes_matrix.set_rho_for_fixed(rho_curr);
       pres_fixed_old.equ(1.0, pres_tmp_2);
@@ -3705,9 +3706,15 @@ namespace Step35 {
           break;
 
         pres_fixed_old.equ(1.0, pres_fixed);
+        /*pres_old.equ(1.0, pres_fixed);
+        pcout<<"Minimal pressure "<<get_minimal_pressure()<<std::endl;*/
       }
       pres_old.equ(1.0, pres_fixed);
       u_curr.equ(1.0, u_fixed);
+      /*pres_old.zero_out_ghosts();
+      VectorTools::interpolate(dof_handler_temperature, pres_exact, pres_old);
+      u_curr.zero_out_ghosts();
+      VectorTools::interpolate(dof_handler_velocity, u_exact, u_curr);*/
       HYPERBOLIC_stage = 1; //--- Flag to pass at first stage at next step
 
       //--- Update for next step
@@ -3716,9 +3723,9 @@ namespace Step35 {
       navier_stokes_matrix.advance_u_boundary_time(dt);
       rho_old.equ(1.0, rho_curr);
       u_old.equ(1.0, u_curr);
-      const double max_celerity = navier_stokes_matrix.compute_max_celerity({rho_old, u_old, pres_old});
+      const double max_celerity = navier_stokes_matrix.compute_max_celerity({rho_old, pres_old});
       pcout<< "Maximal celerity = " << max_celerity << std::endl;
-      pcout << "CFL = " << dt*max_celerity*std::pow((EquationData::degree_u), 1.5)*
+      pcout << "CFL = " << 1.0/Ma*dt*max_celerity*std::pow((EquationData::degree_u), 1.5)*
                            std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
       analyze_results();
       if(n % output_interval == 0) {
