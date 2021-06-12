@@ -326,11 +326,16 @@ namespace Step35 {
     public:
       Velocity(const double initial_time = 0.0);
 
+      Velocity(const double Mach, const double initial_time = 0.0);
+
       virtual double value(const Point<dim>&  p,
                            const unsigned int component = 0) const override;
 
       virtual void vector_value(const Point<dim>& p,
                                 Vector<double>&   values) const override;
+
+    private:
+      double Ma;
     };
 
 
@@ -339,19 +344,23 @@ namespace Step35 {
 
 
     template<int dim>
+    Velocity<dim>::Velocity(const double Mach, const double initial_time): Function<dim>(dim, initial_time), Ma(Mach) {}
+
+
+    template<int dim>
     double Velocity<dim>::value(const Point<dim>& p, const unsigned int component) const {
       AssertIndexRange(component, 2);
       const double t = this->get_time();
-      const double beta = 5.0;
+      const double beta = 0.1;
 
       Point<dim> x0;
       x0[0] = 5.;
-      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*t + t*t;
-      const double factor      = beta/(2.0*numbers::PI)*std::exp(1.0 - radius_sqr);
+      const double radius_sqr = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*Ma*t + Ma*Ma*Ma*Ma*t*t;
+      const double factor     = beta/(2.0*numbers::PI)*std::exp(1.0 - radius_sqr);
       if(component == 0)
-        return 1.0 - factor*(p[1] - x0[1]);
+        return Ma*Ma - factor*(p[1] - x0[1]);
       else
-        return factor*(p[0] - t - x0[0]);
+        return factor*(p[0] - Ma*Ma*t - x0[0]);
     }
 
 
@@ -370,8 +379,13 @@ namespace Step35 {
     public:
       Pressure(const double initial_time = 0.0);
 
+      Pressure(const double Mach, const double initial_time = 0.0);
+
       virtual double value(const Point<dim>&  p,
                            const unsigned int component = 0) const override;
+
+    private:
+      double Ma;
     };
 
 
@@ -380,19 +394,23 @@ namespace Step35 {
 
 
     template<int dim>
+    Pressure<dim>::Pressure(const double Mach, const double initial_time): Function<dim>(1, initial_time), Ma(Mach) {}
+
+
+    template<int dim>
     double Pressure<dim>::value(const Point<dim>&  p, const unsigned int component) const {
       (void)component;
       AssertIndexRange(component, 1);
 
       const double t = this->get_time();
-      const double beta = 5.0;
+      const double beta = 0.1;
 
       Point<dim> x0;
       x0[0] = 5.;
-      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*t + t*t;
+      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*Ma*t + Ma*Ma*Ma*Ma*t*t;
       const double factor      = beta/(2.0*numbers::PI)*std::exp(1.0 - radius_sqr);
       const double density_log = std::log2(std::abs(1.0 - (EquationData::Cp_Cv - 1.0)/EquationData::Cp_Cv*0.25*factor*factor));
-      return std::exp2(density_log*(EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)));
+      return Ma*Ma*std::exp2(density_log*(EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)));
     }
 
 
@@ -403,8 +421,13 @@ namespace Step35 {
     public:
       Density(const double initial_time = 0.0);
 
+      Density(const double Mach, const double initial_time = 0.0);
+
       virtual double value(const Point<dim>&  p,
                            const unsigned int component = 0) const override;
+
+    private:
+      double Ma;
     };
 
 
@@ -413,16 +436,20 @@ namespace Step35 {
 
 
     template<int dim>
+    Density<dim>::Density(const double Mach, const double initial_time): Function<dim>(1, initial_time) , Ma(Mach){}
+
+
+    template<int dim>
     double Density<dim>::value(const Point<dim>&  p, const unsigned int component) const {
       (void)component;
       AssertIndexRange(component, 1);
 
       const double t = this->get_time();
-      const double beta = 5.0;
+      const double beta = 0.1;
 
       Point<dim> x0;
       x0[0] = 5.;
-      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*t + t*t;
+      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*Ma*t + Ma*Ma*Ma*Ma*t*t;
       const double factor      = beta/(2.0*numbers::PI)*std::exp(1.0 - radius_sqr);
       const double density_log = std::log2(std::abs(1.0 - (EquationData::Cp_Cv - 1.0)/EquationData::Cp_Cv*0.25*factor*factor));
       return std::exp2(density_log*(1.0/(EquationData::Cp_Cv - 1.0)));
@@ -436,8 +463,13 @@ namespace Step35 {
     public:
       Energy(const double initial_time = 0.0);
 
+      Energy(const double Ma, const double initial_time = 0.0);
+
       virtual double value(const Point<dim>&  p,
                            const unsigned int component = 0) const override;
+
+    private:
+      double Ma;
     };
 
 
@@ -446,23 +478,27 @@ namespace Step35 {
 
 
     template<int dim>
+    Energy<dim>::Energy(const double Mach, const double initial_time): Function<dim>(1, initial_time), Ma(Mach) {}
+
+
+    template<int dim>
     double Energy<dim>::value(const Point<dim>&  p, const unsigned int component) const {
       (void)component;
       AssertIndexRange(component, 1);
 
       const double t = this->get_time();
-      const double beta = 5.0;
+      const double beta = 0.1;
 
       Point<dim> x0;
       x0[0] = 5.;
-      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*t + t*t;
+      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*Ma*t + Ma*Ma*Ma*Ma*t*t;
       const double factor      = beta/(2.0*numbers::PI)*std::exp(1.0 - radius_sqr);
       const double density_log = std::log2(std::abs(1.0 - (EquationData::Cp_Cv - 1.0)/EquationData::Cp_Cv*0.25*factor*factor));
       const double density     = std::exp2(density_log*(1.0/(EquationData::Cp_Cv - 1.0)));
-      const double u           = 1.0 - factor*(p[1] - x0[1]);
-      const double v           = factor*(p[0] - t - x0[0]);
+      const double u           = Ma*Ma - factor*(p[1] - x0[1]);
+      const double v           = factor*(p[0] - Ma*Ma*t - x0[0]);
       const double pressure    = std::exp2(density_log*(EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)));
-      return pressure/(density*(EquationData::Cp_Cv - 1.0)) + 0.5*(u*u + v*v);
+      return Ma*Ma*(pressure/(density*(EquationData::Cp_Cv - 1.0)) + 0.5*(u*u + v*v));
     }
 
   } // namespace EquationData
@@ -670,8 +706,9 @@ namespace Step35 {
                                                              a21_tilde(0.5*gamma), a22_tilde(0.5*gamma),
                                                              a31_tilde(std::sqrt(2)/4.0), a32_tilde(std::sqrt(2)/4.0),
                                                              a33_tilde(1.0 - std::sqrt(2)/2.0), HYPERBOLIC_stage(1), NS_stage(1),
-                                                             rho_boundary(data.initial_time), pres_boundary(data.initial_time),
-                                                             u_boundary(data.initial_time) {}
+                                                             rho_boundary(data.Mach, data.initial_time),
+                                                             pres_boundary(data.Mach, data.initial_time),
+                                                             u_boundary(data.Mach, data.initial_time) {}
 
 
   // Setter of time-step
@@ -1190,13 +1227,14 @@ namespace Step35 {
           const auto& pres_old  = phi_pres_old.get_value(q);
           const auto& rho_tmp_2 = phi_rho_tmp_2.get_value(q);
           const auto& u_fixed   = phi_u_fixed.get_value(q);
-          const auto& E_old     = 1.0/(EquationData::Cp_Cv - 1.0)*(pres_old/rho_old) + 0.5*scalar_product(u_old, u_old);
+          const auto& E_old     = 1.0/(EquationData::Cp_Cv - 1.0)*(pres_old/rho_old)
+                                + 0.5*Ma*Ma*scalar_product(u_old, u_old);
 
           phi.submit_value(rho_old*E_old -
-                           0.5*rho_tmp_2*scalar_product(u_fixed, u_fixed) -
+                           0.5*rho_tmp_2*Ma*Ma*scalar_product(u_fixed, u_fixed) -
                            0.0*a21*dt*Ma*Ma/(Fr*Fr)*rho_old*u_old[dim - 1], q);
           phi.submit_gradient(0.5*a21*dt*Ma*Ma*scalar_product(u_old, u_old)*rho_old*u_old +
-                              a21_tilde*dt*((rho_old*(E_old - 0.5*scalar_product(u_old, u_old)) + pres_old)*u_old), q);
+                              a21_tilde*dt*((rho_old*(E_old - 0.5*Ma*Ma*scalar_product(u_old, u_old)) + pres_old)*u_old), q);
         }
         phi.integrate_scatter(true, true, dst);
       }
@@ -1239,17 +1277,19 @@ namespace Step35 {
           const auto& pres_tmp_2 = phi_pres_old.get_value(q);
           const auto& rho_curr   = phi_rho_curr.get_value(q);
           const auto& u_fixed    = phi_u_fixed.get_value(q);
-          const auto& E_old      = 1.0/(EquationData::Cp_Cv - 1.0)*(pres_old/rho_old) + 0.5*scalar_product(u_old, u_old);
-          const auto& E_tmp_2    = 1.0/(EquationData::Cp_Cv - 1.0)*(pres_tmp_2/rho_tmp_2) + 0.5*scalar_product(u_tmp_2, u_tmp_2);
+          const auto& E_old      = 1.0/(EquationData::Cp_Cv - 1.0)*(pres_old/rho_old)
+                                 + 0.5*Ma*Ma*scalar_product(u_old, u_old);
+          const auto& E_tmp_2    = 1.0/(EquationData::Cp_Cv - 1.0)*(pres_tmp_2/rho_tmp_2)
+                                 + 0.5*Ma*Ma*scalar_product(u_tmp_2, u_tmp_2);
 
           phi.submit_value(rho_old*E_old -
-                           0.5*rho_curr*scalar_product(u_fixed, u_fixed) -
+                           0.5*rho_curr*Ma*Ma*scalar_product(u_fixed, u_fixed) -
                            0.0*a31*dt*Ma*Ma/(Fr*Fr)*rho_old*u_old[dim - 1] -
                            0.0*a32*dt*Ma*Ma/(Fr*Fr)*rho_tmp_2*u_tmp_2[dim - 1], q);
           phi.submit_gradient(0.5*a31*dt*Ma*Ma*scalar_product(u_old, u_old)*rho_old*u_old +
-                              a31_tilde*dt*((rho_old*(E_old - 0.5*scalar_product(u_old, u_old)) + pres_old)*u_old) +
+                              a31_tilde*dt*((rho_old*(E_old - 0.5*Ma*Ma*scalar_product(u_old, u_old)) + pres_old)*u_old) +
                               0.5*a32*dt*Ma*Ma*scalar_product(u_tmp_2, u_tmp_2)*rho_tmp_2*u_tmp_2 +
-                              a32_tilde*dt*((rho_tmp_2*(E_tmp_2 - 0.5*scalar_product(u_tmp_2, u_tmp_2)) + pres_tmp_2)*u_tmp_2), q);
+                              a32_tilde*dt*((rho_tmp_2*(E_tmp_2 - 0.5*Ma*Ma*scalar_product(u_tmp_2, u_tmp_2)) + pres_tmp_2)*u_tmp_2), q);
         }
         phi.integrate_scatter(true, true, dst);
       }
@@ -1321,10 +1361,12 @@ namespace Step35 {
                                               0.5*scalar_product(u_old_m,u_old_m)*rho_old_m*u_old_m);
           const auto& pres_old_p       = phi_pres_old_p.get_value(q);
           const auto& pres_old_m       = phi_pres_old_m.get_value(q);
-          const auto& E_old_p          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_p/rho_old_p + 0.5*scalar_product(u_old_p, u_old_p);
-          const auto& E_old_m          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_m/rho_old_m + 0.5*scalar_product(u_old_m, u_old_m);
-          const auto& avg_enthalpy_old = 0.5*(((E_old_p - 0.5*scalar_product(u_old_p,u_old_p))*rho_old_p + pres_old_p)*u_old_p +
-                                              ((E_old_m - 0.5*scalar_product(u_old_m,u_old_m))*rho_old_m + pres_old_m)*u_old_m);
+          const auto& E_old_p          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_p/rho_old_p
+                                       + 0.5*Ma*Ma*scalar_product(u_old_p, u_old_p);
+          const auto& E_old_m          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_m/rho_old_m
+                                       + 0.5*Ma*Ma*scalar_product(u_old_m, u_old_m);
+          const auto& avg_enthalpy_old = 0.5*(((E_old_p - 0.5*Ma*Ma*scalar_product(u_old_p,u_old_p))*rho_old_p + pres_old_p)*u_old_p +
+                                              ((E_old_m - 0.5*Ma*Ma*scalar_product(u_old_m,u_old_m))*rho_old_m + pres_old_m)*u_old_m);
           const auto& lambda_old       = std::max(scalar_product(u_old_p, u_old_p) +
                                                   std::sqrt(EquationData::Cp_Cv*pres_old_p/rho_old_p),
                                                   scalar_product(u_old_m, u_old_m) +
@@ -1341,8 +1383,8 @@ namespace Step35 {
                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_tmp_2_p),
                                                   scalar_product(u_fixed_m, u_fixed_m) +
                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_tmp_2_m));
-          const auto& jump_rhok_fixed  = rho_tmp_2_p*0.5*scalar_product(u_fixed_p, u_fixed_p) -
-                                         rho_tmp_2_m*0.5*scalar_product(u_fixed_m, u_fixed_m);
+          const auto& jump_rhok_fixed  = rho_tmp_2_p*0.5*Ma*Ma*scalar_product(u_fixed_p, u_fixed_p) -
+                                         rho_tmp_2_m*0.5*Ma*Ma*scalar_product(u_fixed_m, u_fixed_m);
 
           phi_p.submit_value(-a21*dt*Ma*Ma*scalar_product(avg_kinetic_old, n_plus)
                              -a21_tilde*dt*scalar_product(avg_enthalpy_old, n_plus)
@@ -1429,10 +1471,12 @@ namespace Step35 {
                                               0.5*scalar_product(u_old_m,u_old_m)*rho_old_m*u_old_m);
           const auto& pres_old_p       = phi_pres_old_p.get_value(q);
           const auto& pres_old_m       = phi_pres_old_m.get_value(q);
-          const auto& E_old_p          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_p/rho_old_p + 0.5*scalar_product(u_old_p, u_old_p);
-          const auto& E_old_m          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_m/rho_old_m + 0.5*scalar_product(u_old_m, u_old_m);
-          const auto& avg_enthalpy_old = 0.5*(((E_old_p - 0.5*scalar_product(u_old_p,u_old_p))*rho_old_p + pres_old_p)*u_old_p +
-                                              ((E_old_m - 0.5*scalar_product(u_old_m,u_old_m))*rho_old_m + pres_old_m)*u_old_m);
+          const auto& E_old_p          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_p/rho_old_p
+                                       + 0.5*Ma*Ma*scalar_product(u_old_p, u_old_p);
+          const auto& E_old_m          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_m/rho_old_m
+                                       + 0.5*Ma*Ma*scalar_product(u_old_m, u_old_m);
+          const auto& avg_enthalpy_old = 0.5*(((E_old_p - 0.5*Ma*Ma*scalar_product(u_old_p,u_old_p))*rho_old_p + pres_old_p)*u_old_p +
+                                              ((E_old_m - 0.5*Ma*Ma*scalar_product(u_old_m,u_old_m))*rho_old_m + pres_old_m)*u_old_m);
           const auto& lambda_old       = std::max(scalar_product(u_old_p, u_old_p) +
                                                   std::sqrt(EquationData::Cp_Cv*pres_old_p/rho_old_p),
                                                   scalar_product(u_old_m, u_old_m) +
@@ -1448,12 +1492,14 @@ namespace Step35 {
           const auto& pres_tmp_2_p       = phi_pres_tmp_2_p.get_value(q);
           const auto& pres_tmp_2_m       = phi_pres_tmp_2_m.get_value(q);
           const auto& E_tmp_2_p          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2_p/rho_tmp_2_p
-                                         + 0.5*scalar_product(u_tmp_2_p, u_tmp_2_p);
+                                         + 0.5*Ma*Ma*scalar_product(u_tmp_2_p, u_tmp_2_p);
           const auto& E_tmp_2_m          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2_m/rho_tmp_2_m
-                                         + 0.5*scalar_product(u_tmp_2_m, u_tmp_2_m);
+                                         + 0.5*Ma*Ma*scalar_product(u_tmp_2_m, u_tmp_2_m);
           const auto& avg_enthalpy_tmp_2 = 0.5*
-                                           (((E_tmp_2_p - 0.5*scalar_product(u_tmp_2_p,u_tmp_2_p))*rho_tmp_2_p + pres_tmp_2_p)*u_tmp_2_p +
-                                            ((E_tmp_2_m - 0.5*scalar_product(u_tmp_2_m,u_tmp_2_m))*rho_tmp_2_m + pres_tmp_2_m)*u_tmp_2_m);
+                                           (((E_tmp_2_p - 0.5*Ma*Ma*scalar_product(u_tmp_2_p,u_tmp_2_p))*rho_tmp_2_p + pres_tmp_2_p)*
+                                            u_tmp_2_p +
+                                            ((E_tmp_2_m - 0.5*Ma*Ma*scalar_product(u_tmp_2_m,u_tmp_2_m))*rho_tmp_2_m + pres_tmp_2_m)*
+                                            u_tmp_2_m);
           const auto& lambda_tmp_2       = std::max(scalar_product(u_tmp_2_p, u_tmp_2_p) +
                                                     std::sqrt(EquationData::Cp_Cv*pres_tmp_2_p/rho_tmp_2_p),
                                                     scalar_product(u_tmp_2_m, u_tmp_2_m) +
@@ -1470,8 +1516,8 @@ namespace Step35 {
                                                     std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_curr_p),
                                                     scalar_product(u_fixed_m, u_fixed_m) +
                                                     std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_curr_m));
-          const auto& jump_rhok_fixed    = rho_curr_p*0.5*scalar_product(u_fixed_p, u_fixed_p) -
-                                           rho_curr_m*0.5*scalar_product(u_fixed_m, u_fixed_m);
+          const auto& jump_rhok_fixed    = rho_curr_p*0.5*Ma*Ma*scalar_product(u_fixed_p, u_fixed_p) -
+                                           rho_curr_m*0.5*Ma*Ma*scalar_product(u_fixed_m, u_fixed_m);
 
           phi_p.submit_value(-a31*dt*Ma*Ma*scalar_product(avg_kinetic_old, n_plus)
                              -a31_tilde*dt*scalar_product(avg_enthalpy_old, n_plus)
@@ -1564,10 +1610,12 @@ namespace Step35 {
           const auto& avg_kinetic_old  = 0.5*(0.5*scalar_product(u_old,u_old)*rho_old*u_old +
                                               0.5*scalar_product(u_old_D,u_old_D)*rho_old_D*u_old_D);
           const auto& pres_old         = phi_pres_old.get_value(q);
-          const auto& E_old            = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old/rho_old + 0.5*scalar_product(u_old, u_old);
-          const auto& E_old_D          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_D/rho_old_D + 0.5*scalar_product(u_old_D, u_old_D);
-          const auto& avg_enthalpy_old = 0.5*(((E_old - 0.5*scalar_product(u_old,u_old))*rho_old + pres_old)*u_old +
-                                              ((E_old_D - 0.5*scalar_product(u_old_D,u_old_D))*rho_old_D + pres_old_D)*u_old_D);
+          const auto& E_old            = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old/rho_old
+                                       + 0.5*Ma*Ma*scalar_product(u_old, u_old);
+          const auto& E_old_D          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_D/rho_old_D
+                                       + 0.5*Ma*Ma*scalar_product(u_old_D, u_old_D);
+          const auto& avg_enthalpy_old = 0.5*(((E_old - 0.5*Ma*Ma*scalar_product(u_old,u_old))*rho_old + pres_old)*u_old +
+                                              ((E_old_D - 0.5*Ma*Ma*scalar_product(u_old_D,u_old_D))*rho_old_D + pres_old_D)*u_old_D);
           const auto& lambda_old       = std::max(scalar_product(u_old, u_old) +
                                                   std::sqrt(EquationData::Cp_Cv*pres_old/rho_old),
                                                   scalar_product(u_old_D, u_old_D) +
@@ -1582,10 +1630,11 @@ namespace Step35 {
                                                   scalar_product(u_tmp_2_D, u_tmp_2_D) +
                                                   std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
           const auto& E_tmp_2_D        = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2_D/rho_tmp_2_D
-                                       + 0.5*scalar_product(u_tmp_2_D, u_tmp_2_D);
-          const auto& jump_rhok_fixed  = rho_tmp_2*0.5*scalar_product(u_fixed, u_fixed) -
+                                       + 0.5*Ma*Ma*scalar_product(u_tmp_2_D, u_tmp_2_D);
+          const auto& jump_rhok_fixed  = rho_tmp_2*0.5*Ma*Ma*scalar_product(u_fixed, u_fixed) -
                                          rho_tmp_2_D*E_tmp_2_D;
-          const auto& enthalpy_fixed   = ((E_tmp_2_D - 0.5*scalar_product(u_tmp_2_D,u_tmp_2_D))*rho_tmp_2_D + pres_tmp_2_D)*u_tmp_2_D;
+          const auto& enthalpy_fixed   = ((E_tmp_2_D - 0.5*Ma*Ma*scalar_product(u_tmp_2_D,u_tmp_2_D))*rho_tmp_2_D + pres_tmp_2_D)*
+                                         u_tmp_2_D;
 
           phi.submit_value(-a21*dt*Ma*Ma*scalar_product(avg_kinetic_old, n_plus)
                            -a21_tilde*dt*scalar_product(avg_enthalpy_old, n_plus)
@@ -1676,10 +1725,12 @@ namespace Step35 {
           const auto& avg_kinetic_old  = 0.5*(0.5*scalar_product(u_old,u_old)*rho_old*u_old +
                                               0.5*scalar_product(u_old_D,u_old_D)*rho_old_D*u_old_D);
           const auto& pres_old         = phi_pres_old.get_value(q);
-          const auto& E_old            = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old/rho_old + 0.5*scalar_product(u_old, u_old);
-          const auto& E_old_D          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_D/rho_old_D + 0.5*scalar_product(u_old_D, u_old_D);
-          const auto& avg_enthalpy_old = 0.5*(((E_old - 0.5*scalar_product(u_old,u_old))*rho_old + pres_old)*u_old +
-                                              ((E_old_D - 0.5*scalar_product(u_old_D,u_old_D))*rho_old_D + pres_old_D)*u_old_D);
+          const auto& E_old            = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old/rho_old
+                                       + 0.5*Ma*Ma*scalar_product(u_old, u_old);
+          const auto& E_old_D          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_old_D/rho_old_D
+                                       + 0.5*Ma*Ma*scalar_product(u_old_D, u_old_D);
+          const auto& avg_enthalpy_old = 0.5*(((E_old - 0.5*Ma*Ma*scalar_product(u_old,u_old))*rho_old + pres_old)*u_old +
+                                              ((E_old_D - 0.5*Ma*Ma*scalar_product(u_old_D,u_old_D))*rho_old_D + pres_old_D)*u_old_D);
           const auto& lambda_old       = std::max(scalar_product(u_old, u_old) +
                                                   std::sqrt(EquationData::Cp_Cv*pres_old/rho_old),
                                                   scalar_product(u_old_D, u_old_D) +
@@ -1692,12 +1743,13 @@ namespace Step35 {
                                                 0.5*scalar_product(u_tmp_2_D,u_tmp_2_D)*rho_tmp_2_D*u_tmp_2_D);
           const auto& pres_tmp_2         = phi_pres_tmp_2.get_value(q);
           const auto& E_tmp_2            = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2/rho_tmp_2
-                                         + 0.5*scalar_product(u_tmp_2, u_tmp_2);
+                                         + 0.5*Ma*Ma*scalar_product(u_tmp_2, u_tmp_2);
           const auto& E_tmp_2_D          = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2_D/rho_tmp_2_D
-                                         + 0.5*scalar_product(u_tmp_2_D, u_tmp_2_D);
+                                         + 0.5*Ma*Ma*scalar_product(u_tmp_2_D, u_tmp_2_D);
           const auto& avg_enthalpy_tmp_2 = 0.5*
-                                           (((E_tmp_2 - 0.5*scalar_product(u_tmp_2,u_tmp_2))*rho_tmp_2 + pres_tmp_2)*u_tmp_2 +
-                                            ((E_tmp_2_D - 0.5*scalar_product(u_tmp_2_D,u_tmp_2_D))*rho_tmp_2_D + pres_tmp_2_D)*u_tmp_2_D);
+                                           (((E_tmp_2 - 0.5*Ma*Ma*scalar_product(u_tmp_2,u_tmp_2))*rho_tmp_2 + pres_tmp_2)*u_tmp_2 +
+                                            ((E_tmp_2_D - 0.5*Ma*Ma*scalar_product(u_tmp_2_D,u_tmp_2_D))*rho_tmp_2_D + pres_tmp_2_D)*
+                                              u_tmp_2_D);
           const auto& lambda_tmp_2       = std::max(scalar_product(u_tmp_2, u_tmp_2) +
                                                     std::sqrt(EquationData::Cp_Cv*pres_tmp_2/rho_tmp_2),
                                                     scalar_product(u_tmp_2_D, u_tmp_2_D) +
@@ -1712,10 +1764,10 @@ namespace Step35 {
                                                 scalar_product(u_curr_D, u_curr_D) +
                                                 std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
           const auto& E_curr_D        = 1.0/(EquationData::Cp_Cv - 1.0)*pres_curr_D/rho_curr_D
-                                      + 0.5*scalar_product(u_curr_D, u_curr_D);
-          const auto& jump_rhok_fixed = rho_curr*0.5*scalar_product(u_fixed, u_fixed) -
-                                       rho_curr_D*E_curr_D;
-          const auto& enthalpy_fixed  = ((E_curr_D - 0.5*scalar_product(u_curr_D,u_tmp_2_D))*rho_curr_D + pres_curr_D)*u_curr_D;
+                                      + 0.5*Ma*Ma*scalar_product(u_curr_D, u_curr_D);
+          const auto& jump_rhok_fixed = rho_curr*0.5*Ma*Ma*scalar_product(u_fixed, u_fixed) -
+                                        rho_curr_D*E_curr_D;
+          const auto& enthalpy_fixed  = ((E_curr_D - 0.5*Ma*Ma*scalar_product(u_curr_D,u_curr_D))*rho_curr_D + pres_curr_D)*u_curr_D;
           phi.submit_value(-a31*dt*Ma*Ma*scalar_product(avg_kinetic_old, n_plus)
                            -a31_tilde*dt*scalar_product(avg_enthalpy_old, n_plus)
                            -a31*dt*0.5*lambda_old*jump_rhoE_old
@@ -3140,9 +3192,9 @@ namespace Step35 {
     quadrature_density(EquationData::degree_rho + 2),
     quadrature_velocity(EquationData::degree_u + 2),
     quadrature_temperature(EquationData::degree_T + 2),
-    rho_exact(data.initial_time),
-    u_exact(data.initial_time),
-    pres_exact(data.initial_time),
+    rho_exact(data.Mach, data.initial_time),
+    u_exact(data.Mach, data.initial_time),
+    pres_exact(data.Mach, data.initial_time),
     navier_stokes_matrix(data),
     vel_max_its(data.vel_max_iterations),
     vel_Krylov_size(data.vel_Krylov_size),
@@ -3665,8 +3717,8 @@ namespace Step35 {
           break;
 
         pres_fixed_old.equ(1.0, pres_fixed);
-        pres_tmp_2.equ(1.0, pres_fixed);
-        pcout<<"Minimal pressure "<<get_minimal_pressure()<<std::endl;
+        /*pres_tmp_2.equ(1.0, pres_fixed);
+        pcout<<"Minimal pressure "<<get_minimal_pressure()<<std::endl;*/
       }
       pres_tmp_2.equ(1.0, pres_fixed);
       u_tmp_2.equ(1.0, u_fixed);
@@ -3725,8 +3777,12 @@ namespace Step35 {
       u_old.equ(1.0, u_curr);
       const double max_celerity = navier_stokes_matrix.compute_max_celerity({rho_old, pres_old});
       pcout<< "Maximal celerity = " << max_celerity << std::endl;
-      pcout << "CFL = " << 1.0/Ma*dt*max_celerity*std::pow((EquationData::degree_u), 1.5)*
-                           std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
+      pcout << "CFL_c = " << 1.0/Ma*dt*max_celerity*std::pow((EquationData::degree_u), 1.5)*
+                             std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
+      const double max_velocity = get_maximal_velocity();
+      pcout<< "Maximal velocity = " << max_velocity << std::endl;
+      pcout << "CFL_u = " << dt*max_velocity*std::pow((EquationData::degree_u), 1.5)*
+                             std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
       analyze_results();
       if(n % output_interval == 0) {
         verbose_cout << "Plotting Solution final" << std::endl;
