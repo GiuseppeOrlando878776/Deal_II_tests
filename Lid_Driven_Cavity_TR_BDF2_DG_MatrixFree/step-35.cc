@@ -2124,6 +2124,9 @@ namespace Step35 {
       additional_data_mg.mapping_update_flags_inner_faces = (update_gradients | update_JxW_values);
       additional_data_mg.mapping_update_flags_boundary_faces = (update_gradients | update_JxW_values);
       additional_data_mg.mg_level = level;
+      std::vector<const DoFHandler<dim>*> dof_handlers_mg;
+      dof_handlers_mg.push_back(&dof_handler_velocity);
+      dof_handlers_mg.push_back(&dof_handler_pressure);
       std::vector<const AffineConstraints<float>*> constraints_mg;
       AffineConstraints<float> constraints_velocity_mg;
       constraints_velocity_mg.clear();
@@ -2131,11 +2134,8 @@ namespace Step35 {
       AffineConstraints<float> constraints_pressure_mg;
       constraints_pressure_mg.clear();
       constraints_mg.push_back(&constraints_pressure_mg);
-      AffineConstraints<float> constraints_streamline_mg;
-      constraints_streamline_mg.clear();
-      constraints_mg.push_back(&constraints_streamline_mg);
       std::shared_ptr<MatrixFree<dim, float>> mg_mf_storage_level(new MatrixFree<dim, float>());
-      mg_mf_storage_level->reinit(dof_handlers, constraints_mg, quadratures, additional_data_mg);
+      mg_mf_storage_level->reinit(dof_handlers_mg, constraints_mg, quadratures, additional_data_mg);
       const std::vector<unsigned int> tmp = {1};
       mg_matrices[level].initialize(mg_mf_storage_level, tmp, tmp);
       mg_matrices[level].set_dt(dt);
