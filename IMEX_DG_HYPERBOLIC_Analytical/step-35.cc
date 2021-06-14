@@ -351,16 +351,16 @@ namespace Step35 {
     double Velocity<dim>::value(const Point<dim>& p, const unsigned int component) const {
       AssertIndexRange(component, 2);
       const double t = this->get_time();
-      const double beta = 0.1;
+      const double beta = 5.0*Ma;
 
       Point<dim> x0;
       x0[0] = 5.;
-      const double radius_sqr = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*Ma*t + Ma*Ma*Ma*Ma*t*t;
+      const double radius_sqr = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*t + t*t*Ma*Ma;
       const double factor     = beta/(2.0*numbers::PI)*std::exp(1.0 - radius_sqr);
       if(component == 0)
-        return Ma*Ma - factor*(p[1] - x0[1]);
+        return Ma - factor*(p[1] - x0[1]);
       else
-        return factor*(p[0] - Ma*Ma*t - x0[0]);
+        return factor*(p[0] - Ma*t - x0[0]);
     }
 
 
@@ -403,11 +403,11 @@ namespace Step35 {
       AssertIndexRange(component, 1);
 
       const double t = this->get_time();
-      const double beta = 0.1;
+      const double beta = 5.0*Ma;
 
       Point<dim> x0;
       x0[0] = 5.;
-      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*Ma*t + Ma*Ma*Ma*Ma*t*t;
+      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*t + t*t*Ma*Ma;
       const double factor      = beta/(2.0*numbers::PI)*std::exp(1.0 - radius_sqr);
       const double density_log = std::log2(std::abs(1.0 - (EquationData::Cp_Cv - 1.0)/EquationData::Cp_Cv*0.25*factor*factor));
       return Ma*Ma*std::exp2(density_log*(EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)));
@@ -445,11 +445,11 @@ namespace Step35 {
       AssertIndexRange(component, 1);
 
       const double t = this->get_time();
-      const double beta = 0.1;
+      const double beta = 5.0*Ma;
 
       Point<dim> x0;
       x0[0] = 5.;
-      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*Ma*t + Ma*Ma*Ma*Ma*t*t;
+      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*t + t*t*Ma*Ma;
       const double factor      = beta/(2.0*numbers::PI)*std::exp(1.0 - radius_sqr);
       const double density_log = std::log2(std::abs(1.0 - (EquationData::Cp_Cv - 1.0)/EquationData::Cp_Cv*0.25*factor*factor));
       return std::exp2(density_log*(1.0/(EquationData::Cp_Cv - 1.0)));
@@ -463,7 +463,7 @@ namespace Step35 {
     public:
       Energy(const double initial_time = 0.0);
 
-      Energy(const double Ma, const double initial_time = 0.0);
+      Energy(const double Mach, const double initial_time = 0.0);
 
       virtual double value(const Point<dim>&  p,
                            const unsigned int component = 0) const override;
@@ -487,16 +487,16 @@ namespace Step35 {
       AssertIndexRange(component, 1);
 
       const double t = this->get_time();
-      const double beta = 0.1;
+      const double beta = 5.0*Ma;
 
       Point<dim> x0;
       x0[0] = 5.;
-      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*Ma*t + Ma*Ma*Ma*Ma*t*t;
+      const double radius_sqr  = (p - x0).norm_square() - 2.0*(p[0] - x0[0])*Ma*t + t*t*Ma*Ma;
       const double factor      = beta/(2.0*numbers::PI)*std::exp(1.0 - radius_sqr);
       const double density_log = std::log2(std::abs(1.0 - (EquationData::Cp_Cv - 1.0)/EquationData::Cp_Cv*0.25*factor*factor));
       const double density     = std::exp2(density_log*(1.0/(EquationData::Cp_Cv - 1.0)));
-      const double u           = Ma*Ma - factor*(p[1] - x0[1]);
-      const double v           = factor*(p[0] - Ma*Ma*t - x0[0]);
+      const double u           = Ma - factor*(p[1] - x0[1]);
+      const double v           = factor*(p[0] - Ma*t - x0[0]);
       const double pressure    = std::exp2(density_log*(EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)));
       return Ma*Ma*(pressure/(density*(EquationData::Cp_Cv - 1.0)) + 0.5*(u*u + v*v));
     }
@@ -573,9 +573,6 @@ namespace Step35 {
     virtual void apply_add(Vec& dst, const Vec& src) const override;
 
   private:
-    const double theta_p = 1.0;
-    const double C_p = 1.0*(fe_degree_rho + 1)*(fe_degree_rho + 1);
-
     Vec rho_for_fixed,
         pres_fixed,
         u_fixed;
@@ -860,6 +857,7 @@ namespace Step35 {
         phi_u_old.reinit(cell);
         phi_u_old.gather_evaluate(src[1], true, false);
         phi.reinit(cell);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           phi.submit_value(phi_rho_old.get_value(q), q);
           phi.submit_gradient(a21*dt*phi_rho_old.get_value(q)*phi_u_old.get_value(q), q);
@@ -884,6 +882,7 @@ namespace Step35 {
         phi_u_tmp_2.reinit(cell);
         phi_u_tmp_2.gather_evaluate(src[4], true, false);
         phi.reinit(cell);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           phi.submit_value(phi_rho_old.get_value(q), q);
           phi.submit_gradient(a31*dt*phi_rho_old.get_value(q)*phi_u_old.get_value(q) +
@@ -930,14 +929,17 @@ namespace Step35 {
         phi_pres_old_m.gather_evaluate(src[2], true, false);
         phi_p.reinit(face);
         phi_m.reinit(face);
+
         for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
           const auto& n_plus   = phi_p.get_normal_vector(q);
 
           const auto& avg_flux = 0.5*(phi_rho_old_p.get_value(q)*phi_u_old_p.get_value(q) +
                                       phi_rho_old_m.get_value(q)*phi_u_old_m.get_value(q));
           const auto  lambda   = std::max(std::sqrt(scalar_product(phi_u_old_p.get_value(q), phi_u_old_p.get_value(q))) +
+                                          0.0*1.0/Ma*
                                           std::sqrt(EquationData::Cp_Cv*phi_pres_old_p.get_value(q)/phi_rho_old_p.get_value(q)),
                                           std::sqrt(scalar_product(phi_u_old_m.get_value(q), phi_u_old_m.get_value(q))) +
+                                          0.0*1.0/Ma*
                                           std::sqrt(EquationData::Cp_Cv*phi_pres_old_m.get_value(q)/phi_rho_old_m.get_value(q)));
           const auto& jump_rho_old = phi_rho_old_p.get_value(q) - phi_rho_old_m.get_value(q);
 
@@ -991,23 +993,30 @@ namespace Step35 {
         phi_pres_tmp_2_m.gather_evaluate(src[5], true, false);
         phi_p.reinit(face);
         phi_m.reinit(face);
+
         for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
           const auto& n_plus         = phi_p.get_normal_vector(q);
 
           const auto& avg_flux_old   = 0.5*(phi_rho_old_p.get_value(q)*phi_u_old_p.get_value(q) +
                                             phi_rho_old_m.get_value(q)*phi_u_old_m.get_value(q));
           const auto  lambda_old     = std::max(std::sqrt(scalar_product(phi_u_old_p.get_value(q), phi_u_old_p.get_value(q))) +
+                                                0.0*1.0/Ma*
                                                 std::sqrt(EquationData::Cp_Cv*phi_pres_old_p.get_value(q)/phi_rho_old_p.get_value(q)),
                                                 std::sqrt(scalar_product(phi_u_old_m.get_value(q), phi_u_old_m.get_value(q))) +
+                                                0.0*1.0/Ma*
                                                 std::sqrt(EquationData::Cp_Cv*phi_pres_old_m.get_value(q)/phi_rho_old_m.get_value(q)));
           const auto& jump_rho_old   = phi_rho_old_p.get_value(q) - phi_rho_old_m.get_value(q);
 
           const auto& avg_flux_tmp_2 = 0.5*(phi_rho_tmp_2_p.get_value(q)*phi_u_tmp_2_p.get_value(q) +
                                             phi_rho_tmp_2_m.get_value(q)*phi_u_tmp_2_m.get_value(q));
           const auto  lambda_tmp_2   = std::max(std::sqrt(scalar_product(phi_u_tmp_2_p.get_value(q), phi_u_tmp_2_p.get_value(q))) +
-                                                std::sqrt(EquationData::Cp_Cv*phi_pres_tmp_2_p.get_value(q)/phi_rho_tmp_2_p.get_value(q)),
+                                                0.0*1.0/Ma*
+                                                std::sqrt(EquationData::Cp_Cv*
+                                                          phi_pres_tmp_2_p.get_value(q)/phi_rho_tmp_2_p.get_value(q)),
                                                 std::sqrt(scalar_product(phi_u_tmp_2_m.get_value(q), phi_u_tmp_2_m.get_value(q))) +
-                                                std::sqrt(EquationData::Cp_Cv*phi_pres_tmp_2_m.get_value(q)/phi_rho_tmp_2_m.get_value(q)));
+                                                0.0*1.0/Ma*
+                                                std::sqrt(EquationData::Cp_Cv*
+                                                          phi_pres_tmp_2_m.get_value(q)/phi_rho_tmp_2_m.get_value(q)));
           const auto& jump_rho_tmp_2 = phi_rho_tmp_2_p.get_value(q) - phi_rho_tmp_2_m.get_value(q);
 
           phi_p.submit_value(-a31*dt*(scalar_product(avg_flux_old, n_plus) + 0.5*lambda_old*jump_rho_old)
@@ -1045,6 +1054,7 @@ namespace Step35 {
         phi_pres_old.reinit(face);
         phi_pres_old.gather_evaluate(src[2], true, false);
         phi.reinit(face);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& n_plus           = phi.get_normal_vector(q);
 
@@ -1064,8 +1074,10 @@ namespace Step35 {
 
           const auto& avg_flux = 0.5*(phi_rho_old.get_value(q)*phi_u_old.get_value(q) + rho_old_D*u_old_D);
           const auto  lambda   = std::max(std::sqrt(scalar_product(phi_u_old.get_value(q), phi_u_old.get_value(q))) +
+                                          0.0*1.0/Ma*
                                           std::sqrt(EquationData::Cp_Cv*phi_pres_old.get_value(q)/phi_rho_old.get_value(q)),
                                           std::sqrt(scalar_product(u_old_D, u_old_D)) +
+                                          0.0*1.0/Ma*
                                           std::sqrt(EquationData::Cp_Cv*pres_old_D/rho_old_D));
           const auto& jump_rho_old = phi_rho_old.get_value(q) - rho_old_D;
 
@@ -1104,6 +1116,7 @@ namespace Step35 {
         phi_pres_tmp_2.reinit(face);
         phi_pres_tmp_2.gather_evaluate(src[5], true, false);
         phi.reinit(face);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& n_plus           = phi.get_normal_vector(q);
 
@@ -1130,15 +1143,19 @@ namespace Step35 {
 
           const auto& avg_flux_old   = 0.5*(phi_rho_old.get_value(q)*phi_u_old.get_value(q) + rho_old_D*u_old_D);
           const auto  lambda_old     = std::max(std::sqrt(scalar_product(phi_u_old.get_value(q), phi_u_old.get_value(q))) +
+                                                0.0*1.0/Ma*
                                                 std::sqrt(EquationData::Cp_Cv*phi_pres_old.get_value(q)/phi_rho_old.get_value(q)),
                                                 std::sqrt(scalar_product(u_old_D, u_old_D)) +
+                                                0.0*1.0/Ma*
                                                 std::sqrt(EquationData::Cp_Cv*pres_old_D/rho_old_D));
           const auto& jump_rho_old   = phi_rho_old.get_value(q) - rho_old_D;
 
           const auto& avg_flux_tmp_2 = 0.5*(phi_rho_tmp_2.get_value(q)*phi_u_tmp_2.get_value(q) + rho_tmp_2_D*u_tmp_2_D);
           const auto  lambda_tmp_2   = std::max(std::sqrt(scalar_product(phi_u_tmp_2.get_value(q), phi_u_tmp_2.get_value(q))) +
+                                                0.0*1.0/Ma*
                                                 std::sqrt(EquationData::Cp_Cv*phi_pres_tmp_2.get_value(q)/phi_rho_tmp_2.get_value(q)),
                                                 std::sqrt(scalar_product(u_tmp_2_D, u_tmp_2_D)) +
+                                                0.0*1.0/Ma*
                                                 std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
           const auto& jump_rho_tmp_2 = phi_rho_tmp_2.get_value(q) - rho_tmp_2_D;
 
@@ -1184,6 +1201,7 @@ namespace Step35 {
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
       phi.gather_evaluate(src, true, false);
+
       for(unsigned int q = 0; q < phi.n_q_points; ++q)
         phi.submit_value(phi.get_value(q), q);
       phi.integrate_scatter(true, false, dst);
@@ -1221,6 +1239,7 @@ namespace Step35 {
         phi_u_fixed.reinit(cell);
         phi_u_fixed.gather_evaluate(src[4], true, false);
         phi.reinit(cell);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& rho_old   = phi_rho_old.get_value(q);
           const auto& u_old     = phi_u_old.get_value(q);
@@ -1268,6 +1287,7 @@ namespace Step35 {
         phi_u_fixed.reinit(cell);
         phi_u_fixed.gather_evaluate(src[7], true, false);
         phi.reinit(cell);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& rho_old    = phi_rho_old.get_value(q);
           const auto& u_old      = phi_u_old.get_value(q);
@@ -1350,6 +1370,7 @@ namespace Step35 {
         phi_pres_fixed_m.gather_evaluate(src[5], true, false);
         phi_p.reinit(face);
         phi_m.reinit(face);
+
         for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
           const auto& n_plus           = phi_p.get_normal_vector(q);
 
@@ -1368,8 +1389,10 @@ namespace Step35 {
           const auto& avg_enthalpy_old = 0.5*(((E_old_p - 0.5*Ma*Ma*scalar_product(u_old_p,u_old_p))*rho_old_p + pres_old_p)*u_old_p +
                                               ((E_old_m - 0.5*Ma*Ma*scalar_product(u_old_m,u_old_m))*rho_old_m + pres_old_m)*u_old_m);
           const auto& lambda_old       = std::max(scalar_product(u_old_p, u_old_p) +
+                                                  0.0*1.0/Ma*
                                                   std::sqrt(EquationData::Cp_Cv*pres_old_p/rho_old_p),
                                                   scalar_product(u_old_m, u_old_m) +
+                                                  0.0*1.0/Ma*
                                                   std::sqrt(EquationData::Cp_Cv*pres_old_m/rho_old_m));
           const auto& jump_rhoE_old    = rho_old_p*E_old_p - rho_old_m*E_old_m;
 
@@ -1379,10 +1402,12 @@ namespace Step35 {
           const auto& u_fixed_m        = phi_u_fixed_m.get_value(q);
           const auto& pres_fixed_p     = phi_pres_fixed_p.get_value(q);
           const auto& pres_fixed_m     = phi_pres_fixed_m.get_value(q);
-          const auto& lambda_fixed     = std::max(scalar_product(u_fixed_p, u_fixed_p) +
-                                                  std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_tmp_2_p),
-                                                  scalar_product(u_fixed_m, u_fixed_m) +
-                                                  std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_tmp_2_m));
+          const auto& lambda_fixed     = 0.0*std::max(scalar_product(u_fixed_p, u_fixed_p) +
+                                                      1.0/Ma*
+                                                      std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_tmp_2_p),
+                                                      scalar_product(u_fixed_m, u_fixed_m) +
+                                                      1.0/Ma*
+                                                      std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_tmp_2_m));
           const auto& jump_rhok_fixed  = rho_tmp_2_p*0.5*Ma*Ma*scalar_product(u_fixed_p, u_fixed_p) -
                                          rho_tmp_2_m*0.5*Ma*Ma*scalar_product(u_fixed_m, u_fixed_m);
 
@@ -1460,6 +1485,7 @@ namespace Step35 {
         phi_pres_fixed_m.gather_evaluate(src[8], true, false);
         phi_p.reinit(face);
         phi_m.reinit(face);
+
         for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
           const auto& n_plus           = phi_p.get_normal_vector(q);
 
@@ -1478,8 +1504,10 @@ namespace Step35 {
           const auto& avg_enthalpy_old = 0.5*(((E_old_p - 0.5*Ma*Ma*scalar_product(u_old_p,u_old_p))*rho_old_p + pres_old_p)*u_old_p +
                                               ((E_old_m - 0.5*Ma*Ma*scalar_product(u_old_m,u_old_m))*rho_old_m + pres_old_m)*u_old_m);
           const auto& lambda_old       = std::max(scalar_product(u_old_p, u_old_p) +
+                                                  0.0*1.0/Ma*
                                                   std::sqrt(EquationData::Cp_Cv*pres_old_p/rho_old_p),
                                                   scalar_product(u_old_m, u_old_m) +
+                                                  0.0*1.0/Ma*
                                                   std::sqrt(EquationData::Cp_Cv*pres_old_m/rho_old_m));
           const auto& jump_rhoE_old    = rho_old_p*E_old_p - rho_old_m*E_old_m;
 
@@ -1501,8 +1529,10 @@ namespace Step35 {
                                             ((E_tmp_2_m - 0.5*Ma*Ma*scalar_product(u_tmp_2_m,u_tmp_2_m))*rho_tmp_2_m + pres_tmp_2_m)*
                                             u_tmp_2_m);
           const auto& lambda_tmp_2       = std::max(scalar_product(u_tmp_2_p, u_tmp_2_p) +
+                                                    0.0*1.0/Ma*
                                                     std::sqrt(EquationData::Cp_Cv*pres_tmp_2_p/rho_tmp_2_p),
                                                     scalar_product(u_tmp_2_m, u_tmp_2_m) +
+                                                    0.0*1.0/Ma*
                                                     std::sqrt(EquationData::Cp_Cv*pres_tmp_2_m/rho_tmp_2_m));
           const auto& jump_rhoE_tmp_2    = rho_tmp_2_p*E_tmp_2_p - rho_tmp_2_m*E_tmp_2_m;
 
@@ -1512,10 +1542,12 @@ namespace Step35 {
           const auto& u_fixed_m          = phi_u_fixed_m.get_value(q);
           const auto& pres_fixed_p       = phi_pres_fixed_p.get_value(q);
           const auto& pres_fixed_m       = phi_pres_fixed_m.get_value(q);
-          const auto& lambda_fixed       = std::max(scalar_product(u_fixed_p, u_fixed_p) +
-                                                    std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_curr_p),
-                                                    scalar_product(u_fixed_m, u_fixed_m) +
-                                                    std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_curr_m));
+          const auto& lambda_fixed       = 0.0*std::max(scalar_product(u_fixed_p, u_fixed_p) +
+                                                        1.0/Ma*
+                                                        std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_curr_p),
+                                                        scalar_product(u_fixed_m, u_fixed_m) +
+                                                        1.0/Ma*
+                                                        std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_curr_m));
           const auto& jump_rhok_fixed    = rho_curr_p*0.5*Ma*Ma*scalar_product(u_fixed_p, u_fixed_p) -
                                            rho_curr_m*0.5*Ma*Ma*scalar_product(u_fixed_m, u_fixed_m);
 
@@ -1581,6 +1613,7 @@ namespace Step35 {
         phi_pres_fixed.reinit(face);
         phi_pres_fixed.gather_evaluate(src[5], true, false);
         phi.reinit(face);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& n_plus           = phi.get_normal_vector(q);
 
@@ -1617,18 +1650,22 @@ namespace Step35 {
           const auto& avg_enthalpy_old = 0.5*(((E_old - 0.5*Ma*Ma*scalar_product(u_old,u_old))*rho_old + pres_old)*u_old +
                                               ((E_old_D - 0.5*Ma*Ma*scalar_product(u_old_D,u_old_D))*rho_old_D + pres_old_D)*u_old_D);
           const auto& lambda_old       = std::max(scalar_product(u_old, u_old) +
+                                                  0.0*1.0/Ma*
                                                   std::sqrt(EquationData::Cp_Cv*pres_old/rho_old),
                                                   scalar_product(u_old_D, u_old_D) +
+                                                  0.0*1.0/Ma*
                                                   std::sqrt(EquationData::Cp_Cv*pres_old_D/rho_old_D));
           const auto& jump_rhoE_old    = rho_old*E_old - rho_old_D*E_old_D;
 
           const auto& rho_tmp_2        = phi_rho_tmp_2.get_value(q);
           const auto& u_fixed          = phi_u_fixed.get_value(q);
           const auto& pres_fixed       = phi_pres_fixed.get_value(q);
-          const auto& lambda_fixed     = std::max(scalar_product(u_fixed, u_fixed) +
-                                                  std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_tmp_2),
-                                                  scalar_product(u_tmp_2_D, u_tmp_2_D) +
-                                                  std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
+          const auto& lambda_fixed     = 0.0*std::max(scalar_product(u_fixed, u_fixed) +
+                                                      1.0/Ma*
+                                                      std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_tmp_2),
+                                                      scalar_product(u_tmp_2_D, u_tmp_2_D) +
+                                                      1.0/Ma*
+                                                      std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
           const auto& E_tmp_2_D        = 1.0/(EquationData::Cp_Cv - 1.0)*pres_tmp_2_D/rho_tmp_2_D
                                        + 0.5*Ma*Ma*scalar_product(u_tmp_2_D, u_tmp_2_D);
           const auto& jump_rhok_fixed  = rho_tmp_2*0.5*Ma*Ma*scalar_product(u_fixed, u_fixed) -
@@ -1690,6 +1727,7 @@ namespace Step35 {
         phi_pres_fixed.reinit(face);
         phi_pres_fixed.gather_evaluate(src[8], true, false);
         phi.reinit(face);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& n_plus           = phi.get_normal_vector(q);
 
@@ -1732,9 +1770,11 @@ namespace Step35 {
           const auto& avg_enthalpy_old = 0.5*(((E_old - 0.5*Ma*Ma*scalar_product(u_old,u_old))*rho_old + pres_old)*u_old +
                                               ((E_old_D - 0.5*Ma*Ma*scalar_product(u_old_D,u_old_D))*rho_old_D + pres_old_D)*u_old_D);
           const auto& lambda_old       = std::max(scalar_product(u_old, u_old) +
+                                                  0.0*1.0/Ma*
                                                   std::sqrt(EquationData::Cp_Cv*pres_old/rho_old),
                                                   scalar_product(u_old_D, u_old_D) +
-                                                  std::sqrt(EquationData::Cp_Cv*pres_old_D/rho_old_D));
+                                                  0.0*1.0/Ma*
+                                                  0.0*std::sqrt(EquationData::Cp_Cv*pres_old_D/rho_old_D));
           const auto& jump_rhoE_old    = rho_old*E_old - rho_old_D*E_old_D;
 
           const auto& rho_tmp_2          = phi_rho_tmp_2.get_value(q);
@@ -1751,18 +1791,22 @@ namespace Step35 {
                                             ((E_tmp_2_D - 0.5*Ma*Ma*scalar_product(u_tmp_2_D,u_tmp_2_D))*rho_tmp_2_D + pres_tmp_2_D)*
                                               u_tmp_2_D);
           const auto& lambda_tmp_2       = std::max(scalar_product(u_tmp_2, u_tmp_2) +
+                                                    0.0*1.0/Ma*
                                                     std::sqrt(EquationData::Cp_Cv*pres_tmp_2/rho_tmp_2),
                                                     scalar_product(u_tmp_2_D, u_tmp_2_D) +
+                                                    0.0*1.0/Ma*
                                                     std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
           const auto& jump_rhoE_tmp_2    = rho_tmp_2*E_tmp_2 - rho_tmp_2_D*E_tmp_2_D;
 
           const auto& rho_curr        = phi_rho_curr.get_value(q);
           const auto& u_fixed         = phi_u_fixed.get_value(q);
           const auto& pres_fixed      = phi_pres_fixed.get_value(q);
-          const auto& lambda_fixed    = std::max(scalar_product(u_fixed, u_fixed) +
-                                                std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_curr),
-                                                scalar_product(u_curr_D, u_curr_D) +
-                                                std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
+          const auto& lambda_fixed    = 0.0*std::max(scalar_product(u_fixed, u_fixed) +
+                                                     1.0/Ma*
+                                                     std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_curr),
+                                                     scalar_product(u_curr_D, u_curr_D) +
+                                                     1.0/Ma*
+                                                     std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
           const auto& E_curr_D        = 1.0/(EquationData::Cp_Cv - 1.0)*pres_curr_D/rho_curr_D
                                       + 0.5*Ma*Ma*scalar_product(u_curr_D, u_curr_D);
           const auto& jump_rhok_fixed = rho_curr*0.5*Ma*Ma*scalar_product(u_fixed, u_fixed) -
@@ -1816,6 +1860,7 @@ namespace Step35 {
     for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
       phi.reinit(cell);
       phi.gather_evaluate(src, true, false);
+
       for(unsigned int q = 0; q < phi.n_q_points; ++q)
         phi.submit_value(1.0/(EquationData::Cp_Cv - 1.0)*phi.get_value(q), q);
       phi.integrate_scatter(true, false, dst);
@@ -1861,6 +1906,7 @@ namespace Step35 {
       phi_p.gather_evaluate(src, true, false);
       phi_m.reinit(face);
       phi_m.gather_evaluate(src, true, false);
+
       for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
         const auto& u_fixed_p       = phi_u_fixed_p.get_value(q);
         const auto& u_fixed_m       = phi_u_fixed_m.get_value(q);
@@ -1868,10 +1914,12 @@ namespace Step35 {
         const auto& pres_fixed_m    = phi_pres_fixed_m.get_value(q);
         const auto& rho_for_fixed_p = phi_rho_for_fixed_p.get_value(q);
         const auto& rho_for_fixed_m = phi_rho_for_fixed_m.get_value(q);
-        const auto& lambda_fixed    = std::max(scalar_product(u_fixed_p, u_fixed_p) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_for_fixed_p),
-                                               scalar_product(u_fixed_m, u_fixed_m) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_for_fixed_m));
+        const auto& lambda_fixed    = 0.0*std::max(scalar_product(u_fixed_p, u_fixed_p) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_for_fixed_p),
+                                                   scalar_product(u_fixed_m, u_fixed_m) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_for_fixed_m));
         const auto& jump_src        = phi_p.get_value(q) - phi_m.get_value(q);
 
         phi_p.submit_value(coeff*dt*1.0/(EquationData::Cp_Cv - 1.0)*0.5*lambda_fixed*jump_src, q);
@@ -1915,6 +1963,7 @@ namespace Step35 {
         phi_u_fixed.gather_evaluate(u_fixed, true, false);
         phi.reinit(face);
         phi.gather_evaluate(src, true, false);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& point_vectorized = phi.quadrature_point(q);
           auto        rho_tmp_2_D      = VectorizedArray<Number>();
@@ -1933,10 +1982,12 @@ namespace Step35 {
           const auto& u_fixed       = phi_u_fixed.get_value(q);
           const auto& pres_fixed    = phi_pres_fixed.get_value(q);
           const auto& rho_for_fixed = phi_rho_for_fixed.get_value(q);
-          const auto& lambda_fixed  = std::max(scalar_product(u_fixed, u_fixed) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_for_fixed),
-                                               scalar_product(u_tmp_2_D, u_tmp_2_D) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
+          const auto& lambda_fixed  = 0.0*std::max(scalar_product(u_fixed, u_fixed) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_for_fixed),
+                                                   scalar_product(u_tmp_2_D, u_tmp_2_D) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
 
           phi.submit_value(a22_tilde*dt*1.0/(EquationData::Cp_Cv - 1.0)*0.5*lambda_fixed*phi.get_value(q), q);
         }
@@ -1965,6 +2016,7 @@ namespace Step35 {
         phi_u_fixed.gather_evaluate(u_fixed, true, false);
         phi.reinit(face);
         phi.gather_evaluate(src, true, false);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& point_vectorized = phi.quadrature_point(q);
           auto        rho_curr_D      = VectorizedArray<Number>();
@@ -1983,10 +2035,12 @@ namespace Step35 {
           const auto& u_fixed       = phi_u_fixed.get_value(q);
           const auto& pres_fixed    = phi_pres_fixed.get_value(q);
           const auto& rho_for_fixed = phi_rho_for_fixed.get_value(q);
-          const auto& lambda_fixed  = std::max(scalar_product(u_fixed, u_fixed) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_for_fixed),
-                                               scalar_product(u_curr_D, u_curr_D) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
+          const auto& lambda_fixed  = 0.0*std::max(scalar_product(u_fixed, u_fixed) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_for_fixed),
+                                                   scalar_product(u_curr_D, u_curr_D) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
 
           phi.submit_value(a33_tilde*dt*1.0/(EquationData::Cp_Cv - 1.0)*0.5*lambda_fixed*phi.get_value(q), q);
         }
@@ -2018,6 +2072,7 @@ namespace Step35 {
       phi_src.reinit(cell);
       phi_src.gather_evaluate(src, true, false);
       phi.reinit(cell);
+
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& pres_fixed = phi_pres_fixed.get_value(q);
 
@@ -2058,13 +2113,14 @@ namespace Step35 {
       phi_src_m.gather_evaluate(src, true, false);
       phi_p.reinit(face);
       phi_m.reinit(face);
+
       for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
         const auto& n_plus            = phi_p.get_normal_vector(q);
 
         const auto& pres_fixed_p      = phi_pres_fixed_p.get_value(q);
         const auto& pres_fixed_m      = phi_pres_fixed_m.get_value(q);
         const auto& avg_flux_enthalpy = 0.5*EquationData::Cp_Cv/(EquationData::Cp_Cv - 1.0)*
-                                          (pres_fixed_p*phi_src_p.get_value(q) + pres_fixed_m*phi_src_m.get_value(q));
+                                        (pres_fixed_p*phi_src_p.get_value(q) + pres_fixed_m*phi_src_m.get_value(q));
 
         phi_p.submit_value(coeff*dt*scalar_product(avg_flux_enthalpy, n_plus), q);
         phi_m.submit_value(-coeff*dt*scalar_product(avg_flux_enthalpy, n_plus), q);
@@ -2097,6 +2153,7 @@ namespace Step35 {
       phi_src.reinit(face);
       phi_src.gather_evaluate(src, true, false);
       phi.reinit(face);
+
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& n_plus            = phi.get_normal_vector(q);
 
@@ -2130,6 +2187,7 @@ namespace Step35 {
       phi_src.reinit(cell);
       phi_src.gather_evaluate(src, true, false);
       phi.reinit(cell);
+
       for(unsigned int q = 0; q < phi.n_q_points; ++q)
         phi.submit_divergence(-coeff*dt/(Ma*Ma)*phi_src.get_value(q), q);
       phi.integrate_scatter(false, true, dst);
@@ -2161,6 +2219,7 @@ namespace Step35 {
       phi_src_m.gather_evaluate(src, true, false);
       phi_p.reinit(face);
       phi_m.reinit(face);
+
       for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
         const auto& n_plus     = phi_p.get_normal_vector(q);
 
@@ -2194,6 +2253,7 @@ namespace Step35 {
       phi_src.reinit(face);
       phi_src.gather_evaluate(src, true, true);
       phi.reinit(face);
+
       for(unsigned int q = 0; q < phi.n_q_points; ++q) {
         const auto& n_plus   = phi.get_normal_vector(q);
 
@@ -2226,6 +2286,7 @@ namespace Step35 {
                                                                    phi_u_old(data, 0);
       FEEvaluation<dim, fe_degree_T, n_q_points_1d_T, 1, Number> phi_pres_old(data, 1);
       FEEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_old(data, 2);
+
       for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
         phi_rho_old.reinit(cell);
         phi_rho_old.gather_evaluate(src[0], true, true);
@@ -2234,6 +2295,7 @@ namespace Step35 {
         phi_pres_old.reinit(cell);
         phi_pres_old.gather_evaluate(src[2], true, false);
         phi.reinit(cell);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& rho_old            = phi_rho_old.get_value(q);
           const auto& u_old              = phi_u_old.get_value(q);
@@ -2258,6 +2320,7 @@ namespace Step35 {
                                                                  phi_pres_tmp_2(data, 1);
       FEEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_old(data, 2),
                                                                      phi_rho_tmp_2(data, 2);
+
       for(unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
         phi_rho_old.reinit(cell);
         phi_rho_old.gather_evaluate(src[0], true, true);
@@ -2272,6 +2335,7 @@ namespace Step35 {
         phi_pres_tmp_2.reinit(cell);
         phi_pres_tmp_2.gather_evaluate(src[5], true, false);
         phi.reinit(cell);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& rho_old            = phi_rho_old.get_value(q);
           const auto& u_old              = phi_u_old.get_value(q);
@@ -2320,6 +2384,7 @@ namespace Step35 {
                                                                      phi_pres_old_m(data, false, 1);
       FEFaceEvaluation<dim, fe_degree_rho, n_q_points_1d_rho, 1, Number> phi_rho_old_p(data, true, 2),
                                                                          phi_rho_old_m(data, false, 2);
+
       for(unsigned int face = face_range.first; face < face_range.second; ++face) {
         phi_rho_old_p.reinit(face);
         phi_rho_old_p.gather_evaluate(src[0], true, false);
@@ -2335,6 +2400,7 @@ namespace Step35 {
         phi_pres_old_m.gather_evaluate(src[2], true, false);
         phi_p.reinit(face);
         phi_m.reinit(face);
+
         for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
           const auto& n_plus                 = phi_p.get_normal_vector(q);
 
@@ -2349,8 +2415,10 @@ namespace Step35 {
           const auto& avg_pres_old           = 0.5*(pres_old_p + pres_old_m);
           const auto& jump_rhou_old          = rho_old_p*u_old_p - rho_old_m*u_old_m;
           const auto& lambda_old             = std::max(scalar_product(u_old_p, u_old_p) +
+                                                        0.0*1.0/Ma*
                                                         std::sqrt(EquationData::Cp_Cv*pres_old_p/rho_old_p),
                                                         scalar_product(u_old_m, u_old_m) +
+                                                        0.0*1.0/Ma*
                                                         std::sqrt(EquationData::Cp_Cv*pres_old_m/rho_old_m));
 
           phi_p.submit_value(-a21*dt*avg_tensor_product_u_n*n_plus
@@ -2379,6 +2447,7 @@ namespace Step35 {
                                                                          phi_rho_old_m(data, false, 2),
                                                                          phi_rho_tmp_2_p(data, true, 2),
                                                                          phi_rho_tmp_2_m(data, false, 2);
+
       for(unsigned int face = face_range.first; face < face_range.second; ++face) {
         phi_rho_old_p.reinit(face);
         phi_rho_old_p.gather_evaluate(src[0], true, false);
@@ -2406,6 +2475,7 @@ namespace Step35 {
         phi_pres_tmp_2_m.gather_evaluate(src[5], true, false);
         phi_p.reinit(face);
         phi_m.reinit(face);
+
         for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
           const auto& n_plus                 = phi_p.get_normal_vector(q);
 
@@ -2420,8 +2490,10 @@ namespace Step35 {
           const auto& avg_pres_old           = 0.5*(pres_old_p + pres_old_m);
           const auto& jump_rhou_old          = rho_old_p*u_old_p - rho_old_m*u_old_m;
           const auto& lambda_old             = std::max(scalar_product(u_old_p, u_old_p) +
+                                                        0.0*1.0/Ma*
                                                         std::sqrt(EquationData::Cp_Cv*pres_old_p/rho_old_p),
                                                         scalar_product(u_old_m, u_old_m) +
+                                                        0.0*1.0/Ma*
                                                         std::sqrt(EquationData::Cp_Cv*pres_old_m/rho_old_m));
 
           const auto& rho_tmp_2_p                = phi_rho_tmp_2_p.get_value(q);
@@ -2435,8 +2507,10 @@ namespace Step35 {
           const auto& avg_pres_tmp_2             = 0.5*(pres_tmp_2_p + pres_tmp_2_m);
           const auto& jump_rhou_tmp_2            = rho_tmp_2_p*u_tmp_2_p - rho_tmp_2_m*u_tmp_2_m;
           const auto& lambda_tmp_2               = std::max(scalar_product(u_tmp_2_p, u_tmp_2_p) +
+                                                            0.0*1.0/Ma*
                                                             std::sqrt(EquationData::Cp_Cv*pres_tmp_2_p/rho_tmp_2_p),
                                                             scalar_product(u_tmp_2_m, u_tmp_2_m) +
+                                                            0.0*1.0/Ma*
                                                             std::sqrt(EquationData::Cp_Cv*pres_tmp_2_m/rho_tmp_2_m));
 
           phi_p.submit_value(-a31*dt*avg_tensor_product_u_n*n_plus
@@ -2499,6 +2573,7 @@ namespace Step35 {
         phi_pres_fixed.reinit(face);
         phi_pres_fixed.gather_evaluate(src[5], true, false);
         phi.reinit(face);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& n_plus           = phi.get_normal_vector(q);
 
@@ -2531,17 +2606,21 @@ namespace Step35 {
           const auto& avg_pres_old           = 0.5*(pres_old + pres_old_D);
           const auto& jump_rhou_old          = rho_old*u_old - rho_old_D*u_old_D;
           const auto& lambda_old             = std::max(scalar_product(u_old, u_old) +
+                                                        0.0*1.0/Ma*
                                                         std::sqrt(EquationData::Cp_Cv*pres_old/rho_old),
                                                         scalar_product(u_old_D, u_old_D) +
+                                                        0.0*1.0/Ma*
                                                         std::sqrt(EquationData::Cp_Cv*pres_old_D/rho_old_D));
 
           const auto& rho_tmp_2              = phi_rho_tmp_2.get_value(q);
           const auto& u_fixed                = phi_u_fixed.get_value(q);
           const auto& pres_fixed             = phi_pres_fixed.get_value(q);
-          const auto& lambda_fixed           = std::max(scalar_product(u_fixed, u_fixed) +
-                                                        std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_tmp_2),
-                                                        scalar_product(u_tmp_2_D, u_tmp_2_D) +
-                                                        std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
+          const auto& lambda_fixed           = 0.0*std::max(scalar_product(u_fixed, u_fixed) +
+                                                            1.0/Ma*
+                                                            std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_tmp_2),
+                                                            scalar_product(u_tmp_2_D, u_tmp_2_D) +
+                                                            1.0/Ma*
+                                                            std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
 
           phi.submit_value(-a21*dt*avg_tensor_product_u_n*n_plus
                            -a21_tilde*dt/(Ma*Ma)*avg_pres_old*n_plus
@@ -2597,6 +2676,7 @@ namespace Step35 {
         phi_pres_fixed.reinit(face);
         phi_pres_fixed.gather_evaluate(src[8], true, false);
         phi.reinit(face);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& n_plus           = phi.get_normal_vector(q);
 
@@ -2635,8 +2715,10 @@ namespace Step35 {
           const auto& avg_pres_old           = 0.5*(pres_old + pres_old_D);
           const auto& jump_rhou_old          = rho_old*u_old - rho_old_D*u_old_D;
           const auto& lambda_old             = std::max(scalar_product(u_old, u_old) +
+                                                        0.0*1.0/Ma*
                                                         std::sqrt(EquationData::Cp_Cv*pres_old/rho_old),
                                                         scalar_product(u_old_D, u_old_D) +
+                                                        0.0*1.0/Ma*
                                                         std::sqrt(EquationData::Cp_Cv*pres_old_D/rho_old_D));
 
           const auto& rho_tmp_2                  = phi_rho_tmp_2.get_value(q);
@@ -2647,17 +2729,21 @@ namespace Step35 {
           const auto& avg_pres_tmp_2             = 0.5*(pres_tmp_2 + pres_tmp_2_D);
           const auto& jump_rhou_tmp_2            = rho_tmp_2*u_tmp_2 - rho_tmp_2_D*u_tmp_2_D;
           const auto& lambda_tmp_2               = std::max(scalar_product(u_tmp_2, u_tmp_2) +
+                                                            0.0*1.0/Ma*
                                                             std::sqrt(EquationData::Cp_Cv*pres_tmp_2/rho_tmp_2),
                                                             scalar_product(u_tmp_2_D, u_tmp_2_D) +
+                                                            0.0*1.0/Ma*
                                                             std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
 
           const auto& rho_curr     = phi_rho_curr.get_value(q);
           const auto& u_fixed      = phi_u_fixed.get_value(q);
           const auto& pres_fixed   = phi_pres_fixed.get_value(q);
-          const auto& lambda_fixed = std::max(scalar_product(u_fixed, u_fixed) +
-                                              std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_curr),
-                                              scalar_product(u_curr_D, u_curr_D) +
-                                              std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
+          const auto& lambda_fixed = 0.0*std::max(scalar_product(u_fixed, u_fixed) +
+                                                  1.0/Ma*
+                                                  std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_curr),
+                                                  scalar_product(u_curr_D, u_curr_D) +
+                                                  1.0/Ma*
+                                                  std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
 
           phi.submit_value(-a31*dt*avg_tensor_product_u_n*n_plus
                            -a31_tilde*dt/(Ma*Ma)*avg_pres_old*n_plus
@@ -2710,6 +2796,7 @@ namespace Step35 {
       phi_rho_for_fixed.gather_evaluate(rho_for_fixed, true, false);
       phi.reinit(cell);
       phi.gather_evaluate(src, true, false);
+
       for(unsigned int q = 0; q < phi.n_q_points; ++q)
         phi.submit_value(phi_rho_for_fixed.get_value(q)*phi.get_value(q), q);
       phi.integrate_scatter(true, false, dst);
@@ -2755,6 +2842,7 @@ namespace Step35 {
       phi_p.gather_evaluate(src, true, false);
       phi_m.reinit(face);
       phi_m.gather_evaluate(src, true, false);
+
       for(unsigned int q = 0; q < phi_p.n_q_points; ++q) {
         const auto& u_fixed_p       = phi_u_fixed_p.get_value(q);
         const auto& u_fixed_m       = phi_u_fixed_m.get_value(q);
@@ -2762,10 +2850,12 @@ namespace Step35 {
         const auto& pres_fixed_m    = phi_pres_fixed_m.get_value(q);
         const auto& rho_for_fixed_p = phi_rho_for_fixed_p.get_value(q);
         const auto& rho_for_fixed_m = phi_rho_for_fixed_m.get_value(q);
-        const auto& lambda_fixed    = std::max(scalar_product(u_fixed_p, u_fixed_p) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_for_fixed_p),
-                                               scalar_product(u_fixed_m, u_fixed_m) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_for_fixed_m));
+        const auto& lambda_fixed    = 0.0*std::max(scalar_product(u_fixed_p, u_fixed_p) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed_p/rho_for_fixed_p),
+                                                   scalar_product(u_fixed_m, u_fixed_m) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed_m/rho_for_fixed_m));
         const auto& jump_term       = (rho_for_fixed_p*phi_p.get_value(q) -
                                        rho_for_fixed_m*phi_m.get_value(q));
 
@@ -2810,6 +2900,7 @@ namespace Step35 {
         phi_pres_fixed.gather_evaluate(pres_fixed, true, false);
         phi.reinit(face);
         phi.gather_evaluate(src, true, false);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& point_vectorized = phi.quadrature_point(q);
           auto        rho_tmp_2_D      = VectorizedArray<Number>();
@@ -2828,10 +2919,12 @@ namespace Step35 {
           const auto& u_fixed       = phi_u_fixed.get_value(q);
           const auto& pres_fixed    = phi_pres_fixed.get_value(q);
           const auto& rho_for_fixed = phi_rho_for_fixed.get_value(q);
-          const auto& lambda_fixed  = std::max(scalar_product(u_fixed, u_fixed) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_for_fixed),
-                                               scalar_product(u_tmp_2_D, u_tmp_2_D) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
+          const auto& lambda_fixed  = 0.0*std::max(scalar_product(u_fixed, u_fixed) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_for_fixed),
+                                                   scalar_product(u_tmp_2_D, u_tmp_2_D) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_tmp_2_D/rho_tmp_2_D));
 
           phi.submit_value(a22_tilde*dt*0.5*lambda_fixed*rho_for_fixed*phi.get_value(q), q);
         }
@@ -2860,11 +2953,12 @@ namespace Step35 {
         phi_pres_fixed.gather_evaluate(pres_fixed, true, false);
         phi.reinit(face);
         phi.gather_evaluate(src, true, false);
+
         for(unsigned int q = 0; q < phi.n_q_points; ++q) {
           const auto& point_vectorized = phi.quadrature_point(q);
-          auto        rho_curr_D      = VectorizedArray<Number>();
-          auto        pres_curr_D     = VectorizedArray<Number>();
-          auto        u_curr_D        = Tensor<1, dim, VectorizedArray<Number>>();
+          auto        rho_curr_D       = VectorizedArray<Number>();
+          auto        pres_curr_D      = VectorizedArray<Number>();
+          auto        u_curr_D         = Tensor<1, dim, VectorizedArray<Number>>();
           for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
             Point<dim> point;
             for(unsigned int d = 0; d < dim; ++d)
@@ -2878,10 +2972,12 @@ namespace Step35 {
           const auto& u_fixed       = phi_u_fixed.get_value(q);
           const auto& pres_fixed    = phi_pres_fixed.get_value(q);
           const auto& rho_for_fixed = phi_rho_for_fixed.get_value(q);
-          const auto& lambda_fixed  = std::max(scalar_product(u_fixed, u_fixed) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_for_fixed),
-                                               scalar_product(u_curr_D, u_curr_D) +
-                                               std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
+          const auto& lambda_fixed  = 0.0*std::max(scalar_product(u_fixed, u_fixed) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_fixed/rho_for_fixed),
+                                                   scalar_product(u_curr_D, u_curr_D) +
+                                                   1.0/Ma*
+                                                   std::sqrt(EquationData::Cp_Cv*pres_curr_D/rho_curr_D));
 
           phi.submit_value(a33_tilde*dt*0.5*lambda_fixed*rho_for_fixed*phi.get_value(q), q);
         }
@@ -3021,6 +3117,7 @@ namespace Step35 {
     return max_celerity;
   }
 
+
   // @sect3{The <code>NavierStokesProjection</code> class}
 
   // Now for the main class of the program. It implements the various versions
@@ -3041,7 +3138,6 @@ namespace Step35 {
     const double Ma;
     const double Fr;
     double       dt;
-    const double CFL;
 
     parallel::distributed::Triangulation<dim> triangulation;
 
@@ -3106,11 +3202,11 @@ namespace Step35 {
     std::shared_ptr<MatrixFree<dim, double>> matrix_free_storage;
 
     HYPERBOLICOperator<dim, EquationData::degree_rho, EquationData::degree_T, EquationData::degree_u,
-                            EquationData::degree_rho + 1, EquationData::degree_T + 1,EquationData::degree_u + 1,
-                            LinearAlgebra::distributed::Vector<double>, double> navier_stokes_matrix;
+                            2*EquationData::degree_rho + 1, 2*EquationData::degree_T + 1, 2*EquationData::degree_u + 1,
+                            LinearAlgebra::distributed::Vector<double>, double> euler_matrix;
 
     MGLevelObject<HYPERBOLICOperator<dim, EquationData::degree_rho, EquationData::degree_T, EquationData::degree_u,
-                                          EquationData::degree_rho + 1, EquationData::degree_T + 1, EquationData::degree_u + 1,
+                                          2*EquationData::degree_rho + 1, 2*EquationData::degree_T + 1, 2*EquationData::degree_u + 1,
                                           LinearAlgebra::distributed::Vector<double>, double>> mg_matrices;
 
     AffineConstraints<double> constraints_velocity,
@@ -3180,7 +3276,6 @@ namespace Step35 {
     Ma(data.Mach),
     Fr(data.Froude),
     dt(data.dt),
-    CFL(data.CFL),
     triangulation(MPI_COMM_WORLD, Triangulation<dim>::limit_level_difference_at_vertices,
                   parallel::distributed::Triangulation<dim>::construct_multigrid_hierarchy),
     fe_density(FE_DGQ<dim>(EquationData::degree_rho), 1),
@@ -3189,13 +3284,13 @@ namespace Step35 {
     dof_handler_density(triangulation),
     dof_handler_velocity(triangulation),
     dof_handler_temperature(triangulation),
-    quadrature_density(EquationData::degree_rho + 2),
-    quadrature_velocity(EquationData::degree_u + 2),
-    quadrature_temperature(EquationData::degree_T + 2),
+    quadrature_density(2*EquationData::degree_rho + 1),
+    quadrature_velocity(2*EquationData::degree_u + 1),
+    quadrature_temperature(2*EquationData::degree_T + 1),
     rho_exact(data.Mach, data.initial_time),
     u_exact(data.Mach, data.initial_time),
     pres_exact(data.Mach, data.initial_time),
-    navier_stokes_matrix(data),
+    euler_matrix(data),
     vel_max_its(data.vel_max_iterations),
     vel_Krylov_size(data.vel_Krylov_size),
     vel_off_diagonals(data.vel_off_diagonals),
@@ -3250,7 +3345,7 @@ namespace Step35 {
     triangulation.refine_global(n_refines);
 
     //dt = CFL*10.0/(std::pow(2, n_refines + 2))/(EquationData::degree_rho);
-    //navier_stokes_matrix.set_dt(dt);
+    //euler_matrix.set_dt(dt);
   }
 
 
@@ -3309,9 +3404,9 @@ namespace Step35 {
     constraints.push_back(&constraints_density);
 
     std::vector<QGauss<1>> quadratures;
-    quadratures.push_back(QGauss<1>(EquationData::degree_u + 1));
-    quadratures.push_back(QGauss<1>(EquationData::degree_T + 1));
-    quadratures.push_back(QGauss<1>(EquationData::degree_rho + 1));
+    quadratures.push_back(QGauss<1>(2*EquationData::degree_u + 1));
+    quadratures.push_back(QGauss<1>(2*EquationData::degree_T + 1));
+    quadratures.push_back(QGauss<1>(2*EquationData::degree_rho + 1));
 
     matrix_free_storage->reinit(dof_handlers, constraints, quadratures, additional_data);
 
@@ -3374,14 +3469,14 @@ namespace Step35 {
     TimerOutput::Scope t(time_table, "Update density");
 
     const std::vector<unsigned int> tmp = {2};
-    navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
+    euler_matrix.initialize(matrix_free_storage, tmp, tmp);
 
-    navier_stokes_matrix.set_NS_stage(1);
+    euler_matrix.set_NS_stage(1);
 
     if(HYPERBOLIC_stage == 1)
-      navier_stokes_matrix.vmult_rhs_rho_projection(rhs_rho, {rho_old, u_old, pres_old});
+      euler_matrix.vmult_rhs_rho_projection(rhs_rho, {rho_old, u_old, pres_old});
     else
-      navier_stokes_matrix.vmult_rhs_rho_projection(rhs_rho, {rho_old, u_old, pres_old,
+      euler_matrix.vmult_rhs_rho_projection(rhs_rho, {rho_old, u_old, pres_old,
                                                               rho_tmp_2, u_tmp_2, pres_tmp_2});
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_rho.l2_norm());
@@ -3389,11 +3484,11 @@ namespace Step35 {
 
     if(HYPERBOLIC_stage == 1) {
       rho_tmp_2 = rho_old;
-      cg.solve(navier_stokes_matrix, rho_tmp_2, rhs_rho, PreconditionIdentity());
+      cg.solve(euler_matrix, rho_tmp_2, rhs_rho, PreconditionIdentity());
     }
     else {
       rho_curr = rho_tmp_2;
-      cg.solve(navier_stokes_matrix, rho_curr, rhs_rho, PreconditionIdentity());
+      cg.solve(euler_matrix, rho_curr, rhs_rho, PreconditionIdentity());
     }
   }
 
@@ -3407,25 +3502,25 @@ namespace Step35 {
     TimerOutput::Scope t(time_table, "Fixed point pressure");
 
     const std::vector<unsigned int> tmp = {1};
-    navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
+    euler_matrix.initialize(matrix_free_storage, tmp, tmp);
 
-    navier_stokes_matrix.set_NS_stage(2);
+    euler_matrix.set_NS_stage(2);
 
-    navier_stokes_matrix.set_pres_fixed(pres_fixed_old);
-    navier_stokes_matrix.set_u_fixed(u_fixed);
+    euler_matrix.set_pres_fixed(pres_fixed_old);
+    euler_matrix.set_u_fixed(u_fixed);
     if(HYPERBOLIC_stage == 1) {
-      navier_stokes_matrix.vmult_rhs_pressure(rhs_pres, {rho_old, u_old, pres_old,
+      euler_matrix.vmult_rhs_pressure(rhs_pres, {rho_old, u_old, pres_old,
                                                          rho_tmp_2, u_fixed, pres_fixed_old});
 
-      navier_stokes_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
+      euler_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
                                                              rho_tmp_2, u_fixed, pres_fixed_old});
     }
     else {
-      navier_stokes_matrix.vmult_rhs_pressure(rhs_pres, {rho_old, u_old, pres_old,
+      euler_matrix.vmult_rhs_pressure(rhs_pres, {rho_old, u_old, pres_old,
                                                          rho_tmp_2, u_tmp_2, pres_tmp_2,
                                                          rho_curr, u_fixed, pres_fixed_old});
 
-      navier_stokes_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
+      euler_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
                                                              rho_tmp_2, u_tmp_2, pres_tmp_2,
                                                              rho_curr, u_fixed, pres_fixed_old});
     }
@@ -3433,27 +3528,27 @@ namespace Step35 {
     SolverControl solver_control_schur(vel_max_its, 1e-12*rhs_u.l2_norm());
     SolverGMRES<LinearAlgebra::distributed::Vector<double>> gmres_schur(solver_control_schur);
     const std::vector<unsigned int> tmp_reinit = {0};
-    navier_stokes_matrix.initialize(matrix_free_storage, tmp_reinit, tmp_reinit);
+    euler_matrix.initialize(matrix_free_storage, tmp_reinit, tmp_reinit);
     LinearAlgebra::distributed::Vector<double> tmp_1;
     matrix_free_storage->initialize_dof_vector(tmp_1, 0);
     tmp_1 = 0;
-    navier_stokes_matrix.set_NS_stage(3);
-    gmres_schur.solve(navier_stokes_matrix, tmp_1, rhs_u, PreconditionIdentity());
+    euler_matrix.set_NS_stage(3);
+    gmres_schur.solve(euler_matrix, tmp_1, rhs_u, PreconditionIdentity());
 
     LinearAlgebra::distributed::Vector<double> tmp_2;
     matrix_free_storage->initialize_dof_vector(tmp_2, 1);
-    navier_stokes_matrix.vmult_enthalpy(tmp_2, tmp_1);
+    euler_matrix.vmult_enthalpy(tmp_2, tmp_1);
 
     rhs_pres.add(-1.0, tmp_2);
 
-    navier_stokes_matrix.set_NS_stage(2);
-    navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
+    euler_matrix.set_NS_stage(2);
+    euler_matrix.initialize(matrix_free_storage, tmp, tmp);
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_pres.l2_norm());
     SolverGMRES<LinearAlgebra::distributed::Vector<double>> gmres(solver_control);
 
     pres_fixed.equ(1.0, pres_fixed_old);
-    gmres.solve(navier_stokes_matrix, pres_fixed, rhs_pres, PreconditionIdentity());
+    gmres.solve(euler_matrix, pres_fixed, rhs_pres, PreconditionIdentity());
   }
 
 
@@ -3466,19 +3561,19 @@ namespace Step35 {
     TimerOutput::Scope t(time_table, "Update velocity");
 
     const std::vector<unsigned int> tmp = {0};
-    navier_stokes_matrix.initialize(matrix_free_storage, tmp, tmp);
+    euler_matrix.initialize(matrix_free_storage, tmp, tmp);
 
-    navier_stokes_matrix.set_NS_stage(3);
+    euler_matrix.set_NS_stage(3);
 
     LinearAlgebra::distributed::Vector<double> tmp_1;
     matrix_free_storage->initialize_dof_vector(tmp_1, 0);
-    navier_stokes_matrix.vmult_pressure(tmp_1, pres_fixed);
+    euler_matrix.vmult_pressure(tmp_1, pres_fixed);
     rhs_u.add(-1.0, tmp_1);
 
     SolverControl solver_control(vel_max_its, vel_eps*rhs_u.l2_norm());
     SolverGMRES<LinearAlgebra::distributed::Vector<double>> gmres(solver_control);
 
-    gmres.solve(navier_stokes_matrix, u_fixed, rhs_u, PreconditionIdentity());
+    gmres.solve(euler_matrix, u_fixed, rhs_u, PreconditionIdentity());
   }
 
 
@@ -3690,13 +3785,14 @@ namespace Step35 {
       pres_exact.advance_time(gamma*dt);
       n++;
       pcout << "Step = " << n << " Time = " << time << std::endl;
+
       //--- First stage of HYPERBOLIC operator
-      navier_stokes_matrix.set_HYPERBOLIC_stage(HYPERBOLIC_stage);
+      euler_matrix.set_HYPERBOLIC_stage(HYPERBOLIC_stage);
       verbose_cout << "  Update density stage 1" << std::endl;
       update_density();
       pcout<<"Minimal density "<<get_minimal_density()<<std::endl;
       verbose_cout << "  Fixed point pressure stage 1" << std::endl;
-      navier_stokes_matrix.set_rho_for_fixed(rho_tmp_2);
+      euler_matrix.set_rho_for_fixed(rho_tmp_2);
       pres_fixed_old.equ(1.0, pres_old);
       u_fixed.equ(1.0, u_old);
       for(unsigned int iter = 0; iter < 100; ++iter) {
@@ -3713,23 +3809,29 @@ namespace Step35 {
         VectorTools::integrate_difference(dof_handler_temperature, pres_tmp, ZeroFunction<dim>(),
                                           Linfty_error_per_cell_pres, quadrature_temperature, VectorTools::Linfty_norm);
         error = VectorTools::compute_global_error(triangulation, Linfty_error_per_cell_pres, VectorTools::Linfty_norm)/den;
-        if(error < 1e-6)
+        if(error < 1e-10)
           break;
 
         pres_fixed_old.equ(1.0, pres_fixed);
-        /*pres_tmp_2.equ(1.0, pres_fixed);
-        pcout<<"Minimal pressure "<<get_minimal_pressure()<<std::endl;*/
       }
       pres_tmp_2.equ(1.0, pres_fixed);
       u_tmp_2.equ(1.0, u_fixed);
       /*pres_tmp_2.zero_out_ghosts();
-      VectorTools::interpolate(dof_handler_temperature, pres_exact, pres_tmp_2);
-      u_tmp_2.zero_out_ghosts();
+      VectorTools::interpolate(dof_handler_temperature, pres_exact, pres_tmp_2);*/
+      /*pres_fixed_old.equ(1.0, pres_tmp_2);
+      pres_fixed.equ(1.0, pres_fixed_old);
+      euler_matrix.set_pres_fixed(pres_fixed_old);
+      euler_matrix.set_u_fixed(u_fixed);
+      euler_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
+                                                             rho_tmp_2, u_fixed, pres_fixed_old});
+      update_velocity();
+      u_tmp_2.equ(1.0, u_fixed);*/
+      /*u_tmp_2.zero_out_ghosts();
       VectorTools::interpolate(dof_handler_velocity, u_exact, u_tmp_2);*/
       HYPERBOLIC_stage = 2; //--- Flag to pass at second stage
 
       //--- Second stage of HYPERBOLIC operator
-      navier_stokes_matrix.set_HYPERBOLIC_stage(HYPERBOLIC_stage);
+      euler_matrix.set_HYPERBOLIC_stage(HYPERBOLIC_stage);
       rho_exact.advance_time((1.0 - gamma)*dt);
       u_exact.advance_time((1.0 - gamma)*dt);
       pres_exact.advance_time((1.0 - gamma)*dt);
@@ -3737,7 +3839,7 @@ namespace Step35 {
       update_density();
       pcout<<"Minimal density "<<get_minimal_density()<<std::endl;
       verbose_cout << "  Fixed point pressure stage 2" << std::endl;
-      navier_stokes_matrix.set_rho_for_fixed(rho_curr);
+      euler_matrix.set_rho_for_fixed(rho_curr);
       pres_fixed_old.equ(1.0, pres_tmp_2);
       u_fixed.equ(1.0, u_tmp_2);
       for(unsigned int iter = 0; iter < 100; ++iter) {
@@ -3754,34 +3856,41 @@ namespace Step35 {
         VectorTools::integrate_difference(dof_handler_temperature, pres_tmp, ZeroFunction<dim>(),
                                           Linfty_error_per_cell_pres, quadrature_temperature, VectorTools::Linfty_norm);
         error = VectorTools::compute_global_error(triangulation, Linfty_error_per_cell_pres, VectorTools::Linfty_norm)/den;
-        if(error < 1e-6)
+        if(error < 1e-10)
           break;
 
         pres_fixed_old.equ(1.0, pres_fixed);
-        /*pres_old.equ(1.0, pres_fixed);
-        pcout<<"Minimal pressure "<<get_minimal_pressure()<<std::endl;*/
       }
       pres_old.equ(1.0, pres_fixed);
       u_curr.equ(1.0, u_fixed);
       /*pres_old.zero_out_ghosts();
-      VectorTools::interpolate(dof_handler_temperature, pres_exact, pres_old);
-      u_curr.zero_out_ghosts();
+      VectorTools::interpolate(dof_handler_temperature, pres_exact, pres_old);*/
+      /*pres_fixed_old.equ(1.0, pres_old);
+      pres_fixed.equ(1.0, pres_fixed_old);
+      euler_matrix.set_pres_fixed(pres_fixed_old);
+      euler_matrix.set_u_fixed(u_fixed);
+      euler_matrix.vmult_rhs_velocity_update(rhs_u, {rho_old, u_old, pres_old,
+                                                             rho_tmp_2, u_tmp_2, pres_tmp_2,
+                                                             rho_curr, u_fixed, pres_fixed_old});
+      update_velocity();
+      u_curr.equ(1.0, u_fixed);*/
+      /*u_curr.zero_out_ghosts();
       VectorTools::interpolate(dof_handler_velocity, u_exact, u_curr);*/
       HYPERBOLIC_stage = 1; //--- Flag to pass at first stage at next step
 
       //--- Update for next step
-      navier_stokes_matrix.advance_rho_boundary_time(dt);
-      navier_stokes_matrix.advance_pres_boundary_time(dt);
-      navier_stokes_matrix.advance_u_boundary_time(dt);
+      euler_matrix.advance_rho_boundary_time(dt);
+      euler_matrix.advance_pres_boundary_time(dt);
+      euler_matrix.advance_u_boundary_time(dt);
       rho_old.equ(1.0, rho_curr);
       u_old.equ(1.0, u_curr);
-      const double max_celerity = navier_stokes_matrix.compute_max_celerity({rho_old, pres_old});
-      pcout<< "Maximal celerity = " << max_celerity << std::endl;
-      pcout << "CFL_c = " << 1.0/Ma*dt*max_celerity*std::pow((EquationData::degree_u), 1.5)*
+      const double max_celerity = euler_matrix.compute_max_celerity({rho_old, pres_old});
+      pcout<< "Maximal celerity = " << 1.0/Ma*max_celerity << std::endl;
+      pcout << "CFL_c = " << 1.0/Ma*dt*max_celerity*EquationData::degree_u*
                              std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
       const double max_velocity = get_maximal_velocity();
       pcout<< "Maximal velocity = " << max_velocity << std::endl;
-      pcout << "CFL_u = " << dt*max_velocity*std::pow((EquationData::degree_u), 1.5)*
+      pcout << "CFL_u = " << dt*max_velocity*EquationData::degree_u*
                              std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
       analyze_results();
       if(n % output_interval == 0) {
@@ -3792,7 +3901,7 @@ namespace Step35 {
       //  break;
       if(T - time < dt && T - time > 1e-10) {
         dt = T - time;
-        navier_stokes_matrix.set_dt(dt);
+        euler_matrix.set_dt(dt);
       }
     }
     if(n % output_interval != 0) {
