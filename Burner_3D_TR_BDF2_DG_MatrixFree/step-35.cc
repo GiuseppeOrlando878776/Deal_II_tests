@@ -298,7 +298,7 @@ namespace Step35 {
     double Velocity<dim>::value(const Point<dim>& p, const unsigned int component) const {
       AssertIndexRange(component, 3);
       if(component == 1)
-        return -24.3125555326;
+        return -1.0;
       else
         return 0.0;
     }
@@ -2213,81 +2213,6 @@ namespace Step35 {
         u_star = u_n_gamma_k;
       }
 
-      /*MGTransferMatrixFree<dim, float> mg_transfer;
-      mg_transfer.build(dof_handler_velocity);
-
-      MGLevelObject<LinearAlgebra::distributed::Vector<float>> level_projection(0, triangulation.n_global_levels() - 1);
-      if(TR_BDF2_stage == 1)
-        mg_transfer.interpolate_to_mg(dof_handler_velocity, level_projection, u_n_k);
-      else
-        mg_transfer.interpolate_to_mg(dof_handler_velocity, level_projection, u_n_gamma_k);
-
-      for(unsigned int level = 0; level < triangulation.n_global_levels(); ++level) {
-        typename MatrixFree<dim, float>::AdditionalData additional_data_mg;
-        additional_data_mg.tasks_parallel_scheme = MatrixFree<dim, float>::AdditionalData::none;
-        additional_data_mg.mapping_update_flags  = (update_gradients | update_JxW_values | update_values | update_quadrature_points);
-        additional_data_mg.mapping_update_flags_inner_faces = (update_gradients | update_JxW_values | update_values |
-                                                               update_quadrature_points | update_normal_vectors);
-        additional_data_mg.mapping_update_flags_boundary_faces = (update_gradients | update_JxW_values | update_values | update_normal_vectors);
-        additional_data_mg.mapping_update_flags  = (update_gradients | update_JxW_values | update_values);
-        additional_data_mg.mapping_update_flags_inner_faces = (update_gradients | update_JxW_values | update_values);
-        additional_data_mg.mapping_update_flags_boundary_faces = (update_gradients | update_JxW_values | update_values);
-        additional_data_mg.mg_level = level;
-        std::vector<const AffineConstraints<float>*> constraints_mg;
-        AffineConstraints<float> constraints_velocity_mg;
-        constraints_velocity_mg.clear();
-        constraints_mg.push_back(&constraints_velocity_mg);
-        AffineConstraints<float> constraints_pressure_mg;
-        constraints_pressure_mg.clear();
-        constraints_mg.push_back(&constraints_pressure_mg);
-        std::shared_ptr<MatrixFree<dim, float>> mg_mf_storage_level(new MatrixFree<dim, float>());
-        mg_mf_storage_level->reinit(dof_handlers, constraints_mg, quadratures, additional_data_mg);
-        mg_matrices[level].initialize(mg_mf_storage_level, tmp, tmp);
-        mg_matrices[level].set_NS_stage(1);
-        mg_matrices[level].set_u_extr(level_projection[level]);
-        mg_matrices[level].compute_diagonal();
-      }
-
-      using SmootherType = PreconditionJacobi<NavierStokesProjectionOperator<dim,
-                                                                             EquationData::degree_p,
-                                                                             EquationData::degree_p + 1,
-                                                                             EquationData::degree_p + 1,
-                                                                             EquationData::degree_p + 2,
-                                                                             LinearAlgebra::distributed::Vector<float>,
-                                                                             float>>;
-      MGSmootherPrecondition<NavierStokesProjectionOperator<dim,
-                                                            EquationData::degree_p,
-                                                            EquationData::degree_p + 1,
-                                                            EquationData::degree_p + 1,
-                                                            EquationData::degree_p + 2,
-                                                            LinearAlgebra::distributed::Vector<float>,
-                                                            float>,
-                              SmootherType,
-                              LinearAlgebra::distributed::Vector<float>> mg_smoother;
-      mg_smoother.initialize(mg_matrices);
-
-      PreconditionIdentity        identity;
-      SolverGMRES<LinearAlgebra::distributed::Vector<float>>
-      gmres_mg(solver_control, SolverGMRES<LinearAlgebra::distributed::Vector<float>>::AdditionalData(vel_Krylov_size));
-      MGCoarseGridIterativeSolver<LinearAlgebra::distributed::Vector<float>,
-                                  SolverGMRES<LinearAlgebra::distributed::Vector<float>>,
-                                  NavierStokesProjectionOperator<dim,
-                                                                 EquationData::degree_p,
-                                                                 EquationData::degree_p + 1,
-                                                                 EquationData::degree_p + 1,
-                                                                 EquationData::degree_p + 2,
-                                                                 LinearAlgebra::distributed::Vector<float>,
-                                                                 float>,
-                                  PreconditionIdentity> mg_coarse(gmres_mg, mg_matrices[0], identity);
-
-      mg::Matrix<LinearAlgebra::distributed::Vector<float>> mg_matrix(mg_matrices);
-
-      Multigrid<LinearAlgebra::distributed::Vector<float>> mg(mg_matrix, mg_coarse, mg_transfer, mg_smoother, mg_smoother);
-
-      PreconditionMG<dim,
-                     LinearAlgebra::distributed::Vector<float>,
-                     MGTransferMatrixFree<dim, float>> preconditioner(dof_handler_velocity, mg, mg_transfer);*/
-
       PreconditionJacobi<NavierStokesProjectionOperator<dim,
                                                         EquationData::degree_p,
                                                         EquationData::degree_p + 1,
@@ -2791,7 +2716,7 @@ namespace Step35 {
         verbose_cout << "Plotting Solution final" << std::endl;
         output_results(n);
       }
-      if(time > 0.001*T && get_maximal_difference()/dt < 1e-7)
+      if(time > 0.01*T && get_maximal_difference()/dt < 1e-7)
         break;
       else if(T - time < dt && T - time > 1e-10) {
         dt = T - time;
@@ -2808,11 +2733,11 @@ namespace Step35 {
       verbose_cout << "Plotting Solution final" << std::endl;
       output_results(n);
     }
-    if(refinement_iterations > 0) {
+    /*if(refinement_iterations > 0) {
       for(unsigned int lev = 0; lev < triangulation.n_global_levels() - 1; ++ lev)
         interpolate_max_res(lev);
       save_max_res();
-    }
+    }*/
   }
 
 } // namespace Step35
