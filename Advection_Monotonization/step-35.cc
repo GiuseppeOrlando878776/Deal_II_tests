@@ -301,12 +301,9 @@ namespace Step35 {
 
     template<int dim>
     double Velocity<dim>::value(const Point<dim>& p, const unsigned int component) const {
-      AssertIndexRange(component, 2);
+      AssertIndexRange(component, 1);
 
-      if(component == 0)
-        return 1.0;
-
-      return 2.0;
+      return 1.0;
     }
 
 
@@ -338,7 +335,7 @@ namespace Step35 {
       (void)component;
       AssertIndexRange(component, 1);
 
-      return std::sin(2.0*numbers::PI*(p[0] - this->get_time()))*std::sin(2.0*numbers::PI*(p[1] - 2.0*this->get_time()));
+      return (std::abs(p[0] - this->get_time()) <= 0.5);
     }
 
   } // namespace EquationData
@@ -847,8 +844,8 @@ namespace Step35 {
                                               std::sqrt(scalar_product(velocity, velocity)));
           const auto& jump_rho_old = phi_rho_old_p.get_value(q) - phi_rho_old_m.get_value(q);
 
-          phi_p.submit_value(-a21*dt*(scalar_product(avg_flux, n_plus) + 0.05*lambda_old*jump_rho_old), q);
-          phi_m.submit_value(a21*dt*(scalar_product(avg_flux, n_plus) + 0.05*lambda_old*jump_rho_old), q);
+          phi_p.submit_value(-a21*dt*(scalar_product(avg_flux, n_plus) + 0.5*lambda_old*jump_rho_old), q);
+          phi_m.submit_value(a21*dt*(scalar_product(avg_flux, n_plus) + 0.5*lambda_old*jump_rho_old), q);
         }
         phi_p.integrate_scatter(true, false, dst);
         phi_m.integrate_scatter(true, false, dst);
@@ -886,8 +883,8 @@ namespace Step35 {
                                                 std::sqrt(scalar_product(velocity, velocity)));
           const auto& jump_rho_tmp_2 = phi_rho_tmp_2_p.get_value(q) - phi_rho_tmp_2_m.get_value(q);
 
-          phi_p.submit_value(-a32*a21/a31*dt*(scalar_product(avg_flux_tmp_2, n_plus) + 0.05*lambda_tmp_2*jump_rho_tmp_2), q);
-          phi_m.submit_value(a32*a21/a31*dt*(scalar_product(avg_flux_tmp_2, n_plus) + 0.05*lambda_tmp_2*jump_rho_tmp_2), q);
+          phi_p.submit_value(-a32*a21/a31*dt*(scalar_product(avg_flux_tmp_2, n_plus) + 0.5*lambda_tmp_2*jump_rho_tmp_2), q);
+          phi_m.submit_value(a32*a21/a31*dt*(scalar_product(avg_flux_tmp_2, n_plus) + 0.5*lambda_tmp_2*jump_rho_tmp_2), q);
         }
         phi_p.integrate_scatter(true, false, dst);
         phi_m.integrate_scatter(true, false, dst);
@@ -938,7 +935,7 @@ namespace Step35 {
                                                   std::sqrt(scalar_product(velocity, velocity)));
           const auto& jump_rho_old     = phi_rho_old.get_value(q) - rho_old_D;
 
-          phi.submit_value(-a21*dt*(scalar_product(avg_flux, n_plus) + 0.05*lambda_old*jump_rho_old), q);
+          phi.submit_value(-a21*dt*(scalar_product(avg_flux, n_plus) + 0.5*lambda_old*jump_rho_old), q);
         }
         phi.integrate_scatter(true, false, dst);
       }
@@ -977,7 +974,7 @@ namespace Step35 {
                                                   std::sqrt(scalar_product(velocity, velocity)));
           const auto& jump_rho_tmp_2   = phi_rho_tmp_2.get_value(q) - rho_tmp_2_D;
 
-          phi.submit_value(-a32*a21/a31*dt*(scalar_product(avg_flux_tmp_2, n_plus) + 0.05*lambda_tmp_2*jump_rho_tmp_2), q);
+          phi.submit_value(-a32*a21/a31*dt*(scalar_product(avg_flux_tmp_2, n_plus) + 0.5*lambda_tmp_2*jump_rho_tmp_2), q);
         }
         phi.integrate_scatter(true, false, dst);
       }
@@ -1064,7 +1061,7 @@ namespace Step35 {
     unsigned int HYPERBOLIC_stage; //--- Flag to check at which current stage of TR-BDF2 are
     double       dt;
 
-    parallel::distributed::Triangulation<dim> triangulation;
+    Triangulation<dim> triangulation;
 
     FESystem<dim> fe_density;
     FESystem<dim> fe_velocity;
@@ -1158,6 +1155,10 @@ namespace Step35 {
     double get_minimal_density();
 
     double get_maximal_density();
+
+    double get_minimal_density_Q0();
+
+    double get_maximal_density_Q0();
   };
 
 
@@ -1176,8 +1177,7 @@ namespace Step35 {
     a32((7.0 - 2.0*gamma)/6.0),
     HYPERBOLIC_stage(1),             //--- Initialize the flag for the TR_BDF2 stage
     dt(data.dt),
-    triangulation(MPI_COMM_WORLD, Triangulation<dim>::limit_level_difference_at_vertices,
-                  parallel::distributed::Triangulation<dim>::construct_multigrid_hierarchy),
+    triangulation(),
     fe_density(FE_DGQ<dim>(EquationData::degree), 1),
     fe_velocity(FE_DGQ<dim>(EquationData::degree), dim),
     fe_density_Q0(FE_DGQ<dim>(0), 1),
@@ -1228,7 +1228,7 @@ namespace Step35 {
   void NavierStokesProjection<dim>::create_triangulation(const unsigned int n_cells) {
     TimerOutput::Scope t(time_table, "Create triangulation");
 
-    GridGenerator::subdivided_hyper_cube(triangulation, n_cells, 0.0, 1.0);
+    GridGenerator::subdivided_hyper_cube(triangulation, n_cells, -3.0, 3.0);
   }
 
 
@@ -1256,6 +1256,8 @@ namespace Step35 {
           << std::endl
           << "dim (X_h) = " << dof_handler_density.n_dofs()
           << std::endl;
+   pcout  << "CFL_u = " << dt*1.0*EquationData::degree*
+                           std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
 
     typename MatrixFree<dim, double>::AdditionalData additional_data;
     additional_data.mapping_update_flags = (update_gradients | update_JxW_values |
@@ -1362,14 +1364,14 @@ namespace Step35 {
       euler_matrix.initialize(matrix_free_storage, tmp_Q0, tmp_Q0);
       rho_tmp_2_Q0.equ(1.0, rho_old_Q0);
       cg_Q0.solve(euler_matrix, rho_tmp_2_Q0, rhs_rho_Q0, PreconditionIdentity());
-      FETools::interpolate(dof_handler_density_Q0, rho_tmp_2_Q0, dof_handler_density, rho_tmp);
+      /*FETools::interpolate(dof_handler_density_Q0, rho_tmp_2_Q0, dof_handler_density, rho_tmp);
 
       rho_tmp_2.add(-1.0, rho_tmp);
       rho_tmp_2 /= (5.0*GridTools::minimal_cell_diameter(triangulation)/std::sqrt(dim)*gamma*dt);
       for(unsigned int i = 0; i < rho_tmp_2.local_size(); ++i)
         rho_tmp_2.local_element(i) *= (std::abs(rho_tmp_2.local_element(i)) <= 1.0);
       rho_tmp_2 *= (5.0*GridTools::minimal_cell_diameter(triangulation)/std::sqrt(dim)*gamma*dt);
-      rho_tmp_2.add(1.0, rho_tmp);
+      rho_tmp_2.add(1.0, rho_tmp);*/
     }
     else {
       euler_matrix.set_NS_stage(1);
@@ -1381,16 +1383,16 @@ namespace Step35 {
       euler_matrix.initialize(matrix_free_storage, tmp_Q0, tmp_Q0);
       rho_curr_Q0.equ(1.0, rho_tmp_2_Q0);
       cg_Q0.solve(euler_matrix, rho_curr_Q0, rhs_rho_Q0, PreconditionIdentity());
-      FETools::interpolate(dof_handler_density_Q0, rho_curr_Q0, dof_handler_density, rho_tmp);
+      //FETools::interpolate(dof_handler_density_Q0, rho_curr_Q0, dof_handler_density, rho_tmp);
       rho_curr_Q0 *= a31/gamma;
       rho_curr_Q0.add(1.0 - a31/gamma, rho_old_Q0);
 
-      rho_curr.add(-1.0, rho_tmp);
+      /*rho_curr.add(-1.0, rho_tmp);
       rho_curr /= (5.0*GridTools::minimal_cell_diameter(triangulation)/std::sqrt(dim)*a32*gamma/a31*dt);
       for(unsigned int i = 0; i < rho_curr.local_size(); ++i)
         rho_curr.local_element(i) *= (std::abs(rho_curr.local_element(i)) <= 1.0);
       rho_curr *= (5.0*GridTools::minimal_cell_diameter(triangulation)/std::sqrt(dim)*a32*gamma/a31*dt);
-      rho_curr.add(1.0, rho_tmp);
+      rho_curr.add(1.0, rho_tmp);*/
       rho_curr *= a31/gamma;
       rho_curr.add(1.0 - a31/gamma, rho_old);
     }
@@ -1427,15 +1429,18 @@ namespace Step35 {
     pcout << "Verification via Linfty error density:    "<< error_rho_Linfty << std::endl;
     pcout << "Verification via Linfty relative error density:    "<< error_rel_rho_Linfty << std::endl;
 
+    const double ex_mean      = 1.0/6.0;
     const double mean_value   = VectorTools::compute_mean_value(dof_handler_density, quadrature_accurate, rho_old, 0);
-    const double ex_variance  = 0.5;
+    const double ex_variance  = std::sqrt(5.0/6.0);
     VectorTools::integrate_difference(dof_handler_density, rho_old, ConstantFunction<dim>(mean_value),
                                       L2_error_per_cell_rho, quadrature_accurate, VectorTools::L2_norm);
-    const double variance     = VectorTools::compute_global_error(triangulation, L2_error_per_cell_rho, VectorTools::L2_norm);
-    const double dissipation  = (ex_variance - variance)*(ex_variance - variance) + mean_value*mean_value;
+    const double variance     = VectorTools::compute_global_error(triangulation, L2_error_per_cell_rho, VectorTools::L2_norm)/
+                                std::sqrt(6.0);
+    const double dissipation  = (ex_variance - variance)*(ex_variance - variance) + (mean_value - ex_mean)*(mean_value - ex_mean);
     pcout << "Dissipation error:    "<< dissipation << std::endl;
 
     VectorTools::interpolate(dof_handler_density, rho_exact, rho_tmp_2);
+    rho_tmp_2.add(-ex_mean);
     rho_curr.equ(1.0, rho_old);
     rho_curr.add(-mean_value);
     rho_tmp_2.scale(rho_curr);
@@ -1443,13 +1448,61 @@ namespace Step35 {
                                    VectorTools::compute_mean_value(dof_handler_density, quadrature_accurate, rho_tmp_2, 0));
     pcout << "Dispersion error:    "<< dispersion << std::endl;
 
+    //--- Analyze now Q0 results
+    rho_curr_Q0 = 0;
+
+    VectorTools::integrate_difference(dof_handler_density_Q0, rho_old_Q0, rho_exact,
+                                      L2_error_per_cell_rho, quadrature_accurate, VectorTools::L2_norm);
+    const double error_rho_L2_Q0 = VectorTools::compute_global_error(triangulation, L2_error_per_cell_rho, VectorTools::L2_norm);
+    VectorTools::integrate_difference(dof_handler_density_Q0, rho_curr_Q0, rho_exact,
+                                      L2_error_per_cell_rho, quadrature_accurate, VectorTools::L2_norm);
+    const double L2_rho_Q0 = VectorTools::compute_global_error(triangulation, L2_error_per_cell_rho, VectorTools::L2_norm);
+    const double error_rel_rho_L2_Q0 = error_rho_L2_Q0/L2_rho_Q0;
+    pcout << "Verification via L2 error density Q0:    "<< error_rho_L2_Q0 << std::endl;
+    pcout << "Verification via L2 relative error density Q0:    "<< error_rel_rho_L2_Q0 << std::endl;
+
+    VectorTools::integrate_difference(dof_handler_density_Q0, rho_old_Q0, rho_exact,
+                                      Linfty_error_per_cell_rho, quadrature_accurate, VectorTools::Linfty_norm);
+    const double error_rho_Linfty_Q0 =
+    VectorTools::compute_global_error(triangulation, Linfty_error_per_cell_rho, VectorTools::Linfty_norm);
+    VectorTools::integrate_difference(dof_handler_density_Q0, rho_curr_Q0, rho_exact,
+                                      Linfty_error_per_cell_rho, quadrature_accurate, VectorTools::Linfty_norm);
+    const double Linfty_rho_Q0 = VectorTools::compute_global_error(triangulation, Linfty_error_per_cell_rho, VectorTools::Linfty_norm);
+    const double error_rel_rho_Linfty_Q0 = error_rho_Linfty_Q0/Linfty_rho_Q0;
+    pcout << "Verification via Linfty error density Q0:    "<< error_rho_Linfty_Q0 << std::endl;
+    pcout << "Verification via Linfty relative error density Q0:    "<< error_rel_rho_Linfty_Q0 << std::endl;
+
+    const double mean_value_Q0   = VectorTools::compute_mean_value(dof_handler_density_Q0, quadrature_accurate, rho_old_Q0, 0);
+    VectorTools::integrate_difference(dof_handler_density_Q0, rho_old_Q0, ConstantFunction<dim>(mean_value_Q0),
+                                      L2_error_per_cell_rho, quadrature_accurate, VectorTools::L2_norm);
+    const double variance_Q0     = VectorTools::compute_global_error(triangulation, L2_error_per_cell_rho, VectorTools::L2_norm)/
+                                   std::sqrt(6.0);
+    const double dissipation_Q0  = (ex_variance - variance_Q0)*(ex_variance - variance_Q0) +
+                                   (mean_value_Q0 - ex_mean)*(mean_value_Q0 - ex_mean);
+    pcout << "Dissipation error Q0:    "<< dissipation_Q0 << std::endl;
+
+    VectorTools::interpolate(dof_handler_density_Q0, rho_exact, rho_tmp_2_Q0);
+    rho_tmp_2_Q0.add(-ex_mean);
+    rho_curr_Q0.equ(1.0, rho_old_Q0);
+    rho_curr.add(-mean_value_Q0);
+    rho_tmp_2_Q0.scale(rho_curr_Q0);
+    const double dispersion_Q0 = 2.0*(ex_variance*variance_Q0 -
+                                      VectorTools::compute_mean_value(dof_handler_density_Q0, quadrature_accurate, rho_tmp_2_Q0, 0));
+    pcout << "Dispersion error Q0:    "<< dispersion_Q0 << std::endl;
+
     if(Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0) {
-      output_rho << error_rho_L2         << std::endl;
-      output_rho << error_rel_rho_L2     << std::endl;
-      output_rho << error_rho_Linfty     << std::endl;
-      output_rho << error_rel_rho_Linfty << std::endl;
-      output_rho << dissipation          << std::endl;
-      output_rho << dispersion           << std::endl;
+      output_rho << error_rho_L2            << std::endl;
+      output_rho << error_rel_rho_L2        << std::endl;
+      output_rho << error_rho_Linfty        << std::endl;
+      output_rho << error_rel_rho_Linfty    << std::endl;
+      output_rho << dissipation             << std::endl;
+      output_rho << dispersion              << std::endl;
+      output_rho << error_rho_L2_Q0         << std::endl;
+      output_rho << error_rel_rho_L2_Q0     << std::endl;
+      output_rho << error_rho_Linfty_Q0     << std::endl;
+      output_rho << error_rel_rho_Linfty_Q0 << std::endl;
+      output_rho << dissipation_Q0          << std::endl;
+      output_rho << dispersion_Q0           << std::endl;
     }
   }
 
@@ -1540,6 +1593,45 @@ namespace Step35 {
   }
 
 
+
+  // The following function is used in determining the minimal density Q0
+  //
+  template<int dim>
+  double NavierStokesProjection<dim>::get_minimal_density_Q0() {
+    double min_local_density = std::numeric_limits<double>::max();
+
+    for(const auto& cell: dof_handler_density_Q0.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        std::vector<types::global_dof_index> dof_indices(fe_density_Q0.dofs_per_cell);
+        cell->get_dof_indices(dof_indices);
+        min_local_density = std::min(min_local_density, HYPERBOLIC_stage == 1 ? rho_tmp_2_Q0(dof_indices[0]) :
+                                                                                rho_curr_Q0(dof_indices[0]));
+      }
+    }
+
+    return Utilities::MPI::min(min_local_density, MPI_COMM_WORLD);
+  }
+
+
+  // The following function is used in determining the minimal density
+  //
+  template<int dim>
+  double NavierStokesProjection<dim>::get_maximal_density_Q0() {
+    double max_local_density = std::numeric_limits<double>::min();
+
+    for(const auto& cell: dof_handler_density_Q0.active_cell_iterators()) {
+      if(cell->is_locally_owned()) {
+        std::vector<types::global_dof_index> dof_indices(fe_density_Q0.dofs_per_cell);
+        cell->get_dof_indices(dof_indices);
+        max_local_density = std::max(max_local_density, HYPERBOLIC_stage == 1 ? rho_tmp_2_Q0(dof_indices[0]) :
+                                                                                rho_curr_Q0(dof_indices[0]));
+      }
+    }
+
+    return Utilities::MPI::max(max_local_density, MPI_COMM_WORLD);
+  }
+
+
   // @sect4{ <code>NavierStokesProjection::run</code> }
 
   // This is the time marching function, which starting at <code>t_0</code>
@@ -1569,6 +1661,8 @@ namespace Step35 {
       update_density();
       pcout<<"Minimal density "<<get_minimal_density()<<std::endl;
       pcout<<"Maximal density "<<get_maximal_density()<<std::endl;
+      pcout<<"Minimal density Q0 "<<get_minimal_density_Q0()<<std::endl;
+      pcout<<"Maximal density Q0 "<<get_maximal_density_Q0()<<std::endl;
       euler_matrix.advance_boundary_time(gamma*dt);
       HYPERBOLIC_stage = 2; //--- Flag to pass at second stage
 
@@ -1578,11 +1672,17 @@ namespace Step35 {
       update_density();
       const double rho_min = get_minimal_density();
       const double rho_max = get_maximal_density();
+      const double rho_min_Q0 = get_minimal_density_Q0();
+      const double rho_max_Q0 = get_maximal_density_Q0();
       pcout<<"Minimal density "<< rho_min <<std::endl;
       pcout<<"Maximal density "<< rho_max <<std::endl;
+      pcout<<"Minimal density Q0 "<< rho_min_Q0 <<std::endl;
+      pcout<<"Maximal density Q0 "<< rho_max_Q0 <<std::endl;
       if(Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0) {
         output_rho << rho_min << std::endl;
         output_rho << rho_max << std::endl;
+        output_rho << rho_min_Q0 << std::endl;
+        output_rho << rho_max_Q0 << std::endl;
       }
       euler_matrix.advance_boundary_time((1.0 - gamma)*dt);
       HYPERBOLIC_stage = 1; //--- Flag to pass at first stage at next step
@@ -1590,10 +1690,6 @@ namespace Step35 {
       //--- Update for next step
       rho_old.equ(1.0, rho_curr);
       rho_old_Q0.equ(1.0, rho_curr_Q0);
-      const double max_velocity = get_maximal_velocity();
-      pcout<< "Maximal velocity = " << max_velocity << std::endl;
-      pcout << "CFL_u = " << dt*max_velocity*EquationData::degree*
-                             std::sqrt(dim)/GridTools::minimal_cell_diameter(triangulation) << std::endl;
       rho_exact.advance_time(dt);
       analyze_results();
       if(n % output_interval == 0) {
@@ -1630,7 +1726,7 @@ int main(int argc, char *argv[]) {
     const auto& curr_rank = Utilities::MPI::this_mpi_process(MPI_COMM_WORLD);
     deallog.depth_console(data.verbose && curr_rank == 0 ? 2 : 0);
 
-    NavierStokesProjection<2> test(data);
+    NavierStokesProjection<1> test(data);
     test.run(data.verbose, data.output_interval);
 
     if(curr_rank == 0)
