@@ -273,6 +273,11 @@ namespace Step35 {
   } // namespace RunTimeParameters
 
 
+  template <typename T> int sgn(T val) {
+    return (T(0) < val) - (val < T(0));
+  }
+
+
   // @sect3{Equation data}
 
   // In the next namespace, we declare the initial and boundary conditions
@@ -335,7 +340,8 @@ namespace Step35 {
       (void)component;
       AssertIndexRange(component, 1);
 
-      return (std::abs(p[0] - this->get_time()) <= 0.5);
+      return 0.5*(sgn(std::sin(numbers::PI*(p[0] + 0.5 - this->get_time()))) + 1.0)*
+             std::pow(std::cos(numbers::PI*(p[0] - this->get_time())), 4);
     }
 
   } // namespace EquationData
@@ -396,7 +402,7 @@ namespace Step35 {
     void assemble_rhs_boundary_term_rho_projection(const MatrixFree<dim, Number>&               data,
                                                    Vec&                                         dst,
                                                    const std::vector<Vec>&                      src,
-                                                   const std::pair<unsigned int, unsigned int>& face_range) const;
+                                                   const std::pair<unsigned int, unsigned int>& face_range) const {}
 
     void assemble_cell_term_rho_projection(const MatrixFree<dim, Number>&               data,
                                            Vec&                                         dst,
@@ -414,7 +420,7 @@ namespace Step35 {
     void assemble_rhs_boundary_term_rho_projection_Q0(const MatrixFree<dim, Number>&               data,
                                                       Vec&                                         dst,
                                                       const std::vector<Vec>&                      src,
-                                                      const std::pair<unsigned int, unsigned int>& face_range) const;
+                                                      const std::pair<unsigned int, unsigned int>& face_range) const {}
 
     void assemble_cell_term_rho_projection_Q0(const MatrixFree<dim, Number>&               data,
                                               Vec&                                         dst,
@@ -635,95 +641,6 @@ namespace Step35 {
   }
 
 
-  // Assemble rhs boundary term for the density update
-  //
-  template<int dim, int fe_degree, int n_q_points_1d, typename Vec, typename Number>
-  void HYPERBOLICOperator<dim, fe_degree, n_q_points_1d, Vec, Number>::
-  assemble_rhs_boundary_term_rho_projection(const MatrixFree<dim, Number>&               data,
-                                            Vec&                                         dst,
-                                            const std::vector<Vec>&                      src,
-                                            const std::pair<unsigned int, unsigned int>& face_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEFaceEvaluation<dim, fe_degree, n_q_points_1d, 1, Number>   phi(data, true, 1),
-                                                                   phi_rho_old(data, true, 1);
-
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_rho_old.reinit(face);
-        phi_rho_old.gather_evaluate(src[0], true, false);
-        phi.reinit(face);
-
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          const auto& point_vectorized = phi.quadrature_point(q);
-          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-            Point<dim> point;
-            for(unsigned int d = 0; d < dim; ++d)
-              point[d] = point_vectorized[d][v];
-            for(unsigned int d = 0; d < dim; ++d)
-              velocity[d][v] = u.value(point, d);
-          }
-
-          const auto& n_plus           = phi.get_normal_vector(q);
-
-          auto        rho_old_D        = VectorizedArray<Number>();
-          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-            Point<dim> point;
-            for(unsigned int d = 0; d < dim; ++d)
-              point[d] = point_vectorized[d][v];
-            rho_old_D[v] = rho_boundary.value(point);
-          }
-
-          const auto& avg_flux         = 0.5*(phi_rho_old.get_value(q)*velocity + rho_old_D*velocity);
-          const auto  lambda_old       = std::max(std::abs(scalar_product(velocity, n_plus)),
-                                                  std::abs(scalar_product(velocity, n_plus)));
-          const auto& jump_rho_old     = phi_rho_old.get_value(q) - rho_old_D;
-
-          phi.submit_value(-a21*dt*(scalar_product(avg_flux, n_plus) + 0.5*lambda_old*jump_rho_old), q);
-        }
-        phi.integrate_scatter(true, false, dst);
-      }
-    }
-    else {
-      FEFaceEvaluation<dim, fe_degree, n_q_points_1d, 1, Number>   phi(data, true, 1),
-                                                                   phi_rho_tmp_2(data, true, 1);
-
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_rho_tmp_2.reinit(face);
-        phi_rho_tmp_2.gather_evaluate(src[0], true, false);
-        phi.reinit(face);
-
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          const auto& point_vectorized = phi.quadrature_point(q);
-          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-            Point<dim> point;
-            for(unsigned int d = 0; d < dim; ++d)
-              point[d] = point_vectorized[d][v];
-            for(unsigned int d = 0; d < dim; ++d)
-              velocity[d][v] = u.value(point, d);
-          }
-
-          const auto& n_plus           = phi.get_normal_vector(q);
-
-          auto        rho_tmp_2_D      = VectorizedArray<Number>();
-          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-            Point<dim> point;
-            for(unsigned int d = 0; d < dim; ++d)
-              point[d] = point_vectorized[d][v];
-            rho_tmp_2_D[v] = rho_boundary.value(point);
-          }
-
-          const auto& avg_flux_tmp_2   = 0.5*(phi_rho_tmp_2.get_value(q)*velocity + rho_tmp_2_D*velocity);
-          const auto  lambda_tmp_2     = std::max(std::abs(scalar_product(velocity, n_plus)),
-                                                  std::abs(scalar_product(velocity, n_plus)));
-          const auto& jump_rho_tmp_2   = phi_rho_tmp_2.get_value(q) - rho_tmp_2_D;
-
-          phi.submit_value(-a32*a21/a31*dt*(scalar_product(avg_flux_tmp_2, n_plus) + 0.5*lambda_tmp_2*jump_rho_tmp_2), q);
-        }
-        phi.integrate_scatter(true, false, dst);
-      }
-    }
-  }
-
-
   // Put together all the previous steps for density update
   //
   template<int dim, int fe_degree, int n_q_points_1d, typename Vec, typename Number>
@@ -888,95 +805,6 @@ namespace Step35 {
         }
         phi_p.integrate_scatter(true, false, dst);
         phi_m.integrate_scatter(true, false, dst);
-      }
-    }
-  }
-
-
-  // Assemble Q0 rhs boundary term for the density update
-  //
-  template<int dim, int fe_degree, int n_q_points_1d, typename Vec, typename Number>
-  void HYPERBOLICOperator<dim, fe_degree, n_q_points_1d, Vec, Number>::
-  assemble_rhs_boundary_term_rho_projection_Q0(const MatrixFree<dim, Number>&               data,
-                                               Vec&                                         dst,
-                                               const std::vector<Vec>&                      src,
-                                               const std::pair<unsigned int, unsigned int>& face_range) const {
-    if(HYPERBOLIC_stage == 1) {
-      FEFaceEvaluation<dim, 0, n_q_points_1d, 1, Number>   phi(data, true, 2),
-                                                           phi_rho_old(data, true, 2);
-
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_rho_old.reinit(face);
-        phi_rho_old.gather_evaluate(src[0], true, false);
-        phi.reinit(face);
-
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          const auto& point_vectorized = phi.quadrature_point(q);
-          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-            Point<dim> point;
-            for(unsigned int d = 0; d < dim; ++d)
-              point[d] = point_vectorized[d][v];
-            for(unsigned int d = 0; d < dim; ++d)
-              velocity[d][v] = u.value(point, d);
-          }
-
-          const auto& n_plus           = phi.get_normal_vector(q);
-
-          auto        rho_old_D        = VectorizedArray<Number>();
-          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-            Point<dim> point;
-            for(unsigned int d = 0; d < dim; ++d)
-              point[d] = point_vectorized[d][v];
-            rho_old_D[v] = rho_boundary.value(point);
-          }
-
-          const auto& avg_flux         = 0.5*(phi_rho_old.get_value(q)*velocity + rho_old_D*velocity);
-          const auto  lambda_old       = std::max(std::sqrt(scalar_product(velocity, velocity)),
-                                                  std::sqrt(scalar_product(velocity, velocity)));
-          const auto& jump_rho_old     = phi_rho_old.get_value(q) - rho_old_D;
-
-          phi.submit_value(-a21*dt*(scalar_product(avg_flux, n_plus) + 0.5*lambda_old*jump_rho_old), q);
-        }
-        phi.integrate_scatter(true, false, dst);
-      }
-    }
-    else {
-      FEFaceEvaluation<dim, 0, n_q_points_1d, 1, Number>   phi(data, true, 2),
-                                                           phi_rho_tmp_2(data, true, 2);
-
-      for(unsigned int face = face_range.first; face < face_range.second; ++face) {
-        phi_rho_tmp_2.reinit(face);
-        phi_rho_tmp_2.gather_evaluate(src[0], true, false);
-        phi.reinit(face);
-
-        for(unsigned int q = 0; q < phi.n_q_points; ++q) {
-          const auto& point_vectorized = phi.quadrature_point(q);
-          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-            Point<dim> point;
-            for(unsigned int d = 0; d < dim; ++d)
-              point[d] = point_vectorized[d][v];
-            for(unsigned int d = 0; d < dim; ++d)
-              velocity[d][v] = u.value(point, d);
-          }
-
-          const auto& n_plus           = phi.get_normal_vector(q);
-
-          auto        rho_tmp_2_D      = VectorizedArray<Number>();
-          for(unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
-            Point<dim> point;
-            for(unsigned int d = 0; d < dim; ++d)
-              point[d] = point_vectorized[d][v];
-            rho_tmp_2_D[v] = rho_boundary.value(point);
-          }
-
-          const auto& avg_flux_tmp_2   = 0.5*(phi_rho_tmp_2.get_value(q)*velocity + rho_tmp_2_D*velocity);
-          const auto  lambda_tmp_2     = std::max(std::sqrt(scalar_product(velocity, velocity)),
-                                                  std::sqrt(scalar_product(velocity, velocity)));
-          const auto& jump_rho_tmp_2   = phi_rho_tmp_2.get_value(q) - rho_tmp_2_D;
-
-          phi.submit_value(-a32*a21/a31*dt*(scalar_product(avg_flux_tmp_2, n_plus) + 0.5*lambda_tmp_2*jump_rho_tmp_2), q);
-        }
-        phi.integrate_scatter(true, false, dst);
       }
     }
   }
@@ -1228,7 +1056,11 @@ namespace Step35 {
   void NavierStokesProjection<dim>::create_triangulation(const unsigned int n_cells) {
     TimerOutput::Scope t(time_table, "Create triangulation");
 
-    GridGenerator::subdivided_hyper_cube(triangulation, n_cells, -3.0, 3.0);
+    GridGenerator::subdivided_hyper_cube(triangulation, n_cells, -1.0, 1.0, true);
+
+    std::vector<GridTools::PeriodicFacePair<typename Triangulation<dim>::cell_iterator>> periodic_faces;
+    GridTools::collect_periodic_faces(triangulation, 0, 1, 0, periodic_faces);
+    triangulation.add_periodicity(periodic_faces);
   }
 
 
@@ -1364,14 +1196,14 @@ namespace Step35 {
       euler_matrix.initialize(matrix_free_storage, tmp_Q0, tmp_Q0);
       rho_tmp_2_Q0.equ(1.0, rho_old_Q0);
       cg_Q0.solve(euler_matrix, rho_tmp_2_Q0, rhs_rho_Q0, PreconditionIdentity());
-      /*FETools::interpolate(dof_handler_density_Q0, rho_tmp_2_Q0, dof_handler_density, rho_tmp);
+      FETools::interpolate(dof_handler_density_Q0, rho_tmp_2_Q0, dof_handler_density, rho_tmp);
 
       rho_tmp_2.add(-1.0, rho_tmp);
       rho_tmp_2 /= (5.0*GridTools::minimal_cell_diameter(triangulation)/std::sqrt(dim)*gamma*dt);
       for(unsigned int i = 0; i < rho_tmp_2.local_size(); ++i)
         rho_tmp_2.local_element(i) *= (std::abs(rho_tmp_2.local_element(i)) <= 1.0);
       rho_tmp_2 *= (5.0*GridTools::minimal_cell_diameter(triangulation)/std::sqrt(dim)*gamma*dt);
-      rho_tmp_2.add(1.0, rho_tmp);*/
+      rho_tmp_2.add(1.0, rho_tmp);
     }
     else {
       euler_matrix.set_NS_stage(1);
@@ -1383,16 +1215,16 @@ namespace Step35 {
       euler_matrix.initialize(matrix_free_storage, tmp_Q0, tmp_Q0);
       rho_curr_Q0.equ(1.0, rho_tmp_2_Q0);
       cg_Q0.solve(euler_matrix, rho_curr_Q0, rhs_rho_Q0, PreconditionIdentity());
-      //FETools::interpolate(dof_handler_density_Q0, rho_curr_Q0, dof_handler_density, rho_tmp);
+      FETools::interpolate(dof_handler_density_Q0, rho_curr_Q0, dof_handler_density, rho_tmp);
       rho_curr_Q0 *= a31/gamma;
       rho_curr_Q0.add(1.0 - a31/gamma, rho_old_Q0);
 
-      /*rho_curr.add(-1.0, rho_tmp);
+      rho_curr.add(-1.0, rho_tmp);
       rho_curr /= (5.0*GridTools::minimal_cell_diameter(triangulation)/std::sqrt(dim)*a32*gamma/a31*dt);
       for(unsigned int i = 0; i < rho_curr.local_size(); ++i)
         rho_curr.local_element(i) *= (std::abs(rho_curr.local_element(i)) <= 1.0);
       rho_curr *= (5.0*GridTools::minimal_cell_diameter(triangulation)/std::sqrt(dim)*a32*gamma/a31*dt);
-      rho_curr.add(1.0, rho_tmp);*/
+      rho_curr.add(1.0, rho_tmp);
       rho_curr *= a31/gamma;
       rho_curr.add(1.0 - a31/gamma, rho_old);
     }
@@ -1429,13 +1261,15 @@ namespace Step35 {
     pcout << "Verification via Linfty error density:    "<< error_rho_Linfty << std::endl;
     pcout << "Verification via Linfty relative error density:    "<< error_rel_rho_Linfty << std::endl;
 
-    const double ex_mean      = 1.0/6.0;
+    //const double ex_mean      = 0.5;
+    const double ex_mean = 3.0/16.0;
     const double mean_value   = VectorTools::compute_mean_value(dof_handler_density, quadrature_accurate, rho_old, 0);
-    const double ex_variance  = std::sqrt(5.0/6.0);
+    //const double ex_variance  = std::sqrt(0.5);
+    const double ex_variance = std::sqrt(26.0)/16.0;
     VectorTools::integrate_difference(dof_handler_density, rho_old, ConstantFunction<dim>(mean_value),
                                       L2_error_per_cell_rho, quadrature_accurate, VectorTools::L2_norm);
     const double variance     = VectorTools::compute_global_error(triangulation, L2_error_per_cell_rho, VectorTools::L2_norm)/
-                                std::sqrt(6.0);
+                                std::sqrt(2.0);
     const double dissipation  = (ex_variance - variance)*(ex_variance - variance) + (mean_value - ex_mean)*(mean_value - ex_mean);
     pcout << "Dissipation error:    "<< dissipation << std::endl;
 
@@ -1449,7 +1283,7 @@ namespace Step35 {
     pcout << "Dispersion error:    "<< dispersion << std::endl;
 
     //--- Analyze now Q0 results
-    rho_curr_Q0 = 0;
+    /*rho_curr_Q0 = 0;
 
     VectorTools::integrate_difference(dof_handler_density_Q0, rho_old_Q0, rho_exact,
                                       L2_error_per_cell_rho, quadrature_accurate, VectorTools::L2_norm);
@@ -1476,7 +1310,7 @@ namespace Step35 {
     VectorTools::integrate_difference(dof_handler_density_Q0, rho_old_Q0, ConstantFunction<dim>(mean_value_Q0),
                                       L2_error_per_cell_rho, quadrature_accurate, VectorTools::L2_norm);
     const double variance_Q0     = VectorTools::compute_global_error(triangulation, L2_error_per_cell_rho, VectorTools::L2_norm)/
-                                   std::sqrt(6.0);
+                                   std::sqrt(2.0);
     const double dissipation_Q0  = (ex_variance - variance_Q0)*(ex_variance - variance_Q0) +
                                    (mean_value_Q0 - ex_mean)*(mean_value_Q0 - ex_mean);
     pcout << "Dissipation error Q0:    "<< dissipation_Q0 << std::endl;
@@ -1488,7 +1322,7 @@ namespace Step35 {
     rho_tmp_2_Q0.scale(rho_curr_Q0);
     const double dispersion_Q0 = 2.0*(ex_variance*variance_Q0 -
                                       VectorTools::compute_mean_value(dof_handler_density_Q0, quadrature_accurate, rho_tmp_2_Q0, 0));
-    pcout << "Dispersion error Q0:    "<< dispersion_Q0 << std::endl;
+    pcout << "Dispersion error Q0:    "<< dispersion_Q0 << std::endl;*/
 
     if(Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0) {
       output_rho << error_rho_L2            << std::endl;
@@ -1497,12 +1331,12 @@ namespace Step35 {
       output_rho << error_rel_rho_Linfty    << std::endl;
       output_rho << dissipation             << std::endl;
       output_rho << dispersion              << std::endl;
-      output_rho << error_rho_L2_Q0         << std::endl;
+      /*output_rho << error_rho_L2_Q0         << std::endl;
       output_rho << error_rel_rho_L2_Q0     << std::endl;
       output_rho << error_rho_Linfty_Q0     << std::endl;
       output_rho << error_rel_rho_Linfty_Q0 << std::endl;
       output_rho << dissipation_Q0          << std::endl;
-      output_rho << dispersion_Q0           << std::endl;
+      output_rho << dispersion_Q0           << std::endl;*/
     }
   }
 
@@ -1661,9 +1495,8 @@ namespace Step35 {
       update_density();
       pcout<<"Minimal density "<<get_minimal_density()<<std::endl;
       pcout<<"Maximal density "<<get_maximal_density()<<std::endl;
-      pcout<<"Minimal density Q0 "<<get_minimal_density_Q0()<<std::endl;
-      pcout<<"Maximal density Q0 "<<get_maximal_density_Q0()<<std::endl;
-      euler_matrix.advance_boundary_time(gamma*dt);
+      /*pcout<<"Minimal density Q0 "<<get_minimal_density_Q0()<<std::endl;
+      pcout<<"Maximal density Q0 "<<get_maximal_density_Q0()<<std::endl;*/
       HYPERBOLIC_stage = 2; //--- Flag to pass at second stage
 
       //--- Second stage of HYPERBOLIC operator
@@ -1672,19 +1505,18 @@ namespace Step35 {
       update_density();
       const double rho_min = get_minimal_density();
       const double rho_max = get_maximal_density();
-      const double rho_min_Q0 = get_minimal_density_Q0();
-      const double rho_max_Q0 = get_maximal_density_Q0();
+      /*const double rho_min_Q0 = get_minimal_density_Q0();
+      const double rho_max_Q0 = get_maximal_density_Q0();*/
       pcout<<"Minimal density "<< rho_min <<std::endl;
       pcout<<"Maximal density "<< rho_max <<std::endl;
-      pcout<<"Minimal density Q0 "<< rho_min_Q0 <<std::endl;
-      pcout<<"Maximal density Q0 "<< rho_max_Q0 <<std::endl;
+      /*pcout<<"Minimal density Q0 "<< rho_min_Q0 <<std::endl;
+      pcout<<"Maximal density Q0 "<< rho_max_Q0 <<std::endl;*/
       if(Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0) {
         output_rho << rho_min << std::endl;
         output_rho << rho_max << std::endl;
-        output_rho << rho_min_Q0 << std::endl;
-        output_rho << rho_max_Q0 << std::endl;
+        /*output_rho << rho_min_Q0 << std::endl;
+        output_rho << rho_max_Q0 << std::endl;*/
       }
-      euler_matrix.advance_boundary_time((1.0 - gamma)*dt);
       HYPERBOLIC_stage = 1; //--- Flag to pass at first stage at next step
 
       //--- Update for next step
